@@ -21,9 +21,9 @@ import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Pool, type PoolClient } from 'pg'
 import { requestLink, redeem, openSession, sessionFor, destroy, sweep, cookieName,
-  sessionMaxAgeSeconds } from './auth/magic.js'
-import { beginLogin, completeLogin, admits, ELEV8_TENANT_ID, SsoError }
-  from './auth/entra.js'
+  sessionMaxAgeSeconds, type Session } from './auth/magic.js'
+import { beginLogin, completeLogin, admits, ELEV8_TENANT_ID, SsoError,
+  type Refusal } from './auth/entra.js'
 import { makeMailer } from './auth/mail.js'
 import { seedDemo, clearDemo, hasDemo } from './demo.js'
 import { begin as mdvBegin, complete as mdvComplete, sweepFlows, DEFAULT_SCOPES }
@@ -46,6 +46,18 @@ const mailer = makeMailer()
  */
 const allowedEmails = (process.env.ALLOWED_EMAILS ?? '')
   .split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+
+/**
+ * Entra group object IDs. This is the gate we actually want long-term: access
+ * then ends when somebody leaves the group in the directory, rather than when
+ * a person remembers to edit a Railway variable.
+ *
+ * Object IDs rather than names, because a display name is mutable and reusable
+ * — rename a group and an address list would silently keep working while this
+ * would silently stop, which is the wrong failure of the two.
+ */
+const allowedGroups = (process.env.ALLOWED_GROUPS ?? '')
+  .split(',').map(s => s.trim()).filter(Boolean)
 
 const baseUrl = process.env.PUBLIC_BASE_URL ?? ''
 const cookieSecure = baseUrl.startsWith('https://')
@@ -148,11 +160,14 @@ async function boot(): Promise<void> {
     db.error = (err as Error).message
     console.error(`database not ready: ${db.error}`)
   }
+  const gates = [
+    allowedGroups.length ? `${allowedGroups.length} allowlisted group(s)` : null,
+    allowedEmails.length ? `${allowedEmails.length} allowlisted address(es)` : null,
+  ].filter(Boolean)
   console.log(`auth gate: ${gateEnabled
     ? [ssoEnabled ? `Entra SSO (tenant ${entra.tenantId})` : null,
        magicEnabled ? `magic link via ${mailer.mode}` : null].filter(Boolean).join(' + ')
-      + (allowedEmails.length ? `, ${allowedEmails.length} allowlisted address(es)`
-                              : ', any member of the tenant')
+      + (gates.length ? `, ${gates.join(' AND ')}` : ', any member of the tenant')
     : 'DISABLED — no login configured, pages are open'}`)
 }
 
@@ -308,19 +323,42 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return
     }
     try {
-      const out = await withClient(async c => {
+      // Tagged explicitly rather than distinguished by which key is present:
+      // a tag narrows reliably, and this is the branch that decides who gets in.
+      type Outcome =
+        | { kind: 'refused', reason: Refusal }
+        | { kind: 'admitted', session: Session }
+      const out = await withClient<Outcome>(async c => {
         const who = await completeLogin(c, entra, {
           code: url.searchParams.get('code') ?? '',
           state: url.searchParams.get('state') ?? '',
         })
-        if (!admits(who, allowedEmails, entra.tenantId)) return { refused: true as const }
-        return { session: await openSession(c, who.email) }
+        const verdict = admits(who, {
+          tenantId: entra.tenantId, groups: allowedGroups, emails: allowedEmails,
+        })
+        if (!verdict.ok) return { kind: 'refused', reason: verdict.reason }
+        return { kind: 'admitted', session: await openSession(c, who.email) }
       })
-      if (!out || 'refused' in out) {
-        // Authenticated but not admitted. The address stays out of the log: it
-        // is a real person's, and knowing the count is enough.
-        console.log('[sso] an authenticated account was refused by the allowlist')
-        html(res, renderLogin({ ...loginView(), error: t.loginNotAdmitted }), 403)
+      // Checked apart from the refusal below, so a database that is simply not
+      // there cannot be reported to somebody as "you are not allowed in".
+      if (!out) {
+        console.log('[sso] signed in, but no database to open a session in')
+        html(res, renderLogin({ ...loginView(), error: t.loginFailed }), 503)
+        return
+      }
+      if (out.kind === 'refused') {
+        // The reason goes in the log, never the address: the address belongs to a
+        // real person, and the reason is what anybody debugging this needs.
+        const why = out.reason
+        console.log(`[sso] refused: ${why}`)
+        // Two of these are OUR configuration failing, not the person failing.
+        // Saying which is not a hint to an attacker, and it is the difference
+        // between a five-minute fix and an evening of guessing.
+        const ours = why === 'groups_not_emitted'
+        const message = ours ? t.loginGroupsNotEmitted
+          : why === 'groups_overage' ? t.loginTooManyGroups
+          : t.loginNotAdmitted
+        html(res, renderLogin({ ...loginView(), error: message }), ours ? 500 : 403)
         return
       }
       console.log('[sso] session opened for an allowlisted account')
@@ -451,9 +489,15 @@ ${srcs.map(x => `<tr><td><b>${x.name}</b></td><td>${x.ready
   ? `<span class="ok">${esc(t.signInActive)}</span>: ${[
       ssoEnabled ? esc(t.signInMicrosoft) : null,
       magicEnabled ? t.signInMailLink(esc(mailer.mode)) : null,
-    ].filter(Boolean).join(' + ')}. ${allowedEmails.length
-      ? esc(t.admittedCount(allowedEmails.length))
-      : t.admittedWholeTenant}`
+    ].filter(Boolean).join(' + ')}. ${(() => {
+      const gates = [
+        allowedGroups.length ? esc(t.admittedGroups(allowedGroups.length)) : null,
+        allowedEmails.length ? esc(t.admittedCount(allowedEmails.length)) : null,
+      ].filter(Boolean)
+      if (!gates.length) return t.admittedWholeTenant
+      return esc(t.admittedLead(gates.join(` ${t.admittedAnd} `)))
+        + (gates.length > 1 ? ` ${t.admittedEveryGateApplies}` : '')
+    })()}`
   : `<span class="no">${esc(t.signInOff)}</span> — ${t.loginNoMethod}`}</div>
 </main></body></html>`)
     return

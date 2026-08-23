@@ -48,6 +48,19 @@ export interface Identity {
   /** Stable per person per tenant; survives a rename, unlike the address. */
   subjectId: string
   tenantId: string
+  /**
+   * Entra group object IDs from the `groups` claim. Empty can mean two very
+   * different things — not in any group, or the claim was never configured —
+   * which is why `groupsEmitted` exists separately.
+   */
+  groups: string[]
+  /** True when the token carried a `groups` claim at all, even an empty one. */
+  groupsEmitted: boolean
+  /**
+   * True when the person is in more than 200 groups, so Entra replaced the
+   * claim with a pointer to Graph instead of listing them.
+   */
+  groupsOverage: boolean
 }
 
 export interface OidcMetadata {
@@ -155,6 +168,10 @@ interface IdTokenClaims {
   iss?: string, aud?: string | string[], exp?: number, iat?: number, nbf?: number
   tid?: string, oid?: string, sub?: string, nonce?: string
   email?: string, preferred_username?: string, name?: string
+  groups?: unknown
+  /** Present instead of `groups` past 200 memberships; maps 'groups' to a source. */
+  _claim_names?: Record<string, string>
+  _claim_sources?: Record<string, unknown>
 }
 
 const decodePart = (part: string): unknown =>
@@ -212,7 +229,19 @@ export async function verifyIdToken(
   const subjectId = c.oid ?? c.sub
   if (!subjectId) throw new SsoError('id_token carried no subject')
 
-  return { email, name: c.name ?? email, subjectId, tenantId: c.tid }
+  // Group membership is read, never trusted to be present: the claim only
+  // appears once somebody has configured it, and it disappears again past 200
+  // memberships. Both cases are reported rather than collapsed into "no groups".
+  const groupsEmitted = Object.prototype.hasOwnProperty.call(c, 'groups')
+  const groups = Array.isArray(c.groups)
+    ? c.groups.filter((g): g is string => typeof g === 'string')
+    : []
+  const groupsOverage = Boolean(c._claim_names?.groups)
+
+  return {
+    email, name: c.name ?? email, subjectId, tenantId: c.tid,
+    groups, groupsEmitted, groupsOverage,
+  }
 }
 
 /* ------------------------------------------------------------------- flow */
@@ -313,16 +342,69 @@ export async function completeLogin(
   }, now)
 }
 
+/** Why somebody who proved their identity still did not get in. */
+export type Refusal =
+  /** A token from a different directory. Should be impossible; checked anyway. */
+  | 'foreign_tenant'
+  /** Groups are the gate, but the app registration never emits the claim. */
+  | 'groups_not_emitted'
+  /** More than 200 memberships, so Entra sent a pointer instead of a list. */
+  | 'groups_overage'
+  | 'not_in_group'
+  | 'not_allowlisted'
+
+/**
+ * A discriminated union rather than `{ ok, reason? }`: the compiler then knows a
+ * refusal always carries a reason, so no caller can log an undefined one.
+ */
+export type Admission = { ok: true } | { ok: false, reason: Refusal }
+
+export interface Policy {
+  tenantId: string
+  /** Entra group object IDs. Empty means group membership is not a gate. */
+  groups: string[]
+  /** Exact addresses. Empty means the address list is not a gate. */
+  emails: string[]
+}
+
 /**
  * Decides admission after Entra has decided identity.
  *
- * Two gates, on purpose. Entra proves the person is who they say and still works
- * here; the allowlist decides whether this particular tool is theirs to open.
- * An empty allowlist means "anyone in the tenant", which is a closed door — but
- * a wider one than two names, so it is reported as such on the status page.
+ * Entra proves the person is who they say and still works here. This decides
+ * whether this particular tool is theirs to open.
+ *
+ * EVERY CONFIGURED GATE MUST PASS. That is the whole design rule: adding a line
+ * of configuration can then only ever narrow access, never widen it. If groups
+ * and addresses are both set, both apply — which is unusual, and deliberate,
+ * because the alternative (a group list silently replacing an address list) is a
+ * config change that quietly lets more people in.
+ *
+ * With nothing configured, admission is "anyone in the tenant": a closed door,
+ * but a wide one, so the status page says which of the two it currently is.
+ *
+ * Group membership resolves to a REFUSAL WITH A REASON rather than a boolean.
+ * A missing groups claim and an empty groups claim look identical from the
+ * outside and mean opposite things — "you forgot the token configuration" and
+ * "this person is in no permitted group" — and somebody locked out at 22:00
+ * needs to be able to tell which.
  */
-export function admits(identity: Identity, allowedEmails: string[], tenantId: string): boolean {
-  if (identity.tenantId !== tenantId) return false
-  if (!allowedEmails.length) return true
-  return allowedEmails.includes(identity.email)
+export function admits(identity: Identity, policy: Policy): Admission {
+  if (identity.tenantId !== policy.tenantId) return { ok: false, reason: 'foreign_tenant' }
+
+  if (policy.groups.length) {
+    if (identity.groupsOverage) return { ok: false, reason: 'groups_overage' }
+    if (!identity.groupsEmitted) return { ok: false, reason: 'groups_not_emitted' }
+    // Case-insensitive because a GUID is written either way and an
+    // AD-synced group arrives as a name. Object IDs are what should be
+    // configured: a display name is mutable and reusable.
+    const want = new Set(policy.groups.map(g => g.trim().toLowerCase()))
+    if (!identity.groups.some(g => want.has(g.trim().toLowerCase()))) {
+      return { ok: false, reason: 'not_in_group' }
+    }
+  }
+
+  if (policy.emails.length && !policy.emails.includes(identity.email)) {
+    return { ok: false, reason: 'not_allowlisted' }
+  }
+  return { ok: true }
 }

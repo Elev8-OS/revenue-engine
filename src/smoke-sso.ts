@@ -11,7 +11,7 @@ import { createHash, generateKeyPairSync, sign as signWith } from 'node:crypto'
 import { Pool } from 'pg'
 import {
   discover, beginLogin, completeLogin, verifyIdToken, admits, resetCaches,
-  SsoError, SCOPES, type EntraConfig, type OidcMetadata,
+  SsoError, SCOPES, type EntraConfig, type Identity,
 } from './auth/entra.js'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL! })
@@ -230,13 +230,70 @@ omitIdToken = false
 
 /* ------------------------------------------------------------- 9 · admission */
 
-const me = { email: 'reto.wyss@elev8-suite.com', name: 'R', subjectId: 'o', tenantId: TID }
-check('an empty allowlist admits any member of the tenant', admits(me, [], TID))
-check('an allowlisted address is admitted', admits(me, [me.email], TID))
+const G1 = 'aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa'
+const G2 = 'bbbbbbbb-2222-2222-2222-bbbbbbbbbbbb'
+const person = (over: Partial<Identity> = {}): Identity => ({
+  email: 'reto.wyss@elev8-suite.com', name: 'R', subjectId: 'o', tenantId: TID,
+  groups: [], groupsEmitted: true, groupsOverage: false, ...over,
+})
+const verdict = (id: Identity, groups: string[] = [], emails: string[] = []) =>
+  admits(id, { tenantId: TID, groups, emails })
+
+// nothing configured: a closed door, but a wide one
+check('with nothing configured, any member of the tenant is admitted',
+      verdict(person()).ok)
+check('a foreign tenant is refused even so',
+      !verdict(person({ tenantId: 'another-tenant' })).ok)
+
+// addresses
+check('an allowlisted address is admitted',
+      verdict(person(), [], ['reto.wyss@elev8-suite.com']).ok)
 check('an authenticated address outside the allowlist is not',
-      !admits(me, ['someone.else@elev8-suite.com'], TID))
-check('a foreign tenant is refused even when the address is allowlisted',
-      !admits({ ...me, tenantId: 'another-tenant' }, [me.email], TID))
+      !verdict(person(), [], ['someone.else@elev8-suite.com']).ok)
+
+// groups
+check('a member of the permitted group is admitted',
+      verdict(person({ groups: [G1] }), [G1]).ok)
+check('a member of one of several permitted groups is admitted',
+      verdict(person({ groups: [G2] }), [G1, G2]).ok)
+check('group ids match regardless of case',
+      verdict(person({ groups: [G1.toUpperCase()] }), [G1]).ok)
+check('somebody in no permitted group is refused',
+      verdict(person({ groups: ['cccccccc-3333-3333-3333-cccccccccccc'] }), [G1])
+        .ok === false)
+
+// the two failures that are OURS, not the person's, and must be distinguishable
+const notEmitted = verdict(person({ groups: [], groupsEmitted: false }), [G1])
+check('a groups claim that was never configured is refused as a configuration fault',
+      !notEmitted.ok && notEmitted.reason === 'groups_not_emitted',
+      notEmitted.ok ? 'admitted' : notEmitted.reason)
+const emptyClaim = verdict(person({ groups: [], groupsEmitted: true }), [G1])
+check('an EMPTY groups claim is refused as a real non-membership, not a fault',
+      !emptyClaim.ok && emptyClaim.reason === 'not_in_group',
+      emptyClaim.ok ? 'admitted' : emptyClaim.reason)
+const overage = verdict(person({ groups: [], groupsOverage: true }), [G1])
+check('more than 200 memberships is refused with its own reason',
+      !overage.ok && overage.reason === 'groups_overage',
+      overage.ok ? 'admitted' : overage.reason)
+
+// every configured gate applies, so configuration can only ever narrow
+check('group member with a non-allowlisted address is refused',
+      !verdict(person({ groups: [G1] }), [G1], ['someone.else@elev8-suite.com']).ok)
+check('allowlisted address outside the group is refused',
+      !verdict(person({ groups: [] }), [G1], ['reto.wyss@elev8-suite.com']).ok)
+check('both gates satisfied is admitted',
+      verdict(person({ groups: [G1] }), [G1], ['reto.wyss@elev8-suite.com']).ok)
+
+// and the claim actually survives the token
+const withGroups = await verify(mint(goodClaims({ nonce: N, groups: [G1, G2] })))
+check('the groups claim is read off a real signed token',
+      withGroups.groups.length === 2 && withGroups.groups[0] === G1)
+check('and the token is marked as having carried one', withGroups.groupsEmitted)
+const noClaim = await verify(mint(goodClaims({ nonce: N })))
+check('a token without the claim is marked as not carrying one', !noClaim.groupsEmitted)
+const over = await verify(mint(goodClaims({ nonce: N, _claim_names: { groups: 'src1' } })))
+check('the overage pointer is recognised as overage, not as no groups',
+      over.groupsOverage && !over.groupsEmitted)
 
 srv.close(); c.release(); await pool.end()
 console.log(`\n${fails === 0 ? 'all green' : fails + ' FAILING'}`)
