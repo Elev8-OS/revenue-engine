@@ -11,3 +11,4 @@ export DATABASE_URL="postgresql://postgres@/re?host=/tmp&port=$PORT"
 npx tsx src/smoke.ts
 npx tsx src/smoke-mdv.ts
 npx tsx src/smoke-auth.ts
+npx tsx src/smoke-oauth.ts
