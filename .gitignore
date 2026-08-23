@@ -4,7 +4,3 @@ dist/
 .env.*
 !.env.example
 *.log
-
-# Not committed yet: the lockfile is generated on the first local install.
-# Run `npm install` and commit it — reproducible installs depend on it.
-package-lock.json
