@@ -1,0 +1,455 @@
+/**
+ * Two languages, one shape.
+ *
+ * `Strings` is an interface rather than a loose record on purpose: TypeScript
+ * then refuses to compile a locale that is missing a key, and refuses a key that
+ * exists in only one locale. Half-translated screens happen precisely where that
+ * is unchecked, and this dashboard is read by the Bali team and the Swiss side of
+ * the portfolio at the same time.
+ *
+ * Anything with a number in it is a function, so word order stays the
+ * translator's decision rather than being fixed by concatenation in the caller.
+ */
+export type Lang = 'en' | 'id'
+
+export interface Strings {
+  /** For the html lang attribute — screen readers and hyphenation use it. */
+  htmlLang: string
+  /**
+   * Money formatting locale. Both run at maximumFractionDigits 0, which is the
+   * point: with no decimals, "1,234" and "1.234" cannot be misread as each
+   * other by a reader expecting the other convention.
+   */
+  numberLocale: string
+  langName: string
+  otherLangName: string
+
+  /* --- shell */
+  appTitle: string
+  heading: string
+  signedInAs: (email: string) => string
+  signOut: string
+  readiness: string
+  basisRevenue: string
+  basisMargin: string
+
+  /* --- the four counters */
+  largestSingle: string
+  nothingOpen: string
+  openFindings: string
+  severityBreakdown: (critical: number, high: number) => string
+  rooms: string
+  activeInPortfolio: string
+  notAssessable: string
+  signalMissing: string
+
+  /* --- the table */
+  colProperty: string
+  colAtStake: string
+  colFindings: string
+  colWorstDomain: string
+  colAdrVsSet: string
+  colSync: string
+  findingCount: (n: number, severity: string) => string
+  noneOpen: string
+  notRated: string
+  gateLabel: (stage: string) => string
+  roomsNotAssessable: (n: number) => string
+
+  /* --- the empty state */
+  noPropertiesYet: string
+  noPropertiesWhy: string
+
+  /* --- open row */
+  noOpenFinding: string
+  gatekeeper: string
+  gateAllHold: string
+  gateBreaksAt: (stage: string) => string
+  gateNoneBreak: string
+  cohortCaveat: string
+  evidence: string
+  evidenceFor: string
+  evidenceAgainst: string
+  evidenceAgainstNote: string
+  evidenceUnknown: string
+
+  /* --- footer */
+  largestNotSum: string
+  freshness: string
+
+  /* --- banners */
+  openToTheInternet: string
+  demoData: string
+
+  /* --- vocabulary that appears inside data */
+  severity: Record<string, string>
+  contract: Record<string, string>
+  domain: Record<string, string>
+  stage: Record<string, string>
+  ageMinutes: (n: number) => string
+  ageHours: (n: number) => string
+  ageDays: (n: number) => string
+
+  /* --- sign-in */
+  loginTitle: string
+  loginWithMicrosoft: string
+  loginSsoLead: string
+  loginMagicLead: string
+  loginMagicAlso: string
+  loginSendLink: string
+  loginEmailPlaceholder: string
+  loginLinkSent: string
+  loginNoMethod: string
+  loginLinkDead: string
+  loginProviderDeclined: (code: string) => string
+  loginNotAdmitted: string
+  loginFailed: string
+
+  /* --- readiness page */
+  readinessHeading: string
+  readinessLead: string
+  toDashboard: string
+  database: string
+  dbReady: (tables: number, migrations: number) => string
+  dbUnreachable: string
+  dbUnconfigured: string
+  colSource: string
+  colState: string
+  colWhatFor: string
+  connected: string
+  missing: string
+  sourceNotes: Record<'elev8' | 'pricelabs' | 'channex' | 'mdv', string>
+  redirectUriLabel: string
+  tenantLabel: string
+  authoriseNow: string
+  authBlockedNoAllowlist: string
+  signIn: string
+  signInActive: string
+  signInMicrosoft: string
+  signInMailLink: (mode: string) => string
+  admittedCount: (n: number) => string
+  admittedWholeTenant: string
+  signInOff: string
+
+  /* --- notices */
+  noticeAuthBlocked: string
+  noticeAuthBlockedBody: string
+  noticeMissingVars: string
+  noticeMissingVarsBody: (names: string) => string
+  noticeMdvRefused: string
+  noticeMdvRefusedBody: (code: string) => string
+  noticeMdvConnected: string
+  noticeMdvConnectedBody: string
+  noticeStartFailed: string
+  noticeStartFailedBody: string
+  noticeAuthFailed: string
+  noticeAuthFailedBody: string
+  noticeSsoUnconfigured: string
+  noticeSsoUnconfiguredBody: string
+}
+
+export const en: Strings = {
+  htmlLang: 'en',
+  numberLocale: 'en-CH',
+  langName: 'English',
+  otherLangName: 'Bahasa Indonesia',
+
+  appTitle: 'Revenue Engine — Listing Health',
+  heading: 'Listing Health',
+  signedInAs: email => `signed in as ${email}`,
+  signOut: 'sign out',
+  readiness: 'Readiness',
+  basisRevenue: 'Revenue',
+  basisMargin: 'Contribution',
+
+  largestSingle: 'Largest single opportunity',
+  nothingOpen: 'nothing open',
+  openFindings: 'Open findings',
+  severityBreakdown: (c, h) => `${c} critical · ${h} high`,
+  rooms: 'Rooms',
+  activeInPortfolio: 'active in the portfolio',
+  notAssessable: 'Not assessable',
+  signalMissing: 'signal missing',
+
+  colProperty: 'Property',
+  colAtStake: 'At stake',
+  colFindings: 'Findings',
+  colWorstDomain: 'Worst domain',
+  colAdrVsSet: 'ADR vs set',
+  colSync: 'Sync',
+  findingCount: (n, s) => `${n}× ${s}`,
+  noneOpen: 'none open',
+  notRated: 'not assessed',
+  gateLabel: stage => `Gate: ${stage}`,
+  roomsNotAssessable: n => `${n} room${n === 1 ? '' : 's'} not assessable`,
+
+  noPropertiesYet: 'No properties yet.',
+  noPropertiesWhy: 'Nothing is flowing in — credentials are missing. What exactly is missing is on the',
+
+  noOpenFinding: 'No open finding for this room.',
+  gatekeeper: 'Gatekeeper',
+  gateAllHold: 'All three visibility gates hold — this is a genuine price case.',
+  gateBreaksAt: stage => `The gate breaks at <b>${stage}</b>. Price findings are held back until that is fixed.`,
+  gateNoneBreak: 'No gate breaks.',
+  cohortCaveat: 'Measured against our own cohort, not the market — no provider sells competitor funnel data.',
+  evidence: 'Evidence',
+  evidenceFor: 'For',
+  evidenceAgainst: 'Against',
+  evidenceAgainstNote: 'required — a check that cannot argue its own opposite is not finished',
+  evidenceUnknown: 'Unknown',
+
+  largestNotSum: 'Every row shows its <b>largest single opportunity</b> — never a sum, because findings can overlap the same nights.',
+  freshness: 'Freshness',
+
+  openToTheInternet: '<b>This page is open on the internet.</b> No sign-in is configured, so anyone with the URL can read it. Setting the Microsoft 365 variables closes it.',
+  demoData: '<b>Demonstration data.</b> Nothing is flowing in yet, so what you see are the figures <em>measured</em> on the live account for the three Bali rooms, as an example — marked with the prefix <code>[Demo]</code>. They are deleted the moment real data arrives.',
+
+  severity: { critical: 'critical', high: 'high', medium: 'medium', low: 'low', info: 'info' },
+  contract: {
+    guaranteed_rent: 'guaranteed rent',
+    net_share: '% of net',
+    fixed_fee: 'flat fee',
+    gross_share: '% of gross',
+  },
+  domain: {
+    impressions: 'Restrictions & stay mix',
+    ctr: 'Visibility & conversion',
+    conversion: 'Visibility & conversion',
+    price: 'Price & yield',
+  },
+  stage: { impressions: 'Impressions', ctr: 'Click rate', conversion: 'Conversion', price: 'Price level' },
+  ageMinutes: n => `${n} min`,
+  ageHours: n => `${n} h`,
+  ageDays: n => `${n} d`,
+
+  loginTitle: 'Revenue Engine — Sign in',
+  loginWithMicrosoft: 'Sign in with Microsoft',
+  loginSsoLead: 'Sign in with your Elev8-Suite Microsoft 365 account.',
+  loginMagicLead: 'Sign in by link, no password.',
+  loginMagicAlso: 'Or by email link:',
+  loginSendLink: 'Send link',
+  loginEmailPlaceholder: 'you@elev8-suite.com',
+  loginLinkSent: 'If that address has access, a sign-in link is on its way. It is valid for <b>15 minutes</b> and works <b>once</b>.',
+  loginNoMethod: 'No sign-in method is configured. Railway is missing <code>ENTRA_CLIENT_ID</code>, <code>ENTRA_CLIENT_SECRET</code> or <code>PUBLIC_BASE_URL</code>.',
+  loginLinkDead: 'That link has expired or was already used.',
+  loginProviderDeclined: code => `Microsoft declined the sign-in (<code>${code}</code>).`,
+  loginNotAdmitted: 'That account is signed in, but has no access to this tool.',
+  loginFailed: 'The sign-in could not be completed. Please try again.',
+
+  readinessHeading: 'Readiness',
+  readinessLead: 'Variable <em>names</em> only, never values.',
+  toDashboard: 'to the dashboard',
+  database: 'Database',
+  dbReady: (t, m) => `ready — ${t} tables, ${m} migrations`,
+  dbUnreachable: 'unreachable',
+  dbUnconfigured: 'not configured',
+  colSource: 'Source',
+  colState: 'State',
+  colWhatFor: 'What for',
+  connected: 'connected',
+  missing: 'missing',
+  sourceNotes: {
+    elev8: 'the moat: cleaning minutes, housekeeper note, capacity',
+    pricelabs: 'market panel, pickup grid, change log',
+    channex: 'review text and subscores, ota_commission, taxes',
+    mdv: 'direct HTTP API; the refresh token lives in the database because it rotates',
+  },
+  redirectUriLabel: 'Redirect URI for the app registration:',
+  tenantLabel: 'Tenant',
+  authoriseNow: 'authorise now',
+  authBlockedNoAllowlist: 'authorisation is blocked while no sign-in is configured',
+  signIn: 'Sign-in',
+  signInActive: 'active',
+  signInMicrosoft: 'Microsoft 365 (Entra ID)',
+  signInMailLink: mode => `email link via <code>${mode}</code>`,
+  admittedCount: n => `Admitted: ${n} address${n === 1 ? '' : 'es'}.`,
+  admittedWholeTenant: 'Admitted: <b>everyone</b> in the Elev8-Suite tenant — <code>ALLOWED_EMAILS</code> narrows that.',
+  signInOff: 'off',
+
+  noticeAuthBlocked: 'Authorisation blocked',
+  noticeAuthBlockedBody: 'While no sign-in is configured this route stays shut. Otherwise anyone with the URL could park a foreign MyDataValue grant here.',
+  noticeMissingVars: 'Variables are missing',
+  noticeMissingVarsBody: names => `Please set these in Railway: ${names}.`,
+  noticeMdvRefused: 'MyDataValue declined',
+  noticeMdvRefusedBody: code => `The provider reports <code>${code}</code>.`,
+  noticeMdvConnected: 'MyDataValue is connected',
+  noticeMdvConnectedBody: 'The refresh token now lives in the database and rotates there. <code>MDV_SEED_REFRESH_TOKEN</code> is no longer read and can stay empty.',
+  noticeStartFailed: 'Authorisation could not start',
+  noticeStartFailedBody: 'The provider metadata was not readable. Details are in the deploy log.',
+  noticeAuthFailed: 'Authorisation failed',
+  noticeAuthFailedBody: 'The code was refused or had already been used. Please start again at <code>/auth/mdv</code>. The reason is in the deploy log.',
+  noticeSsoUnconfigured: 'Sign-in is not configured',
+  noticeSsoUnconfiguredBody: 'Railway is missing <code>ENTRA_CLIENT_ID</code>, <code>ENTRA_CLIENT_SECRET</code> or <code>PUBLIC_BASE_URL</code>.',
+}
+
+export const id: Strings = {
+  htmlLang: 'id',
+  numberLocale: 'id-ID',
+  langName: 'Bahasa Indonesia',
+  otherLangName: 'English',
+
+  appTitle: 'Revenue Engine — Kesehatan Listing',
+  heading: 'Kesehatan Listing',
+  signedInAs: email => `masuk sebagai ${email}`,
+  signOut: 'keluar',
+  readiness: 'Kesiapan',
+  basisRevenue: 'Pendapatan',
+  basisMargin: 'Kontribusi',
+
+  largestSingle: 'Peluang tunggal terbesar',
+  nothingOpen: 'tidak ada yang terbuka',
+  openFindings: 'Temuan terbuka',
+  severityBreakdown: (c, h) => `${c} kritis · ${h} tinggi`,
+  rooms: 'Unit',
+  activeInPortfolio: 'aktif dalam portofolio',
+  notAssessable: 'Tidak dapat dinilai',
+  signalMissing: 'sinyal tidak tersedia',
+
+  colProperty: 'Properti',
+  colAtStake: 'Dipertaruhkan',
+  colFindings: 'Temuan',
+  colWorstDomain: 'Domain terburuk',
+  colAdrVsSet: 'ADR vs set',
+  colSync: 'Sinkron',
+  findingCount: (n, s) => `${n}× ${s}`,
+  noneOpen: 'tidak ada',
+  notRated: 'belum dinilai',
+  gateLabel: stage => `Gerbang: ${stage}`,
+  roomsNotAssessable: n => `${n} unit tidak dapat dinilai`,
+
+  noPropertiesYet: 'Belum ada properti.',
+  noPropertiesWhy: 'Belum ada data yang masuk — kredensial belum lengkap. Apa yang kurang tercantum di',
+
+  noOpenFinding: 'Tidak ada temuan terbuka untuk unit ini.',
+  gatekeeper: 'Penjaga gerbang',
+  gateAllHold: 'Ketiga gerbang visibilitas lolos — ini benar-benar soal harga.',
+  gateBreaksAt: stage => `Gerbang gagal di <b>${stage}</b>. Temuan harga ditahan sampai itu dibereskan.`,
+  gateNoneBreak: 'Tidak ada gerbang yang gagal.',
+  cohortCaveat: 'Diukur terhadap kohort kita sendiri, bukan terhadap pasar — tidak ada penyedia yang menjual data funnel pesaing.',
+  evidence: 'Bukti',
+  evidenceFor: 'Mendukung',
+  evidenceAgainst: 'Menyanggah',
+  evidenceAgainstNote: 'wajib — pemeriksaan yang tidak bisa menyanggah dirinya sendiri belum selesai',
+  evidenceUnknown: 'Tidak diketahui',
+
+  largestNotSum: 'Setiap baris menampilkan <b>peluang tunggal terbesarnya</b> — bukan jumlah total, karena beberapa temuan bisa menyangkut malam yang sama.',
+  freshness: 'Kesegaran data',
+
+  openToTheInternet: '<b>Halaman ini terbuka di internet.</b> Belum ada cara masuk yang dikonfigurasi, jadi siapa pun yang punya URL-nya bisa membacanya. Mengisi variabel Microsoft 365 akan menutupnya.',
+  demoData: '<b>Data demonstrasi.</b> Belum ada data yang masuk, jadi yang tampil adalah angka yang <em>terukur</em> pada akun langsung untuk tiga unit di Bali, sebagai contoh — ditandai dengan awalan <code>[Demo]</code>. Semuanya dihapus begitu data sungguhan tiba.',
+
+  severity: { critical: 'kritis', high: 'tinggi', medium: 'sedang', low: 'rendah', info: 'info' },
+  contract: {
+    guaranteed_rent: 'sewa terjamin',
+    net_share: '% dari neto',
+    fixed_fee: 'biaya tetap',
+    gross_share: '% dari bruto',
+  },
+  domain: {
+    impressions: 'Restriksi & bauran menginap',
+    ctr: 'Visibilitas & konversi',
+    conversion: 'Visibilitas & konversi',
+    price: 'Harga & hasil',
+  },
+  stage: { impressions: 'Impresi', ctr: 'Rasio klik', conversion: 'Konversi', price: 'Tingkat harga' },
+  ageMinutes: n => `${n} mnt`,
+  ageHours: n => `${n} jam`,
+  ageDays: n => `${n} hr`,
+
+  loginTitle: 'Revenue Engine — Masuk',
+  loginWithMicrosoft: 'Masuk dengan Microsoft',
+  loginSsoLead: 'Masuk dengan akun Microsoft 365 Elev8-Suite Anda.',
+  loginMagicLead: 'Masuk lewat tautan, tanpa kata sandi.',
+  loginMagicAlso: 'Atau lewat tautan email:',
+  loginSendLink: 'Kirim tautan',
+  loginEmailPlaceholder: 'anda@elev8-suite.com',
+  loginLinkSent: 'Jika alamat itu punya akses, tautan masuk sedang dikirim. Tautan berlaku <b>15 menit</b> dan hanya bisa dipakai <b>sekali</b>.',
+  loginNoMethod: 'Belum ada cara masuk yang dikonfigurasi. Di Railway belum ada <code>ENTRA_CLIENT_ID</code>, <code>ENTRA_CLIENT_SECRET</code> atau <code>PUBLIC_BASE_URL</code>.',
+  loginLinkDead: 'Tautan itu sudah kedaluwarsa atau sudah pernah dipakai.',
+  loginProviderDeclined: code => `Microsoft menolak proses masuk (<code>${code}</code>).`,
+  loginNotAdmitted: 'Akun itu sudah masuk, tetapi tidak punya akses ke alat ini.',
+  loginFailed: 'Proses masuk tidak dapat diselesaikan. Silakan coba lagi.',
+
+  readinessHeading: 'Kesiapan',
+  readinessLead: 'Hanya <em>nama</em> variabel, nilainya tidak pernah ditampilkan.',
+  toDashboard: 'ke dasbor',
+  database: 'Basis data',
+  dbReady: (t, m) => `siap — ${t} tabel, ${m} migrasi`,
+  dbUnreachable: 'tidak dapat dijangkau',
+  dbUnconfigured: 'belum dikonfigurasi',
+  colSource: 'Sumber',
+  colState: 'Status',
+  colWhatFor: 'Untuk apa',
+  connected: 'tersambung',
+  missing: 'belum ada',
+  sourceNotes: {
+    elev8: 'keunggulan kita: menit pembersihan, catatan housekeeping, kapasitas',
+    pricelabs: 'panel pasar, kisi pickup, log perubahan',
+    channex: 'teks ulasan dan subskor, ota_commission, pajak',
+    mdv: 'API HTTP langsung; refresh token disimpan di basis data karena token itu berotasi',
+  },
+  redirectUriLabel: 'Redirect URI untuk pendaftaran aplikasi:',
+  tenantLabel: 'Tenant',
+  authoriseNow: 'otorisasi sekarang',
+  authBlockedNoAllowlist: 'otorisasi terkunci selama belum ada cara masuk yang dikonfigurasi',
+  signIn: 'Cara masuk',
+  signInActive: 'aktif',
+  signInMicrosoft: 'Microsoft 365 (Entra ID)',
+  signInMailLink: mode => `tautan email lewat <code>${mode}</code>`,
+  admittedCount: n => `Diizinkan: ${n} alamat.`,
+  admittedWholeTenant: 'Diizinkan: <b>semua orang</b> di tenant Elev8-Suite — <code>ALLOWED_EMAILS</code> mempersempitnya.',
+  signInOff: 'mati',
+
+  noticeAuthBlocked: 'Otorisasi terkunci',
+  noticeAuthBlockedBody: 'Selama belum ada cara masuk yang dikonfigurasi, rute ini tetap tertutup. Kalau tidak, siapa pun yang punya URL-nya bisa menitipkan izin MyDataValue milik orang lain di sini.',
+  noticeMissingVars: 'Ada variabel yang belum diisi',
+  noticeMissingVarsBody: names => `Mohon isi di Railway: ${names}.`,
+  noticeMdvRefused: 'MyDataValue menolak',
+  noticeMdvRefusedBody: code => `Penyedia melaporkan <code>${code}</code>.`,
+  noticeMdvConnected: 'MyDataValue tersambung',
+  noticeMdvConnectedBody: 'Refresh token sekarang tersimpan di basis data dan berotasi di sana. <code>MDV_SEED_REFRESH_TOKEN</code> tidak dibaca lagi dan boleh dibiarkan kosong.',
+  noticeStartFailed: 'Otorisasi tidak dapat dimulai',
+  noticeStartFailedBody: 'Metadata penyedia tidak dapat dibaca. Detailnya ada di log deploy.',
+  noticeAuthFailed: 'Otorisasi gagal',
+  noticeAuthFailedBody: 'Kode ditolak atau sudah pernah dipakai. Silakan mulai lagi di <code>/auth/mdv</code>. Alasannya ada di log deploy.',
+  noticeSsoUnconfigured: 'Cara masuk belum dikonfigurasi',
+  noticeSsoUnconfiguredBody: 'Di Railway belum ada <code>ENTRA_CLIENT_ID</code>, <code>ENTRA_CLIENT_SECRET</code> atau <code>PUBLIC_BASE_URL</code>.',
+}
+
+const table: Record<Lang, Strings> = { en, id }
+export const LANGS = Object.keys(table) as Lang[]
+export const langCookie = 're_lang'
+/** A preference, not a credential: readable by the page, kept for a year. */
+export const langCookieMaxAge = 365 * 24 * 3600
+
+const isLang = (v: string | null | undefined): v is Lang =>
+  v === 'en' || v === 'id'
+
+/**
+ * Resolves the language for one request.
+ *
+ * An explicit choice beats a remembered one, a remembered one beats the browser,
+ * and the browser beats the default. Indonesian is matched on the primary
+ * subtag, so id-ID and plain id both land correctly; English is the fallback
+ * because it is the one both sides of the portfolio share.
+ */
+export function pickLang(req: {
+  query?: string | null
+  cookie?: string | undefined
+  acceptLanguage?: string | undefined
+}): Lang {
+  if (isLang(req.query)) return req.query
+  if (isLang(req.cookie)) return req.cookie
+  for (const part of (req.acceptLanguage ?? '').split(',')) {
+    const tag = part.split(';')[0]?.trim().toLowerCase() ?? ''
+    const primary = tag.split('-')[0]
+    if (primary === 'id' || primary === 'in') return 'id'   // "in" is the retired ISO code
+    if (primary === 'en') return 'en'
+  }
+  return 'en'
+}
+
+export const stringsFor = (lang: Lang): Strings => table[lang]
+
+/** The other language, for a two-state switch. */
+export const otherLang = (lang: Lang): Lang => (lang === 'en' ? 'id' : 'en')
