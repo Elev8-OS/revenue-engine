@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Recreates a throwaway database, applies every migration, runs the smoke test.
+# Recreates a throwaway database, applies every migration, runs the smoke tests.
 set -e
 PORT=${PGPORT:-5433}
 psql -h /tmp -p $PORT -U postgres -q -c "drop database if exists re" postgres
@@ -10,3 +10,4 @@ done
 export DATABASE_URL="postgresql://postgres@/re?host=/tmp&port=$PORT"
 npx tsx src/smoke.ts
 npx tsx src/smoke-mdv.ts
+npx tsx src/smoke-auth.ts

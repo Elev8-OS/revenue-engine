@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "packageManager": "npm@10.9.2",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
@@ -11,7 +13,9 @@
     "migrate": "node dist/migrate.js",
     "dev": "tsx watch src/server.ts",
     "smoke": "./scripts-smoke.sh",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "seed:demo": "node dist/seed-demo.js",
+    "seed:clear": "node dist/seed-demo.js --clear"
   },
   "dependencies": {
     "pg": "^8.13.1",
