@@ -1,21 +1,36 @@
 /**
- * The service entrypoint: migrations at boot, then the dashboard behind a
- * magic-link gate.
+ * The service entrypoint: migrations at boot, then the dashboard behind a gate.
  *
- * One deliberate degradation. The gate is enforced only when ALLOWED_EMAILS is
- * set; without it the dashboard is open and says so in a banner nobody can miss.
- * That is not laziness — it lets the thing be looked at before a mail provider
- * exists, and it makes the unprotected state visible instead of assumed. The
- * moment real portfolio numbers flow in, setting one variable closes it.
+ * The gate is single sign-on against the Elev8-Suite Microsoft 365 tenant. It is
+ * the right door for an internal tool: nobody holds a password for it, access
+ * inherits whatever MFA and conditional access the tenant already enforces, and
+ * it closes by itself the day an account is disabled.
+ *
+ * Two deliberate degradations, both visible rather than assumed:
+ *
+ *   1. The magic link survives as a fallback, but it RETIRES ITSELF the moment
+ *      single sign-on is configured. Leaving two doors open would mean the
+ *      weaker one decides how strong the door is.
+ *
+ *   2. With no login configured at all, the dashboard is open and says so in a
+ *      banner nobody can miss. That is what lets the thing be looked at before
+ *      an app registration exists — and it makes the unprotected state loud.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Pool, type PoolClient } from 'pg'
-import { requestLink, redeem, sessionFor, destroy, sweep, cookieName, sessionMaxAgeSeconds }
-  from './auth/magic.js'
+import { requestLink, redeem, openSession, sessionFor, destroy, sweep, cookieName,
+  sessionMaxAgeSeconds } from './auth/magic.js'
+import { beginLogin, completeLogin, admits, ELEV8_TENANT_ID, SsoError }
+  from './auth/entra.js'
 import { makeMailer } from './auth/mail.js'
 import { seedDemo, clearDemo, hasDemo } from './demo.js'
+import { begin as mdvBegin, complete as mdvComplete, sweepFlows, DEFAULT_SCOPES }
+  from './sources/mdv/oauth.js'
+import { storeInitialToken } from './sources/mdv/auth.js'
+import { pickLang, stringsFor, otherLang, langCookie, langCookieMaxAge, type Lang }
+  from './i18n.js'
 import * as q from './dashboard/query.js'
 import { renderDashboard, renderLogin } from './dashboard/render.js'
 
@@ -23,13 +38,41 @@ const PORT = Number(process.env.PORT ?? 3000)
 const MIGRATIONS = new URL('../migrations/', import.meta.url).pathname
 const mailer = makeMailer()
 
+/**
+ * The allowlist narrows single sign-on rather than replacing it. Entra says who
+ * someone is; this says whether this particular tool is theirs. Empty means
+ * anyone in the tenant, which is a closed door but a wider one — so /status
+ * reports which of the two it currently is.
+ */
 const allowedEmails = (process.env.ALLOWED_EMAILS ?? '')
   .split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
-/** No allowlist means no gate. Stated in the UI rather than left to be discovered. */
-const gateEnabled = allowedEmails.length > 0
 
 const baseUrl = process.env.PUBLIC_BASE_URL ?? ''
 const cookieSecure = baseUrl.startsWith('https://')
+
+const entra = {
+  // The tenant id is public — resolvable from the domain — so it has a default
+  // and only a second tenant would need the variable.
+  tenantId: process.env.ENTRA_TENANT_ID ?? ELEV8_TENANT_ID,
+  clientId: process.env.ENTRA_CLIENT_ID ?? '',
+  clientSecret: process.env.ENTRA_CLIENT_SECRET ?? '',
+  redirectUri: `${baseUrl}/auth/sso/callback`,
+}
+const ssoEnabled = Boolean(entra.clientId && entra.clientSecret && baseUrl)
+
+/**
+ * The mail fallback stands only while single sign-on does not, unless someone
+ * asks for it explicitly. So it disappears on its own when the better door
+ * opens, instead of quietly staying the weakest way in.
+ */
+const magicEnabled = allowedEmails.length > 0
+  && (!ssoEnabled || process.env.MAGIC_LINK === 'true')
+
+const gateEnabled = ssoEnabled || magicEnabled
+
+const MDV_ISSUER = new URL(process.env.MDV_BASE_URL
+  ?? 'https://app.mydatavalue.com/api/v1').origin
+const mdvRedirectUri = `${baseUrl}/auth/mdv/callback`
 
 interface DbState {
   configured: boolean; reachable: boolean; tables: number
@@ -39,18 +82,15 @@ const db: DbState = { configured: false, reachable: false, tables: 0, migrations
 let pool: Pool | undefined
 
 function sourceStates() {
-  const e = process.env
-  const need = (...n: string[]) => n.filter(x => !e[x])
+  const env = process.env
+  const need = (...n: string[]) => n.filter(x => !env[x])
   return [
-    { name: 'Elev8', missing: need('ELEV8_API_BASE', 'ELEV8_API_TOKEN'),
-      note: 'der Moat: Reinigungsminuten, Gästevermerk, Kapazität' },
-    { name: 'PriceLabs', missing: need('PRICELABS_API_KEY'),
-      note: 'Marktpanel, Pickup-Gitter, Änderungsprotokoll' },
-    { name: 'Channex', missing: need('CHANNEX_API_KEY'),
-      note: 'Rezensionstext und Subscores, ota_commission, Steuern' },
-    { name: 'MyDataValue', missing: need('MDV_CLIENT_ID', 'MDV_CLIENT_SECRET'),
-      note: 'direkte HTTP-API; das Refresh-Token liegt in der Datenbank, weil es rotiert' },
-  ].map(s => ({ ...s, ready: s.missing.length === 0 }))
+    { name: 'Elev8', key: 'elev8' as const, missing: need('ELEV8_API_BASE', 'ELEV8_API_TOKEN') },
+    { name: 'PriceLabs', key: 'pricelabs' as const, missing: need('PRICELABS_API_KEY') },
+    { name: 'Channex', key: 'channex' as const, missing: need('CHANNEX_API_KEY') },
+    { name: 'MyDataValue', key: 'mdv' as const,
+      missing: need('MDV_CLIENT_ID', 'MDV_CLIENT_SECRET') },
+  ].map(x => ({ ...x, ready: x.missing.length === 0 }))
 }
 
 async function migrate(p: Pool): Promise<void> {
@@ -96,6 +136,7 @@ async function boot(): Promise<void> {
     const c = await pool.connect()
     try {
       await sweep(c)
+      await sweepFlows(c)
       // SEED_DEMO declares the DESIRED state rather than triggering an action,
       // so setting or clearing one variable is enough and nobody needs a shell.
       const want = process.env.SEED_DEMO === 'true'
@@ -107,7 +148,12 @@ async function boot(): Promise<void> {
     db.error = (err as Error).message
     console.error(`database not ready: ${db.error}`)
   }
-  console.log(`auth gate ${gateEnabled ? `enabled for ${allowedEmails.length} address(es)` : 'DISABLED (ALLOWED_EMAILS unset)'}; mail mode ${mailer.mode}`)
+  console.log(`auth gate: ${gateEnabled
+    ? [ssoEnabled ? `Entra SSO (tenant ${entra.tenantId})` : null,
+       magicEnabled ? `magic link via ${mailer.mode}` : null].filter(Boolean).join(' + ')
+      + (allowedEmails.length ? `, ${allowedEmails.length} allowlisted address(es)`
+                              : ', any member of the tenant')
+    : 'DISABLED — no login configured, pages are open'}`)
 }
 
 /* ------------------------------------------------------------------ helpers */
@@ -133,11 +179,39 @@ const html = (res: ServerResponse, body: string, status = 200) => {
   res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
   res.end(body)
 }
-const redirect = (res: ServerResponse, to: string, cookie?: string) => {
-  const headers: Record<string, string> = { location: to }
-  if (cookie) headers['set-cookie'] = cookie
-  res.writeHead(302, headers); res.end()
+/**
+ * Appends rather than assigns. A redirect that opens a session while the reader
+ * also just picked a language has two cookies to set, and the second must not
+ * silently drop the first.
+ */
+const addCookie = (res: ServerResponse, cookie: string) => {
+  const prev = res.getHeader('set-cookie')
+  const list = Array.isArray(prev) ? prev : prev ? [String(prev)] : []
+  res.setHeader('set-cookie', [...list, cookie])
 }
+const redirect = (res: ServerResponse, to: string) => {
+  res.writeHead(302, { location: to }); res.end()
+}
+
+const sessionCookie = (id: string) =>
+  `${cookieName}=${encodeURIComponent(id)}; HttpOnly; SameSite=Lax; Path=/; `
+  + `Max-Age=${sessionMaxAgeSeconds}${cookieSecure ? '; Secure' : ''}`
+
+const esc = (s: string) =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+/** Small standalone page for the authorisation outcomes. */
+const notice = (lang: Lang, title: string, body: string) => `<!doctype html>
+<html lang="${lang}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title>
+<style>:root{color-scheme:light dark;--paper:#F1F3F1;--ink:#171C1B;--mut:#5D6B69;--line:#D2DAD6;--surface:#FBFCFA;--teal:#0D615E}
+@media(prefers-color-scheme:dark){:root{--paper:#0F1312;--ink:#E7ECE9;--mut:#94A3A0;--line:#28302E;--surface:#161B1A;--teal:#58C4BC}}
+body{margin:0;background:var(--paper);color:var(--ink);display:grid;place-items:center;min-height:100vh;
+padding:1.5rem;font:15px/1.6 ui-sans-serif,system-ui,sans-serif}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:5px;padding:1.8rem;max-width:34rem}
+h1{font-size:1.15rem;margin:0 0 .5rem}p{color:var(--mut);margin:0}
+code{font:500 .85em ui-monospace,monospace;color:var(--teal)}a{color:inherit}</style></head>
+<body><div class="card"><h1>${esc(title)}</h1><p>${body}</p></div></body></html>`
 
 async function withClient<T>(fn: (c: PoolClient) => Promise<T>): Promise<T | undefined> {
   if (!pool) return undefined
@@ -150,6 +224,20 @@ async function withClient<T>(fn: (c: PoolClient) => Promise<T>): Promise<T | und
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
   const path = url.pathname
+
+  // English or Bahasa Indonesia, in that order of fallback. An explicit ?lang
+  // is remembered so the Bali team picks once rather than on every visit.
+  const lang = pickLang({
+    query: url.searchParams.get('lang'),
+    cookie: cookies(req)[langCookie],
+    acceptLanguage: req.headers['accept-language'],
+  })
+  const t = stringsFor(lang)
+  const loginView = () => ({ lang, sso: ssoEnabled, magic: magicEnabled })
+  if (url.searchParams.get('lang')) {
+    addCookie(res, `${langCookie}=${lang}; SameSite=Lax; Path=/; `
+      + `Max-Age=${langCookieMaxAge}${cookieSecure ? '; Secure' : ''}`)
+  }
 
   // Liveness only. Deliberately says nothing about which integrations exist —
   // that used to be public and should not have been.
@@ -164,40 +252,169 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     : { id: 'open', email: '' }
 
   if (path === '/auth/request' && req.method === 'POST') {
+    // Retired doors do not answer. Otherwise switching on single sign-on would
+    // leave the mail path quietly usable.
+    if (!magicEnabled) { html(res, renderLogin(loginView()), 404); return }
     const body = await formBody(req).catch(() => ({} as Record<string, string | undefined>))
     const email = body.email ?? ''
     // Always the same answer, so the endpoint cannot be used to discover who
     // has access.
+    const formLang = pickLang({ query: body.lang ?? null, cookie: lang })
     await withClient(async c => {
       const out = await requestLink(c, email, allowedEmails, baseUrl || url.origin)
       if (out.link) await mailer.send(email.trim().toLowerCase(), out.link)
       else console.log(`[login] suppressed (${out.suppressed}) for a submitted address`)
     })
-    html(res, renderLogin(true, baseUrl))
+    html(res, renderLogin({ ...loginView(), lang: formLang, sent: true }))
     return
   }
 
   if (path === '/auth/callback') {
     const opened = await withClient(c => redeem(c, url.searchParams.get('token') ?? ''))
-    if (!opened) { html(res, renderLogin(false, baseUrl), 400); return }
-    redirect(res, '/', `${cookieName}=${encodeURIComponent(opened.id)}; HttpOnly; ` +
-      `SameSite=Lax; Path=/; Max-Age=${sessionMaxAgeSeconds}${cookieSecure ? '; Secure' : ''}`)
+    if (!opened) {
+      html(res, renderLogin({ ...loginView(), error: t.loginLinkDead }), 400)
+      return
+    }
+    addCookie(res, sessionCookie(opened.id))
+    redirect(res, '/')
+    return
+  }
+
+  /* ---------------------------------------------------------- single sign-on */
+
+  if (path === '/auth/sso') {
+    if (!ssoEnabled) {
+      html(res, notice(lang, t.noticeSsoUnconfigured, t.noticeSsoUnconfiguredBody), 400)
+      return
+    }
+    try {
+      const started = await withClient(c => beginLogin(c, entra))
+      redirect(res, started!.url)
+    } catch (err) {
+      console.error(`sso could not start: ${(err as Error).message}`)
+      html(res, notice(lang, t.noticeStartFailed, t.noticeStartFailedBody), 502)
+    }
+    return
+  }
+
+  if (path === '/auth/sso/callback') {
+    const denied = url.searchParams.get('error')
+    if (denied) {
+      // Microsoft's own refusal — consent withdrawn, user cancelled, blocked by
+      // a conditional-access policy. Their code, not their prose.
+      console.log(`[sso] provider declined: ${denied}`)
+      html(res, renderLogin({ ...loginView(),
+        error: t.loginProviderDeclined(esc(denied)) }), 400)
+      return
+    }
+    try {
+      const out = await withClient(async c => {
+        const who = await completeLogin(c, entra, {
+          code: url.searchParams.get('code') ?? '',
+          state: url.searchParams.get('state') ?? '',
+        })
+        if (!admits(who, allowedEmails, entra.tenantId)) return { refused: true as const }
+        return { session: await openSession(c, who.email) }
+      })
+      if (!out || 'refused' in out) {
+        // Authenticated but not admitted. The address stays out of the log: it
+        // is a real person's, and knowing the count is enough.
+        console.log('[sso] an authenticated account was refused by the allowlist')
+        html(res, renderLogin({ ...loginView(), error: t.loginNotAdmitted }), 403)
+        return
+      }
+      console.log('[sso] session opened for an allowlisted account')
+      addCookie(res, sessionCookie(out.session.id))
+      redirect(res, '/')
+    } catch (e) {
+      // The browser gets one sentence and no diagnosis. Which check failed — a
+      // bad signature, a foreign tenant, a replayed state — is exactly the
+      // feedback an attacker would tune against, so it goes to the log only.
+      console.error(`sso callback failed${e instanceof SsoError ? '' : ' unexpectedly'}: `
+        + (e as Error).message)
+      html(res, renderLogin({ ...loginView(), error: t.loginFailed }), 400)
+    }
     return
   }
 
   if (path === '/auth/logout') {
     await withClient(c => destroy(c, cookies(req)[cookieName]))
-    redirect(res, '/', `${cookieName}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`)
+    addCookie(res, `${cookieName}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`)
+    redirect(res, '/')
     return
   }
 
-  if (!session) { html(res, renderLogin(false, baseUrl)); return }
+  if (!session) { html(res, renderLogin(loginView())); return }
+
+  /**
+   * Starting an authorisation is gated even when the dashboard is not. Without a
+   * gate anyone with the URL could complete a flow against THEIR MyDataValue
+   * account, and we would store their grant as ours.
+   */
+  if (path === '/auth/mdv') {
+    if (!gateEnabled) {
+      html(res, notice(lang, t.noticeAuthBlocked, t.noticeAuthBlockedBody), 403)
+      return
+    }
+    const missing = ['MDV_CLIENT_ID', 'MDV_CLIENT_SECRET', 'PUBLIC_BASE_URL']
+      .filter(n => !process.env[n])
+    if (missing.length) {
+      html(res, notice(lang, t.noticeMissingVars,
+        t.noticeMissingVarsBody(missing.map(m => `<code>${m}</code>`).join(', '))), 400)
+      return
+    }
+    try {
+      const started = await withClient(c => mdvBegin(c, {
+        issuer: MDV_ISSUER,
+        clientId: process.env.MDV_CLIENT_ID!,
+        redirectUri: mdvRedirectUri,
+        scopes: process.env.MDV_SCOPES ?? DEFAULT_SCOPES,
+        startedBy: session.email || 'open',
+      }))
+      redirect(res, started!.url)
+    } catch (err) {
+      console.error(`mdv authorisation could not start: ${(err as Error).message}`)
+      html(res, notice(lang, t.noticeStartFailed, t.noticeStartFailedBody), 502)
+    }
+    return
+  }
+
+  if (path === '/auth/mdv/callback') {
+    const err = url.searchParams.get('error')
+    if (err) {
+      html(res, notice(lang, t.noticeMdvRefused, t.noticeMdvRefusedBody(esc(err))), 400)
+      return
+    }
+    try {
+      const token = await withClient(async c => {
+        // Named `tok`, not `t`: `t` is the language table in this scope, and a
+        // shadow that happens to work today is a trap for the next edit.
+        const tok = await mdvComplete(c, {
+          issuer: MDV_ISSUER,
+          clientId: process.env.MDV_CLIENT_ID!,
+          clientSecret: process.env.MDV_CLIENT_SECRET!,
+          code: url.searchParams.get('code') ?? '',
+          state: url.searchParams.get('state') ?? '',
+        })
+        await storeInitialToken(c, 'mdv', process.env.MDV_CLIENT_ID!, tok)
+        return tok
+      })
+      // Never the token. The fact that one exists is the whole message.
+      console.log(`mdv grant stored, expires_in ${token?.expires_in}s`)
+      html(res, notice(lang, t.noticeMdvConnected,
+        `${t.noticeMdvConnectedBody} <a href="/status?lang=${lang}">${esc(t.readiness)}</a>`))
+    } catch (e) {
+      console.error(`mdv callback failed: ${(e as Error).message}`)
+      html(res, notice(lang, t.noticeAuthFailed, t.noticeAuthFailedBody), 400)
+    }
+    return
+  }
 
   if (path === '/status') {
-    const s = sourceStates()
-    html(res, `<!doctype html><html lang="de"><head><meta charset="utf-8">
+    const srcs = sourceStates()
+    html(res, `<!doctype html><html lang="${t.htmlLang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Revenue Engine — Bereitschaft</title>
+<title>Revenue Engine — ${esc(t.readinessHeading)}</title>
 <style>:root{color-scheme:light dark;--paper:#F1F3F1;--ink:#171C1B;--mut:#5D6B69;--line:#D2DAD6;--surface:#FBFCFA;--teal:#0D615E;--rust:#97392B}
 @media(prefers-color-scheme:dark){:root{--paper:#0F1312;--ink:#E7ECE9;--mut:#94A3A0;--line:#28302E;--surface:#161B1A;--teal:#58C4BC;--rust:#E28A7C}}
 body{margin:0;background:var(--paper);color:var(--ink);padding:2.5rem 1.25rem;font:15px/1.6 ui-sans-serif,system-ui,sans-serif}
@@ -209,38 +426,53 @@ th{text-align:left;font-size:.64rem;text-transform:uppercase;letter-spacing:.1em
 td{padding:.5rem .5rem .5rem 0;border-bottom:1px solid var(--line);vertical-align:top}
 tr:last-child td{border-bottom:none}code{font:500 .82em ui-monospace,monospace;color:var(--teal)}
 .ok{color:var(--teal);font-weight:600}.no{color:var(--rust);font-weight:600}a{color:inherit}</style></head>
-<body><main><h1>Bereitschaft</h1>
-<p class="s">Nur Variablen<em>namen</em>, niemals Werte. · <a href="/">zum Dashboard</a></p>
-<div class="card"><b>Datenbank</b> — ${db.configured
-  ? db.reachable ? `<span class="ok">bereit</span> — ${db.tables} Tabellen, ${db.migrations.length} Migrationen`
-    : `<span class="no">nicht erreichbar</span> — ${db.error ?? 'unbekannt'}`
-  : `<span class="no">nicht konfiguriert</span> — <code>DATABASE_URL</code>`}</div>
-<div class="card"><table><thead><tr><th>Quelle</th><th>Zustand</th><th>Wofür</th></tr></thead><tbody>
-${s.map(x => `<tr><td><b>${x.name}</b></td><td>${x.ready ? '<span class="ok">verbunden</span>'
-  : `<span class="no">fehlt</span> ${x.missing.map(m => `<code>${m}</code>`).join(' ')}`}</td>
-  <td style="color:var(--mut)">${x.note}</td></tr>`).join('')}
+<body><main><h1>${esc(t.readinessHeading)}</h1>
+<p class="s">${t.readinessLead} · <a href="/?lang=${lang}">${esc(t.toDashboard)}</a>
+ · <a href="/status?lang=${otherLang(lang)}" hreflang="${otherLang(lang)}">${esc(t.otherLangName)}</a></p>
+<div class="card"><b>${esc(t.database)}</b> — ${db.configured
+  ? db.reachable
+    ? `<span class="ok">${esc(t.dbReady(db.tables, db.migrations.length))}</span>`
+    : `<span class="no">${esc(t.dbUnreachable)}</span> — ${esc(db.error ?? '?')}`
+  : `<span class="no">${esc(t.dbUnconfigured)}</span> — <code>DATABASE_URL</code>`}</div>
+<div class="card"><table><thead><tr><th>${esc(t.colSource)}</th><th>${esc(t.colState)}</th>
+<th>${esc(t.colWhatFor)}</th></tr></thead><tbody>
+${srcs.map(x => `<tr><td><b>${x.name}</b></td><td>${x.ready
+  ? `<span class="ok">${esc(t.connected)}</span>`
+  : `<span class="no">${esc(t.missing)}</span> ${x.missing.map(m => `<code>${m}</code>`).join(' ')}`}</td>
+  <td style="color:var(--mut)">${esc(t.sourceNotes[x.key])}</td></tr>`).join('')}
 </tbody></table></div>
-<div class="card">Anmeldung: ${gateEnabled
-  ? `<span class="ok">aktiv</span> für ${allowedEmails.length} Adresse(n), Versand per <code>${mailer.mode}</code>`
-  : `<span class="no">aus</span> — <code>ALLOWED_EMAILS</code> ist nicht gesetzt, die Seiten sind offen`}</div>
+<div class="card"><b>Microsoft 365</b> — ${esc(t.redirectUriLabel)}
+<code>${esc(entra.redirectUri)}</code> · ${esc(t.tenantLabel)} <code>${esc(entra.tenantId)}</code></div>
+<div class="card"><b>MyDataValue</b> — ${esc(t.redirectUriLabel)}
+<code>${esc(mdvRedirectUri)}</code>${gateEnabled
+  ? ` · <a href="/auth/mdv?lang=${lang}">${esc(t.authoriseNow)}</a>`
+  : ` · ${esc(t.authBlockedNoAllowlist)}`}</div>
+<div class="card"><b>${esc(t.signIn)}</b> — ${gateEnabled
+  ? `<span class="ok">${esc(t.signInActive)}</span>: ${[
+      ssoEnabled ? esc(t.signInMicrosoft) : null,
+      magicEnabled ? t.signInMailLink(esc(mailer.mode)) : null,
+    ].filter(Boolean).join(' + ')}. ${allowedEmails.length
+      ? esc(t.admittedCount(allowedEmails.length))
+      : t.admittedWholeTenant}`
+  : `<span class="no">${esc(t.signInOff)}</span> — ${t.loginNoMethod}`}</div>
 </main></body></html>`)
     return
   }
 
   if (path === '/') {
-    if (!pool) { html(res, renderLogin(false, baseUrl), 503); return }
+    if (!pool) { html(res, renderLogin(loginView()), 503); return }
     const basis: q.Basis = url.searchParams.get('basis') === 'margin' ? 'margin' : 'revenue'
     const openId = url.searchParams.get('open')
     const data = await withClient(async c => {
-      const rows = await q.portfolio(c, basis)
+      const rows = await q.portfolio(c, basis, lang)
       const open = rows.find(r => r.entityId === openId)
       return {
-        basis, openId: open ? openId : null, rows,
+        lang, basis, openId: open ? openId : null, rows,
         counts: await q.counts(c),
-        notAssessable: await q.notAssessable(c),
+        notAssessable: await q.notAssessable(c, lang),
         freshness: await q.freshness(c),
-        gate: open?.worstFindingId ? await q.gate(c, open.worstFindingId) : [],
-        evidence: open?.worstFindingId ? await q.evidence(c, open.worstFindingId) : [],
+        gate: open?.worstFindingId ? await q.gate(c, open.worstFindingId, lang) : [],
+        evidence: open?.worstFindingId ? await q.evidence(c, open.worstFindingId, lang) : [],
         demo: await q.isDemo(c),
         unprotected: !gateEnabled,
         email: session.email || undefined,
@@ -251,7 +483,7 @@ ${s.map(x => `<tr><td><b>${x.name}</b></td><td>${x.ready ? '<span class="ok">ver
   }
 
   res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
-  res.end('nicht gefunden\n')
+  res.end('not found\n')
 }
 
 await boot()
@@ -262,7 +494,7 @@ const server = createServer((req, res) => {
     console.error(`request failed: ${(err as Error).message}`)
     if (!res.headersSent) {
       res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
-      res.end('Fehler\n')
+      res.end('error\n')
     }
   })
 })
