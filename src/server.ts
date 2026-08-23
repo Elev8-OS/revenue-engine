@@ -48,8 +48,8 @@ function sourceStates() {
       note: 'Marktpanel, Pickup-Gitter, Änderungsprotokoll' },
     { name: 'Channex', missing: need('CHANNEX_API_KEY'),
       note: 'Rezensionstext und Subscores, ota_commission, Steuern' },
-    { name: 'MyDataValue', missing: need('MDV_CLIENT_ID'),
-      note: 'direkte HTTP-API; das Refresh-Token liegt in der Datenbank' },
+    { name: 'MyDataValue', missing: need('MDV_CLIENT_ID', 'MDV_CLIENT_SECRET'),
+      note: 'direkte HTTP-API; das Refresh-Token liegt in der Datenbank, weil es rotiert' },
   ].map(s => ({ ...s, ready: s.missing.length === 0 }))
 }
 
