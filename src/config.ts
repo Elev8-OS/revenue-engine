@@ -24,10 +24,22 @@ const schema = z.object({
    * the service runs — and the next deploy would present a spent token, which
    * revokes the entire grant. The variable below is a one-time SEED; after the
    * first refresh the oauth_token row is the only truth.
+   *
+   * Names match the mydatavalue-mcp service on purpose. That service already
+   * holds a grant for this provider and persists its rotated token to a file on
+   * a Railway volume (TOKEN_STORE_PATH). Two consequences:
+   *
+   *   1. NEVER seed this service from that service's refresh token. It has
+   *      already been rotated, so presenting it revokes the shared grant and
+   *      takes both services down. Each service needs its own authorisation.
+   *   2. Client id and secret CAN be shared: one registered client may hold
+   *      many independent grants. It is the refresh-token chain that must not
+   *      be shared, not the client.
    */
-  MDV_API_BASE: z.string().url().default('https://app.mydatavalue.com/api/v1'),
+  MDV_BASE_URL: z.string().url().default('https://app.mydatavalue.com/api/v1'),
   MDV_CLIENT_ID: z.string().optional(),
-  MDV_BOOTSTRAP_REFRESH_TOKEN: z.string().optional(),
+  MDV_CLIENT_SECRET: z.string().optional(),
+  MDV_SEED_REFRESH_TOKEN: z.string().optional(),
 
   CHANNEX_WEBHOOK_SECRET: z.string().optional(),
   ALLOWED_EMAILS: z.string().default(''),
@@ -53,7 +65,7 @@ export function availableSources(c: Config) {
     channex: Boolean(c.CHANNEX_API_KEY),
     // Ready means a client is configured. Whether a live grant exists is a
     // database question, not an environment one — see oauth_token.
-    mdv: Boolean(c.MDV_CLIENT_ID),
+    mdv: Boolean(c.MDV_CLIENT_ID && c.MDV_CLIENT_SECRET),
   }
 }
 
