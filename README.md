@@ -42,9 +42,34 @@ old while `property_core` was 25 hours behind — a single "last check" stamp hi
 exactly that. `staleDatasets()` is the gate.
 
 **Exactly one process refreshes MDV tokens.** Their refresh tokens rotate and
-reusing a spent one revokes the *entire* grant, not just the session. `MDV_MODE`
-is `mcp` (delegate to the already-deployed `mydatavalue-mcp`) or `own` (this
-worker, holding the advisory lock). Never both.
+reusing a spent one revokes the *entire* grant, not just the session. So the
+token lives in `oauth_token` behind a Postgres advisory lock, the row is re-read
+inside the lock, the update is guarded on a rotation counter, and `invalid_grant`
+is terminal and never retried.
+
+### Taking MDV credentials from the existing service
+
+`mydatavalue-mcp` already holds a grant for this provider and persists its
+*rotated* refresh token to a file on a Railway volume (`TOKEN_STORE_PATH`).
+
+| From `mydatavalue-mcp` | To here | |
+|---|---|---|
+| `MDV_BASE_URL` | `MDV_BASE_URL` | copy — not a secret |
+| `MDV_CLIENT_ID` | `MDV_CLIENT_ID` | copy |
+| `MDV_CLIENT_SECRET` | `MDV_CLIENT_SECRET` | copy |
+| `MDV_SEED_REFRESH_TOKEN` | — | **never** |
+
+The seed token there has already been rotated. Presenting a spent refresh token
+does not merely fail: in a rotating scheme it revokes the whole grant, taking
+that service down along with this one. Client id and secret *may* be shared —
+one registered client can hold many independent grants — so what must not be
+shared is the refresh-token chain, not the client. This service needs its own
+authorisation once, and after the first refresh the `oauth_token` row is the only
+truth.
+
+Note for later: that service keeps its token in a file, which is correct for a
+single instance and races the moment it runs two. This one keeps it in Postgres
+for exactly that reason.
 
 ## Setup
 
