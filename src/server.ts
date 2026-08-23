@@ -15,6 +15,7 @@ import { Pool, type PoolClient } from 'pg'
 import { requestLink, redeem, sessionFor, destroy, sweep, cookieName, sessionMaxAgeSeconds }
   from './auth/magic.js'
 import { makeMailer } from './auth/mail.js'
+import { seedDemo, clearDemo, hasDemo } from './demo.js'
 import * as q from './dashboard/query.js'
 import { renderDashboard, renderLogin } from './dashboard/render.js'
 
@@ -93,7 +94,15 @@ async function boot(): Promise<void> {
     await migrate(pool)
     console.log(`database ready: ${db.tables} tables, ${db.migrations.length} migrations`)
     const c = await pool.connect()
-    try { await sweep(c) } finally { c.release() }
+    try {
+      await sweep(c)
+      // SEED_DEMO declares the DESIRED state rather than triggering an action,
+      // so setting or clearing one variable is enough and nobody needs a shell.
+      const want = process.env.SEED_DEMO === 'true'
+      const have = await hasDemo(c)
+      if (want && !have) console.log(`demo data seeded: ${await seedDemo(c)} entities`)
+      if (!want && have) console.log(`demo data removed: ${await clearDemo(c)} entities`)
+    } finally { c.release() }
   } catch (err) {
     db.error = (err as Error).message
     console.error(`database not ready: ${db.error}`)
