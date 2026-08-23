@@ -14,16 +14,20 @@ const schema = z.object({
   CHANNEX_API_KEY: z.string().optional(),
 
   /**
-   * Exactly one process may refresh MDV tokens. Their refresh tokens rotate and
-   * reusing a spent one revokes the WHOLE grant, not just the session — so this
-   * is a mode, not a fallback chain.
-   *   'mcp' → delegate to the already-deployed mydatavalue-mcp service
-   *   'own' → this worker owns the refresh, and must hold the advisory lock
+   * MDV over its own HTTP API, not through an MCP wrapper. The API has 67
+   * operations against the wrapper's handful, returns real HTTP status codes
+   * (we need to tell writes_disabled from not_connected), pages properly, and
+   * is the only way to verify a webhook signature over the raw body.
+   *
+   * The refresh token deliberately does NOT live here. It rotates on every
+   * refresh, so an environment variable holding one goes stale the first time
+   * the service runs — and the next deploy would present a spent token, which
+   * revokes the entire grant. The variable below is a one-time SEED; after the
+   * first refresh the oauth_token row is the only truth.
    */
-  MDV_MODE: z.enum(['mcp', 'own']).default('mcp'),
-  MDV_MCP_URL: z.string().url().optional(),
+  MDV_API_BASE: z.string().url().default('https://app.mydatavalue.com/api/v1'),
   MDV_CLIENT_ID: z.string().optional(),
-  MDV_REFRESH_TOKEN: z.string().optional(),
+  MDV_BOOTSTRAP_REFRESH_TOKEN: z.string().optional(),
 
   CHANNEX_WEBHOOK_SECRET: z.string().optional(),
   ALLOWED_EMAILS: z.string().default(''),
@@ -47,7 +51,9 @@ export function availableSources(c: Config) {
     elev8: Boolean(c.ELEV8_API_BASE && c.ELEV8_API_TOKEN),
     pricelabs: Boolean(c.PRICELABS_API_KEY),
     channex: Boolean(c.CHANNEX_API_KEY),
-    mdv: c.MDV_MODE === 'mcp' ? Boolean(c.MDV_MCP_URL) : Boolean(c.MDV_REFRESH_TOKEN),
+    // Ready means a client is configured. Whether a live grant exists is a
+    // database question, not an environment one — see oauth_token.
+    mdv: Boolean(c.MDV_CLIENT_ID),
   }
 }
 
