@@ -2,10 +2,15 @@
   "name": "revenue-engine",
   "private": true,
   "type": "module",
+  "packageManager": "npm@10.9.2",
   "engines": { "node": ">=20" },
+  "main": "dist/server.js",
   "scripts": {
-    "migrate": "tsx src/migrate.ts",
-    "worker": "tsx src/worker.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "migrate": "node dist/migrate.js",
+    "dev": "tsx watch src/server.ts",
+    "smoke": "./scripts-smoke.sh",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
