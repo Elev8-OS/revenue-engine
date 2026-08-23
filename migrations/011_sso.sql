@@ -1,0 +1,11 @@
+-- 011 · the OIDC nonce.
+--
+-- The nonce does for the id_token what state does for the redirect: it binds the
+-- token we get back to the login WE started. Without it a token minted for some
+-- other login of the same app is replayable at our callback.
+--
+-- It lives in oauth_flow rather than a table of its own because it has exactly
+-- the same lifecycle as the PKCE verifier — created with the redirect, consumed
+-- once, swept when abandoned — and the single-use `where used_at is null` that
+-- already guards that row guards this too.
+alter table oauth_flow add column if not exists nonce text;

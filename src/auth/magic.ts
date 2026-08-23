@@ -87,12 +87,25 @@ export async function redeem(
   )
   const email = rows[0]?.email
   if (!email) return undefined
+  return openSession(client, email)
+}
 
+/**
+ * Opens a session for an already-established identity.
+ *
+ * Split out of `redeem` because single sign-on proves who someone is by a
+ * completely different route and then needs exactly this. Two ways to prove
+ * identity, one place that mints a session — so the session's lifetime and
+ * shape cannot drift apart between them.
+ */
+export async function openSession(
+  client: PoolClient, email: string,
+): Promise<Session> {
   const id = randomBytes(TOKEN_BYTES).toString('base64url')
   await client.query(
     `insert into session (id, email, expires_at)
      values ($1, $2, now() + ($3 || ' days')::interval)`,
-    [id, email, String(SESSION_TTL_DAYS)],
+    [id, email.trim().toLowerCase(), String(SESSION_TTL_DAYS)],
   )
   return { id, email }
 }
