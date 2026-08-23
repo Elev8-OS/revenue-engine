@@ -1,46 +1,27 @@
 /**
  * Server-rendered dashboard. No framework and no client JavaScript: the whole
- * interaction is "which row is open" and "which basis ranks", and both are
- * fine as query parameters. That keeps the deployable surface one file and
- * removes a build step from the critical path.
+ * interaction is "which row is open", "which basis ranks" and "which language",
+ * and all three are fine as query parameters. That keeps the deployable surface
+ * one file and removes a build step from the critical path.
+ *
+ * Every visible string comes from the language table rather than from here, so
+ * an untranslated screen is a compile error rather than a surprise in Bali.
  */
 import type { Basis, Row } from './query.js'
+import { type Lang, type Strings, stringsFor, otherLang } from '../i18n.js'
 
 const e = (s: unknown) =>
   String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
 
-const money = (v: number | null, cur: string | null) =>
+const money = (v: number | null, cur: string | null, locale: string) =>
   v === null ? '—'
-    : new Intl.NumberFormat('de-CH', {
+    : new Intl.NumberFormat(locale, {
         style: 'currency', currency: cur ?? 'CHF', maximumFractionDigits: 0,
       }).format(v)
 
-const contractLabel: Record<string, string> = {
-  guaranteed_rent: 'Garantiemiete',
-  net_share: '% vom Netto',
-  fixed_fee: 'Pauschale',
-  gross_share: '% vom Brutto',
-}
-
-/**
- * The gate stage a failure belongs to decides the domain. This mapping is the
- * whole "visibility before price" rule in one object: impressions is a
- * restriction problem, clicks and conversion are visibility, and only when all
- * three hold is price the question.
- */
-const domainForGate: Record<string, string> = {
-  impressions: 'Restriktionen & Aufenthaltsmix',
-  ctr: 'Sichtbarkeit & Konversion',
-  conversion: 'Sichtbarkeit & Konversion',
-  price: 'Preis & Erlös',
-}
-
-const severityLabel: Record<string, string> = {
-  critical: 'kritisch', high: 'hoch', medium: 'mittel', low: 'niedrig', info: 'Info',
-}
-
 export interface DashboardData {
+  lang: Lang
   basis: Basis
   openId: string | null
   rows: Row[]
@@ -50,93 +31,106 @@ export interface DashboardData {
   gate: Array<{ stage: string, verdict: string, note: string | null }>
   evidence: Array<{ side: string, family: string, metric: string, claim: string, observed_at: string | null }>
   demo: boolean
-  /** True when no allowlist is configured, so the page is reachable by anyone. */
+  /** True when no sign-in is configured, so the page is reachable by anyone. */
   unprotected: boolean
   email?: string
 }
 
-function age(min: number): string {
-  if (min < 90) return `${min} Min`
+function age(min: number, s: Strings): string {
+  if (min < 90) return s.ageMinutes(min)
   const h = Math.round(min / 60)
-  return h < 48 ? `${h} h` : `${Math.round(h / 24)} T`
+  return h < 48 ? s.ageHours(h) : s.ageDays(Math.round(h / 24))
 }
 
-function gateBlock(d: DashboardData): string {
+/** Preserves where the reader was when they switch language. */
+function selfUrl(d: DashboardData, over: { lang?: Lang } = {}): string {
+  const p = new URLSearchParams({ basis: d.basis })
+  if (d.openId) p.set('open', d.openId)
+  p.set('lang', over.lang ?? d.lang)
+  return `/?${p.toString()}`
+}
+
+function gateBlock(d: DashboardData, s: Strings): string {
   if (!d.gate.length) return ''
   const dots = d.gate.map(g => {
     const cls = g.verdict === 'failing' ? 'bad' : g.verdict === 'healthy' ? 'good' : 'unk'
-    const name = { impressions: 'Impressionen', ctr: 'Klickrate', conversion: 'Konversion', price: 'Preislage' }[g.stage] ?? g.stage
-    return `<li><span class="dot ${cls}"></span><b>${e(name)}</b>${g.note ? ` <span class="mut">${e(g.note)}</span>` : ''}</li>`
+    const name = s.stage[g.stage] ?? g.stage
+    return `<li><span class="dot ${cls}"></span><b>${e(name)}</b>${
+      g.note ? ` <span class="mut">${e(g.note)}</span>` : ''}</li>`
   }).join('')
   const failing = d.gate.find(g => g.verdict === 'failing')
   const released = failing
     ? failing.stage === 'price'
-      ? 'Alle drei Sichtbarkeitstore halten — das ist ein echter Preisfall.'
-      : `Das Tor reisst bei <b>${e(failing.stage)}</b>. Preisbefunde werden zurückgehalten, bis das behoben ist.`
-    : 'Kein Tor reisst.'
+      ? s.gateAllHold
+      : s.gateBreaksAt(e(s.stage[failing.stage] ?? failing.stage))
+    : s.gateNoneBreak
   return `<section class="panel">
-    <h3>Torwächter</h3>
+    <h3>${e(s.gatekeeper)}</h3>
     <ul class="gate">${dots}</ul>
-    <p class="mut">${released} Gemessen gegen unsere eigene Kohorte, nicht gegen den Markt — Wettbewerber-Funneldaten verkauft kein Anbieter.</p>
+    <p class="mut">${released} ${s.cohortCaveat}</p>
   </section>`
 }
 
-function evidenceBlock(d: DashboardData): string {
+function evidenceBlock(d: DashboardData, s: Strings): string {
   if (!d.evidence.length) return ''
   const side = (name: string, key: string, note: string) => {
     const items = d.evidence.filter(x => x.side === key)
     if (!items.length) return ''
     return `<div><h4>${e(name)} <span class="mut">${e(note)}</span></h4><ul class="ev">${
-      items.map(x => `<li>${e(x.claim)} <span class="mut">· ${e(x.metric)}${x.observed_at ? ` · ${e(x.observed_at)}` : ''}</span></li>`).join('')
+      items.map(x => `<li>${e(x.claim)} <span class="mut">· ${e(x.metric)}${
+        x.observed_at ? ` · ${e(x.observed_at)}` : ''}</span></li>`).join('')
     }</ul></div>`
   }
   return `<section class="panel">
-    <h3>Belege</h3>
-    ${side('Dafür', 'supporting', '')}
-    ${side('Dagegen', 'against', 'Pflichtfeld — ein Check, der seinen eigenen Gegenfall nicht führen kann, ist nicht fertig')}
-    ${side('Unbekannt', 'unknown', '')}
+    <h3>${e(s.evidence)}</h3>
+    ${side(s.evidenceFor, 'supporting', '')}
+    ${side(s.evidenceAgainst, 'against', s.evidenceAgainstNote)}
+    ${side(s.evidenceUnknown, 'unknown', '')}
   </section>`
 }
 
 export function renderDashboard(d: DashboardData): string {
+  const s = stringsFor(d.lang)
+  const cash = (v: number | null, cur: string | null) => money(v, cur, s.numberLocale)
   const largest = d.rows.find(r => r.atStake !== null)
   const rows = d.rows.map(r => {
     const isOpen = d.openId === r.entityId
-    const href = `/?basis=${d.basis}${isOpen ? '' : `&open=${encodeURIComponent(r.entityId)}`}`
-    const domain = r.firstFailing ? domainForGate[r.firstFailing] : null
+    const p = new URLSearchParams({ basis: d.basis, lang: d.lang })
+    if (!isOpen) p.set('open', r.entityId)
+    const href = `/?${p.toString()}`
+    const domain = r.firstFailing ? s.domain[r.firstFailing] : null
     const detail = isOpen ? `<tr class="detail"><td colspan="6">
-        ${r.headline ? `<p class="head">${e(r.headline)}</p>` : '<p class="mut">Kein offener Befund für diesen Raum.</p>'}
-        ${gateBlock(d)}
-        ${evidenceBlock(d)}
+        ${r.headline ? `<p class="head">${e(r.headline)}</p>`
+                     : `<p class="mut">${e(s.noOpenFinding)}</p>`}
+        ${gateBlock(d, s)}
+        ${evidenceBlock(d, s)}
       </td></tr>` : ''
     return `<tr class="${isOpen ? 'open' : ''}">
       <td><a class="rowlink" href="${e(href)}">${isOpen ? '▾' : '▸'} ${e(r.label)}</a>
         <div class="sub">${e(r.market)}${r.band ? ` · ${e(r.band)}` : ''}
-          ${r.contract ? `<span class="tag">${e(contractLabel[r.contract] ?? r.contract)}</span>` : ''}
+          ${r.contract ? `<span class="tag">${e(s.contract[r.contract] ?? r.contract)}</span>` : ''}
           ${r.inHoldout ? '<span class="tag hold">Holdout</span>' : ''}</div></td>
-      <td class="num">${money(r.atStake, r.currency)}</td>
-      <td>${r.findings ? `${r.findings}× ${e(severityLabel[r.worstSeverity ?? ''] ?? '')}` : '<span class="mut">keine offen</span>'}</td>
-      <td>${domain ? `${e(domain)}<div class="sub">Tor: ${e(r.firstFailing)}</div>` : '<span class="mut">nicht bewertet</span>'}</td>
+      <td class="num">${cash(r.atStake, r.currency)}</td>
+      <td>${r.findings
+        ? e(s.findingCount(r.findings, s.severity[r.worstSeverity ?? ''] ?? ''))
+        : `<span class="mut">${e(s.noneOpen)}</span>`}</td>
+      <td>${domain
+        ? `${e(domain)}<div class="sub">${e(s.gateLabel(s.stage[r.firstFailing!] ?? r.firstFailing!))}</div>`
+        : `<span class="mut">${e(s.notRated)}</span>`}</td>
       <td class="num mut">—</td>
       <td class="num mut">—</td>
     </tr>${detail}`
   }).join('')
 
   const banners = [
-    d.unprotected
-      ? `<div class="banner warn"><b>Diese Seite ist offen im Netz.</b> Es ist keine Zugangsliste gesetzt
-         (<code>ALLOWED_EMAILS</code>), also kann jeder mit der URL sie sehen. Sobald die Variable
-         gesetzt ist, greift die Anmeldung per Magic Link automatisch.</div>` : '',
-    d.demo
-      ? `<div class="banner demo"><b>Demonstrationsdaten.</b> Es läuft noch kein Zufluss, also stehen hier
-         die am Live-Konto <em>gemessenen</em> Zahlen der drei Bali-Räume als Beispiel — erkennbar am
-         Präfix <code>[Demo]</code>. Sie werden gelöscht, sobald echte Daten kommen.</div>` : '',
+    d.unprotected ? `<div class="banner warn">${s.openToTheInternet}</div>` : '',
+    d.demo ? `<div class="banner demo">${s.demoData}</div>` : '',
   ].join('')
 
   return `<!doctype html>
-<html lang="de"><head><meta charset="utf-8">
+<html lang="${e(s.htmlLang)}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Revenue Engine — Listing Health</title>
+<title>${e(s.appTitle)}</title>
 <style>
   :root { color-scheme: light dark;
     --paper:#F1F3F1; --ink:#171C1B; --mut:#5D6B69; --line:#D2DAD6; --sunk:#E7EBE8;
@@ -154,9 +148,12 @@ export function renderDashboard(d: DashboardData): string {
   .mut{color:var(--mut)}
   a{color:inherit}
   .top{display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-end;justify-content:space-between;margin-bottom:1.5rem}
+  .controls{display:flex;gap:.5rem;align-items:center}
   .lens a{display:inline-block;padding:.3rem .7rem;border:1px solid var(--line);
     border-radius:3px;text-decoration:none;font-size:.85rem;background:var(--surface)}
   .lens a.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+  .lang{font-size:.78rem;color:var(--mut)}
+  .lang a{text-decoration:none;border-bottom:1px dotted var(--line)}
   .banner{border:1px solid var(--line);border-radius:4px;padding:.8rem 1rem;margin-bottom:.7rem;font-size:.88rem}
   .banner.warn{border-left:3px solid var(--rust);background:color-mix(in srgb,var(--rust) 8%,var(--surface))}
   .banner.demo{border-left:3px solid var(--brass);background:color-mix(in srgb,var(--brass) 8%,var(--surface))}
@@ -191,71 +188,123 @@ export function renderDashboard(d: DashboardData): string {
 </style></head>
 <body><main>
   <div class="top">
-    <div><h1>Listing Health</h1>
-      <div class="sub">${d.email ? `angemeldet als ${e(d.email)} · <a href="/auth/logout">abmelden</a> · ` : ''}<a href="/status">Bereitschaft</a></div></div>
-    <div class="lens">
-      <a class="${d.basis === 'revenue' ? 'on' : ''}" href="/?basis=revenue">Erlös</a>
-      <a class="${d.basis === 'margin' ? 'on' : ''}" href="/?basis=margin">Deckungsbeitrag</a>
+    <div><h1>${e(s.heading)}</h1>
+      <div class="sub">${d.email ? `${e(s.signedInAs(d.email))} · <a href="/auth/logout">${e(s.signOut)}</a> · ` : ''}<a href="/status?lang=${d.lang}">${e(s.readiness)}</a></div></div>
+    <div class="controls">
+      <span class="lang"><a href="${e(selfUrl(d, { lang: otherLang(d.lang) }))}"
+        hreflang="${otherLang(d.lang)}">${e(s.otherLangName)}</a></span>
+      <span class="lens">
+        <a class="${d.basis === 'revenue' ? 'on' : ''}" href="/?basis=revenue&lang=${d.lang}">${e(s.basisRevenue)}</a>
+        <a class="${d.basis === 'margin' ? 'on' : ''}" href="/?basis=margin&lang=${d.lang}">${e(s.basisMargin)}</a>
+      </span>
     </div>
   </div>
   ${banners}
   <div class="stats">
-    <div class="stat"><div class="k">Grösste Einzelchance</div>
-      <div class="v">${largest ? money(largest.atStake, largest.currency) : '—'}</div>
-      <div class="sub">${largest ? e(largest.label) : 'nichts offen'}</div></div>
-    <div class="stat"><div class="k">Offene Befunde</div><div class="v">${d.counts.open}</div>
-      <div class="sub">${d.counts.critical} kritisch · ${d.counts.high} hoch</div></div>
-    <div class="stat"><div class="k">Räume</div><div class="v">${d.counts.entities}</div>
-      <div class="sub">aktiv im Portfolio</div></div>
-    <div class="stat"><div class="k">Nicht bewertbar</div><div class="v">${d.notAssessable.length}</div>
-      <div class="sub">Signal fehlt</div></div>
+    <div class="stat"><div class="k">${e(s.largestSingle)}</div>
+      <div class="v">${largest ? cash(largest.atStake, largest.currency) : '—'}</div>
+      <div class="sub">${largest ? e(largest.label) : e(s.nothingOpen)}</div></div>
+    <div class="stat"><div class="k">${e(s.openFindings)}</div><div class="v">${d.counts.open}</div>
+      <div class="sub">${e(s.severityBreakdown(d.counts.critical, d.counts.high))}</div></div>
+    <div class="stat"><div class="k">${e(s.rooms)}</div><div class="v">${d.counts.entities}</div>
+      <div class="sub">${e(s.activeInPortfolio)}</div></div>
+    <div class="stat"><div class="k">${e(s.notAssessable)}</div><div class="v">${d.notAssessable.length}</div>
+      <div class="sub">${e(s.signalMissing)}</div></div>
   </div>
-  ${d.notAssessable.length ? `<div class="banner"><b>${d.notAssessable.length} Räume nicht bewertbar</b> — ${
+  ${d.notAssessable.length ? `<div class="banner"><b>${e(s.roomsNotAssessable(d.notAssessable.length))}</b> — ${
       d.notAssessable.map(n => `${e(n.label)} <span class="mut">(${e(n.reason)})</span>`).join(' · ')
     }</div>` : ''}
   ${d.rows.length ? `<table>
-    <thead><tr><th>Objekt</th><th>Im Spiel</th><th>Befunde</th><th>Schlimmste Domäne</th>
-      <th>ADR vs Set</th><th>Sync</th></tr></thead>
+    <thead><tr><th>${e(s.colProperty)}</th><th>${e(s.colAtStake)}</th><th>${e(s.colFindings)}</th>
+      <th>${e(s.colWorstDomain)}</th><th>${e(s.colAdrVsSet)}</th><th>${e(s.colSync)}</th></tr></thead>
     <tbody>${rows}</tbody></table>`
-    : `<div class="empty"><p><b>Noch keine Objekte.</b></p>
-       <p>Der Zufluss läuft nicht — es fehlen Zugangsdaten. Was fehlt, steht auf der
-       <a href="/status">Bereitschaftsseite</a>.</p></div>`}
+    : `<div class="empty"><p><b>${e(s.noPropertiesYet)}</b></p>
+       <p>${e(s.noPropertiesWhy)} <a href="/status?lang=${d.lang}">${e(s.readiness)}</a>.</p></div>`}
   <footer>
-    <span>Jede Zeile zeigt ihre <b>grösste Einzelchance</b> — nie eine Summe, weil Befunde
-      dieselben Nächte überlappen können.</span>
-    ${d.freshness.length ? `<span>Frische: ${d.freshness.map(f =>
-      `${e(f.dataset)} ${age(f.age_minutes)}`).join(' · ')}</span>` : ''}
+    <span>${s.largestNotSum}</span>
+    ${d.freshness.length ? `<span>${e(s.freshness)}: ${d.freshness.map(f =>
+      `${e(f.dataset)} ${e(age(f.age_minutes, s))}`).join(' · ')}</span>` : ''}
   </footer>
 </main></body></html>`
 }
 
-export function renderLogin(sent: boolean, base: string): string {
+export interface LoginView {
+  lang: Lang
+  /** Entra is configured, so the Microsoft button is the way in. */
+  sso: boolean
+  /** The mail fallback, only when someone deliberately switched it on. */
+  magic: boolean
+  /** A link was just requested — say so without confirming the address exists. */
+  sent?: boolean
+  /** A short, already-safe reason the last attempt failed. */
+  error?: string
+}
+
+/**
+ * The door.
+ *
+ * Single sign-on first and alone whenever it is configured. Offering two ways in
+ * would mean the weaker one decides how strong the door is, so the mail fallback
+ * only appears when the deployment says it should.
+ */
+export function renderLogin(v: LoginView): string {
+  const s = stringsFor(v.lang)
+  const body = v.sent
+    ? `<p>${s.loginLinkSent}</p>`
+    : [
+        v.sso
+          ? `<p>${e(s.loginSsoLead)}</p>
+             <a class="btn" href="/auth/sso?lang=${v.lang}">
+               <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                 <rect x="0" y="0" width="7" height="7" fill="#F25022"/>
+                 <rect x="9" y="0" width="7" height="7" fill="#7FBA00"/>
+                 <rect x="0" y="9" width="7" height="7" fill="#00A4EF"/>
+                 <rect x="9" y="9" width="7" height="7" fill="#FFB900"/>
+               </svg>
+               ${e(s.loginWithMicrosoft)}
+             </a>`
+          : '',
+        v.magic
+          ? `<p class="alt">${e(v.sso ? s.loginMagicAlso : s.loginMagicLead)}</p>
+             <form method="post" action="/auth/request">
+               <input type="hidden" name="lang" value="${v.lang}">
+               <input type="email" name="email" required autocomplete="email"
+                      placeholder="${e(s.loginEmailPlaceholder)}">
+               <button type="submit">${e(s.loginSendLink)}</button>
+             </form>`
+          : '',
+        !v.sso && !v.magic ? `<p>${s.loginNoMethod}</p>` : '',
+      ].filter(Boolean).join('\n')
+
   return `<!doctype html>
-<html lang="de"><head><meta charset="utf-8">
+<html lang="${e(s.htmlLang)}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Revenue Engine — Anmeldung</title>
+<title>${e(s.loginTitle)}</title>
 <style>
-  :root{color-scheme:light dark;--paper:#F1F3F1;--ink:#171C1B;--mut:#5D6B69;--line:#D2DAD6;--surface:#FBFCFA;--teal:#0D615E}
-  @media (prefers-color-scheme: dark){:root{--paper:#0F1312;--ink:#E7ECE9;--mut:#94A3A0;--line:#28302E;--surface:#161B1A;--teal:#58C4BC}}
+  :root{color-scheme:light dark;--paper:#F1F3F1;--ink:#171C1B;--mut:#5D6B69;--line:#D2DAD6;--surface:#FBFCFA;--teal:#0D615E;--rust:#97392B}
+  @media (prefers-color-scheme: dark){:root{--paper:#0F1312;--ink:#E7ECE9;--mut:#94A3A0;--line:#28302E;--surface:#161B1A;--teal:#58C4BC;--rust:#E28A7C}}
   body{margin:0;background:var(--paper);color:var(--ink);display:grid;place-items:center;
     min-height:100vh;font:15px/1.6 ui-sans-serif,system-ui,sans-serif;padding:1.5rem}
   .card{background:var(--surface);border:1px solid var(--line);border-radius:5px;
     padding:1.8rem;max-width:26rem;width:100%}
   h1{font-size:1.2rem;margin:0 0 .4rem}
   p{color:var(--mut);font-size:.9rem;margin:0 0 1.1rem}
+  p.alt{margin:1.3rem 0 .7rem;font-size:.82rem}
+  p.err{color:var(--rust)}
   input,button{font:inherit;width:100%;padding:.55rem .7rem;border-radius:3px;border:1px solid var(--line)}
   input{background:var(--paper);color:var(--ink);margin-bottom:.6rem}
   button{background:var(--ink);color:var(--paper);border-color:var(--ink);cursor:pointer;font-weight:600}
+  .btn{display:flex;align-items:center;justify-content:center;gap:.6rem;text-decoration:none;
+    padding:.62rem .7rem;border:1px solid var(--line);border-radius:3px;
+    background:var(--paper);color:var(--ink);font-weight:600;font-size:.92rem}
+  code{font:500 .85em ui-monospace,monospace;color:var(--teal)}
+  .lang{margin-top:1.2rem;font-size:.78rem;color:var(--mut)}
+  .lang a{color:inherit;text-decoration:none;border-bottom:1px dotted var(--line)}
 </style></head>
 <body><div class="card">
   <h1>Revenue Engine</h1>
-  ${sent
-    ? `<p>Wenn diese Adresse Zugang hat, ist ein Anmeldelink unterwegs. Er gilt
-       <b>15 Minuten</b> und funktioniert <b>einmal</b>.</p>`
-    : `<p>Anmeldung per Link, kein Passwort.</p>
-       <form method="post" action="/auth/request">
-         <input type="email" name="email" required autocomplete="email" placeholder="dein@elev8-suite.com">
-         <button type="submit">Link senden</button>
-       </form>`}
+  ${v.error ? `<p class="err">${v.error}</p>` : ''}
+  ${body}
+  <div class="lang"><a href="/?lang=${otherLang(v.lang)}" hreflang="${otherLang(v.lang)}">${e(s.otherLangName)}</a></div>
 </div></body></html>`
 }

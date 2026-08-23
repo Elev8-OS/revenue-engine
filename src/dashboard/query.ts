@@ -12,8 +12,19 @@
  *     has to state the gate rather than a label somebody typed.
  */
 import type { PoolClient } from 'pg'
+import type { Lang } from '../i18n.js'
 
 export type Basis = 'revenue' | 'margin'
+
+/**
+ * Reads a stored sentence in the reader's language.
+ *
+ * Falls back to English, then to the pre-migration text column. English is the
+ * anchor because a check constraint guarantees it is there whenever anything is,
+ * so this never returns null for a row that has a translation at all.
+ */
+const say = (col: string, param: string) =>
+  `coalesce(text_i18n ->> ${param}, text_i18n ->> 'en', ${col})`
 
 export interface Row {
   entityId: string
@@ -40,7 +51,9 @@ const SEVERITY_RANK = `case f.severity
     when 'critical' then 5 when 'high' then 4 when 'medium' then 3
     when 'low' then 2 else 1 end`
 
-export async function portfolio(client: PoolClient, basis: Basis): Promise<Row[]> {
+export async function portfolio(
+  client: PoolClient, basis: Basis, lang: Lang,
+): Promise<Row[]> {
   const amount = AMOUNT[basis]
   const { rows } = await client.query<Row>(`
     with ranked as (
@@ -64,41 +77,42 @@ export async function portfolio(client: PoolClient, basis: Basis): Promise<Row[]
            count(r.id)::int           as findings,
            max(case when r.pos = 1 then r.severity end)      as "worstSeverity",
            max(case when r.pos = 1 then r.first_failing::text end) as "firstFailing",
-           max(case when r.pos = 1 then r.headline end)      as headline,
+           max(case when r.pos = 1 then ${say('r.headline', '$1')} end) as headline,
            max(case when r.pos = 1 then r.id::text end)      as "worstFindingId"
       from entity e
       left join ranked r on r.entity_id = e.id
      where e.active
      group by e.id
-     order by max(r.${amount}) desc nulls last, e.label`)
+     order by max(r.${amount}) desc nulls last, e.label`, [lang])
   return rows
 }
 
 /** The gate that produced the finding, in funnel order. */
-export async function gate(client: PoolClient, findingId: string) {
+export async function gate(client: PoolClient, findingId: string, lang: Lang) {
   const { rows } = await client.query<{ stage: string, verdict: string, note: string | null }>(
-    `select stage::text, verdict::text, note from finding_gate
+    `select stage::text, verdict::text, ${say('note', '$2')} as note from finding_gate
       where finding_id = $1
       order by case stage when 'impressions' then 1 when 'ctr' then 2
-                          when 'conversion' then 3 else 4 end`, [findingId])
+                          when 'conversion' then 3 else 4 end`, [findingId, lang])
   return rows
 }
 
-export async function evidence(client: PoolClient, findingId: string) {
+export async function evidence(client: PoolClient, findingId: string, lang: Lang) {
   const { rows } = await client.query<
     { side: string, family: string, metric: string, claim: string, observed_at: string | null }>(
-    `select side, family, metric, claim, observed_at from finding_evidence
-      where finding_id = $1 order by side, id`, [findingId])
+    `select side, family, metric, ${say('claim', '$2')} as claim, observed_at
+       from finding_evidence
+      where finding_id = $1 order by side, id`, [findingId, lang])
   return rows
 }
 
 /** Rooms a check could not reach, with the missing signal named. */
-export async function notAssessable(client: PoolClient) {
+export async function notAssessable(client: PoolClient, lang: Lang) {
   const { rows } = await client.query<{ label: string, reason: string }>(
-    `select e.label, n.reason
+    `select e.label, ${say('n.reason', '$1')} as reason
        from not_assessable n join entity e on e.id = n.entity_id
       where n.as_of = (select max(as_of) from not_assessable)
-      order by e.label`)
+      order by e.label`, [lang])
   return rows
 }
 
