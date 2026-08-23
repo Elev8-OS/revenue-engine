@@ -28,6 +28,7 @@ need no credentials. Nothing here talks to a live provider yet.
 | `src/entity/resolve.ts` | Alias resolution. Name matching allowed, never silent; ambiguity stays unresolved. |
 | `src/snapshot/write.ts` | The nightly archive, `pickup()`, and the freshness gate. |
 | `src/scheduler/budget.ts` | One budget across all sources, plus the market-panel dedupe that removes most of the PriceLabs cost. |
+| `src/server.ts` | Entrypoint: migrate at boot, then serve the readiness page and `/healthz`. |
 
 ## Three rules the code enforces
 
@@ -49,12 +50,37 @@ worker, holding the advisory lock). Never both.
 
 ```bash
 npm install
-npm run migrate     # needs DATABASE_URL
+npm run build
+npm start           # applies migrations, then serves on $PORT
 ```
 
 Configuration is names only — values live in Railway variables. See
-`.env.example`. Nothing in this repo logs a secret value; `loadConfig()` reports
-missing variable *names* and never partial values.
+`.env.example`. Nothing in this repo logs a secret value; the readiness page and
+`loadConfig()` both report missing variable *names* and never partial values.
+
+## Deployment
+
+Railway builds with `npm run build` and starts with `npm start`. The service
+boots **even when nothing is configured yet**: a crash-loop on a missing variable
+tells you nothing, while a page naming exactly which of the four sources is still
+missing turns the deploy into visible progress on the onboarding checklist.
+
+- `/` — readiness page: database state, and per source whether it is connected
+  or which variable names are still unset.
+- `/healthz` — the same as JSON. Returns 200 whenever the process is up. A
+  missing credential is a configuration state, not a failure; treating it as one
+  would have Railway restart the service forever while waiting for something only
+  a human can supply.
+
+Migrations run at boot and are idempotent, so a redeploy costs nothing. Verified:
+first boot applies six migrations and reports 25 tables, second boot reports the
+same and applies none.
+
+**One thing to do once, locally:** `package-lock.json` is not in the repo.
+Generating it needs a real install, and its sha512 integrity hashes cannot be
+hand-transcribed safely — a single wrong character breaks `npm ci` with a
+misleading error. Run `npm install`, commit the lockfile, and Railpack stops
+warning about non-deterministic installs.
 
 ## Verifying it
 
