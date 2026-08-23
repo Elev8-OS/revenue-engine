@@ -103,6 +103,8 @@ export interface Strings {
   loginLinkDead: string
   loginProviderDeclined: (code: string) => string
   loginNotAdmitted: string
+  loginGroupsNotEmitted: string
+  loginTooManyGroups: string
   loginFailed: string
 
   /* --- readiness page */
@@ -127,7 +129,12 @@ export interface Strings {
   signInActive: string
   signInMicrosoft: string
   signInMailLink: (mode: string) => string
+  /** Fragments, joined by the caller, because more than one gate can apply. */
   admittedCount: (n: number) => string
+  admittedGroups: (n: number) => string
+  admittedLead: (what: string) => string
+  admittedAnd: string
+  admittedEveryGateApplies: string
   admittedWholeTenant: string
   signInOff: string
 
@@ -234,6 +241,8 @@ export const en: Strings = {
   loginLinkDead: 'That link has expired or was already used.',
   loginProviderDeclined: code => `Microsoft declined the sign-in (<code>${code}</code>).`,
   loginNotAdmitted: 'That account is signed in, but has no access to this tool.',
+  loginGroupsNotEmitted: 'Access is decided by a Microsoft 365 group, but this application is not sending group membership yet. In Entra, under Token configuration, add the <b>groups</b> claim — until then nobody can get in.',
+  loginTooManyGroups: 'This account belongs to more than 200 groups, so Microsoft sends a pointer instead of the list and membership cannot be read from the token.',
   loginFailed: 'The sign-in could not be completed. Please try again.',
 
   readinessHeading: 'Readiness',
@@ -262,7 +271,11 @@ export const en: Strings = {
   signInActive: 'active',
   signInMicrosoft: 'Microsoft 365 (Entra ID)',
   signInMailLink: mode => `email link via <code>${mode}</code>`,
-  admittedCount: n => `Admitted: ${n} address${n === 1 ? '' : 'es'}.`,
+  admittedCount: n => `${n} address${n === 1 ? '' : 'es'}`,
+  admittedGroups: n => `members of ${n} Microsoft 365 group${n === 1 ? '' : 's'}`,
+  admittedLead: what => `Admitted: ${what}.`,
+  admittedAnd: 'and',
+  admittedEveryGateApplies: 'Every condition listed must match — so adding one can only narrow access.',
   admittedWholeTenant: 'Admitted: <b>everyone</b> in the Elev8-Suite tenant — <code>ALLOWED_EMAILS</code> narrows that.',
   signInOff: 'off',
 
@@ -368,6 +381,8 @@ export const id: Strings = {
   loginLinkDead: 'Tautan itu sudah kedaluwarsa atau sudah pernah dipakai.',
   loginProviderDeclined: code => `Microsoft menolak proses masuk (<code>${code}</code>).`,
   loginNotAdmitted: 'Akun itu sudah masuk, tetapi tidak punya akses ke alat ini.',
+  loginGroupsNotEmitted: 'Akses ditentukan oleh grup Microsoft 365, tetapi aplikasi ini belum mengirimkan keanggotaan grup. Di Entra, pada Token configuration, tambahkan klaim <b>groups</b> — sampai itu dilakukan, tidak seorang pun bisa masuk.',
+  loginTooManyGroups: 'Akun ini tergabung dalam lebih dari 200 grup, sehingga Microsoft mengirim penunjuk alih-alih daftarnya, dan keanggotaan tidak dapat dibaca dari token.',
   loginFailed: 'Proses masuk tidak dapat diselesaikan. Silakan coba lagi.',
 
   readinessHeading: 'Kesiapan',
@@ -396,7 +411,11 @@ export const id: Strings = {
   signInActive: 'aktif',
   signInMicrosoft: 'Microsoft 365 (Entra ID)',
   signInMailLink: mode => `tautan email lewat <code>${mode}</code>`,
-  admittedCount: n => `Diizinkan: ${n} alamat.`,
+  admittedCount: n => `${n} alamat`,
+  admittedGroups: n => `anggota dari ${n} grup Microsoft 365`,
+  admittedLead: what => `Diizinkan: ${what}.`,
+  admittedAnd: 'dan',
+  admittedEveryGateApplies: 'Setiap syarat yang tercantum harus terpenuhi — jadi menambah satu syarat hanya bisa mempersempit akses.',
   admittedWholeTenant: 'Diizinkan: <b>semua orang</b> di tenant Elev8-Suite — <code>ALLOWED_EMAILS</code> mempersempitnya.',
   signInOff: 'mati',
 
