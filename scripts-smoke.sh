@@ -7,4 +7,6 @@ psql -h /tmp -p $PORT -U postgres -q -c "create database re" postgres
 for f in migrations/*.sql; do
   psql -h /tmp -p $PORT -U postgres -d re -v ON_ERROR_STOP=1 -q -f "$f"
 done
-DATABASE_URL="postgresql://postgres@/re?host=/tmp&port=$PORT" npx tsx src/smoke.ts
+export DATABASE_URL="postgresql://postgres@/re?host=/tmp&port=$PORT"
+npx tsx src/smoke.ts
+npx tsx src/smoke-mdv.ts
