@@ -36,8 +36,7 @@ const state: Readiness = {
 function readSources(): SourceState[] {
   const e = process.env
   const need = (...names: string[]) => names.filter(n => !e[n])
-  const mdvMode = e.MDV_MODE ?? 'mcp'
-  const mdvMissing = mdvMode === 'mcp' ? need('MDV_MCP_URL') : need('MDV_CLIENT_ID', 'MDV_REFRESH_TOKEN')
+  const mdvMissing = need('MDV_CLIENT_ID')
   return [
     {
       name: 'Elev8',
@@ -61,7 +60,7 @@ function readSources(): SourceState[] {
       name: 'MyDataValue',
       missing: mdvMissing,
       ready: mdvMissing.length === 0,
-      note: `mode ${mdvMode} — exactly one process may refresh the token`,
+      note: 'direct HTTP API; the refresh token lives in the database because it rotates',
     },
   ]
 }
