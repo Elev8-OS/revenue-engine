@@ -1,0 +1,126 @@
+/** Functional smoke test against a throwaway Postgres. Not a substitute for
+ *  real tests, but it proves the load-bearing logic does what the comments claim. */
+import { getPool } from './db.js'
+import { rateFor, convert, FxError } from './fx/index.js'
+import { resolve, resolveByLabel, link, splitPriceLabsId, normaliseElev8Id } from './entity/resolve.js'
+import { writeSnapshots, pickup, recordFreshness, staleDatasets } from './snapshot/write.js'
+import { dedupeMarketPanels } from './scheduler/budget.js'
+
+const pool = getPool(process.env.DATABASE_URL!)
+let fails = 0
+const check = (name: string, cond: boolean, extra = '') => {
+  console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${extra ? '  — ' + extra : ''}`)
+  if (!cond) fails++
+}
+
+const c = await pool.connect()
+
+// ---- entities
+const bali = (await c.query(
+  `insert into entity (label, market, bedroom_band, contract)
+   values ('The R Villa Masurai', 'bali', '2BR', 'guaranteed_rent') returning id`)).rows[0].id
+const dupA = (await c.query(
+  `insert into entity (label, market, bedroom_band) values ('The R Villa Merapi', 'bali', '1BR') returning id`)).rows[0].id
+await c.query(`insert into entity (label, market, bedroom_band) values ('The R Villa Merapi', 'bali', '1BR')`)
+
+// ---- pure helpers
+check('PriceLabs composite splits', splitPriceLabsId('2fc503c2___5e786457')?.right === '5e786457')
+check('PriceLabs non-composite rejected', splitPriceLabsId('plain-id') === null)
+check('Elev8 dashed UUID normalises to hex', normaliseElev8Id('2FC503C2-7706-4646-8ECE-41DF32ADCD96')?.length === 32)
+check('Elev8 empty id is not a key', normaliseElev8Id('') === null)
+
+// ---- alias resolution
+await link(c, { source: 'mdv_booking', kind: 'property', externalId: '12554884' }, bali, 'explicit')
+const r1 = await resolve(c, { source: 'mdv_booking', kind: 'property', externalId: '12554884' })
+check('direct alias resolves', r1.ok && r1.entityId === bali)
+
+await link(c, { source: 'channex', kind: 'room', externalId: '5e786457' }, bali, 'explicit')
+const r2 = await resolve(c, { source: 'pricelabs', kind: 'room', externalId: '2fc503c2___5e786457' })
+check('composite half resolves and self-links', r2.ok && r2.entityId === bali,
+      r2.ok ? r2.matchedBy : '')
+
+const r3 = await resolveByLabel(c, { source: 'elev8', kind: 'listing', externalId: 'x1', label: 'The R Villa Merapi' })
+check('ambiguous label stays UNRESOLVED', !r3.ok, r3.ok ? '' : r3.reason)
+
+const r4 = await resolveByLabel(c, { source: 'elev8', kind: 'listing', externalId: 'x2', label: 'The R Villa Masurai' })
+check('unique label resolves and is recorded as such', r4.ok && r4.matchedBy === 'unique_label')
+
+const unres = await c.query(`select count(*)::int n from unresolved_alias`)
+check('unresolved aliases are recorded, not dropped', unres.rows[0].n >= 1, `${unres.rows[0].n} row(s)`)
+
+// ---- fx
+await c.query(`insert into fx_rate (day, base, quote, rate, source) values
+  ('2026-08-21', 'USD', 'IDR', 17665, 'jisdor'),
+  ('2026-08-20', 'CHF', 'IDR', 21900, 'snb')`)
+const fr = await rateFor(c, '2026-08-23', 'USD', 'IDR')
+check('fx falls back to the last fixing', fr.rate === 17665 && fr.stale === 2, `stale ${fr.stale}d`)
+const conv = await convert(c, { amount: 100, currency: 'USD' }, 'IDR', '2026-08-21')
+check('conversion uses the booking day', Math.round(conv.amount) === 1766500)
+let refused = false
+try { await rateFor(c, '2026-09-30', 'USD', 'IDR') } catch (e) { refused = e instanceof FxError }
+check('stale beyond the cap is REFUSED, not guessed', refused)
+check('identity conversion needs no rate', (await convert(c, { amount: 5, currency: 'IDR' }, 'IDR', '2026-08-23')).amount === 5)
+
+// ---- snapshot + pickup
+await writeSnapshots(c, '2026-08-20', [
+  { entityId: bali, metric: 'occupancy_on_books', stayDate: '2026-09-15', value: 0.31, source: 'pricelabs' },
+])
+await writeSnapshots(c, '2026-08-23', [
+  { entityId: bali, metric: 'occupancy_on_books', stayDate: '2026-09-15', value: 0.43, source: 'pricelabs' },
+])
+const pk = await pickup(c, bali, 'occupancy_on_books', '2026-09-15', '2026-08-20', '2026-08-23')
+check('pickup is computable from the archive', pk !== null && Math.abs(pk - 0.12) < 1e-9, `+${pk?.toFixed(2)}`)
+
+const before = await c.query(`select value from snapshot where as_of_date='2026-08-23'`)
+await writeSnapshots(c, '2026-08-23', [
+  { entityId: bali, metric: 'occupancy_on_books', stayDate: '2026-09-15', value: 0.44, source: 'pricelabs' },
+])
+const after = await c.query(`select count(*)::int n from snapshot where as_of_date='2026-08-23'`)
+check('same-day re-run overwrites, never duplicates', after.rows[0].n === before.rowCount)
+
+// ---- freshness gate
+await recordFreshness(c, 'mdv_booking', 'pricing', bali, new Date(Date.now() - 20 * 60_000).toISOString())
+await recordFreshness(c, 'mdv_booking', 'property_core', bali, new Date(Date.now() - 25 * 3600_000).toISOString())
+const stale = await staleDatasets(c, bali, 24)
+check('freshness gate catches property_core only', stale.length === 1 && stale[0]!.dataset === 'property_core',
+      stale.map(s => `${s.dataset} ${s.ageHours.toFixed(0)}h`).join(', '))
+
+// ---- market panel dedupe
+const { panels, saved } = dedupeMarketPanels([
+  { market: 'bali', bedroomBand: '2BR' }, { market: 'bali', bedroomBand: '2BR' },
+  { market: 'bali', bedroomBand: '1BR' }, { market: 'ch', bedroomBand: '2BR' },
+  { market: 'bali', bedroomBand: null },
+])
+check('panel dedupe collapses duplicates and skips unbanded', panels.length === 3 && saved === 2,
+      `${panels.length} panels, ${saved} fetches avoided`)
+
+// ---- write ordering guarantee
+const f = (await c.query(
+  `insert into finding (entity_id, check_key, check_version, severity, headline)
+   values ($1,'restrictions.minstay_below_margin_floor',2,'high','Two-night stays are margin-negative')
+   returning id`, [bali])).rows[0].id
+let fkBlocked = false
+try {
+  await c.query(`insert into write_attempt (finding_id, snapshot_id, target, lever, idempotency_key, request)
+                 values ($1, gen_random_uuid(), 'pricelabs', 'min_stay', 'k1', '{}'::jsonb)`, [f])
+} catch { fkBlocked = true }
+check('a write CANNOT be logged without a snapshot', fkBlocked)
+
+const snap = (await c.query(
+  `insert into write_snapshot (finding_id, entity_id, prior) values ($1,$2,'{"min_stay":2}'::jsonb) returning id`,
+  [f, bali])).rows[0].id
+await c.query(`insert into write_attempt (finding_id, snapshot_id, target, lever, idempotency_key, request)
+               values ($1,$2,'pricelabs','min_stay','k1','{"min_stay":3}'::jsonb)`, [f, snap])
+let dupKey = false
+try {
+  await c.query(`insert into write_attempt (finding_id, snapshot_id, target, lever, idempotency_key, request)
+                 values ($1,$2,'pricelabs','min_stay','k1','{"min_stay":3}'::jsonb)`, [f, snap])
+} catch { dupKey = true }
+check('a retry cannot double-apply (idempotency key is unique)', dupKey)
+
+const dr = await c.query(`insert into lever_policy (lever, market) values ('min_stay','bali') returning dry_run`)
+check('every lever starts in dry run', dr.rows[0].dry_run === true)
+
+c.release(); await pool.end()
+console.log(`\n${fails === 0 ? 'all green' : fails + ' FAILING'}`)
+process.exit(fails ? 1 : 0)
