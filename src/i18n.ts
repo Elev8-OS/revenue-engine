@@ -127,6 +127,8 @@ export interface Strings {
   grantLive: (rotation: number) => string
   grantRevoked: string
   authoriseNow: string
+  grantReplace: string
+  grantReplaceCaution: string
   authBlockedNoAllowlist: string
   signIn: string
   signInActive: string
@@ -140,6 +142,21 @@ export interface Strings {
   admittedEveryGateApplies: string
   admittedWholeTenant: string
   signInOff: string
+
+  /* --- import */
+  importHeading: string
+  importLead: string
+  importStart: string
+  importNever: string
+  importRunningSince: (when: string) => string
+  importFinishedAt: (when: string) => string
+  importCounts: (created: number, known: number, unresolved: number) => string
+  importFailedWith: (reason: string) => string
+  importBusy: string
+  importNeedsMdv: string
+  importDemoStillOn: string
+  importRefresh: string
+  importBack: string
 
   /* --- notices */
   noticeAuthBlocked: string
@@ -261,9 +278,11 @@ export const en: Strings = {
   connected: 'connected',
   missing: 'missing',
   sourceNotes: {
-    elev8: 'the moat: cleaning minutes, housekeeper note, capacity',
+    // Corrected after reading the Partner API: it has seven endpoints and none
+    // of them carry cleaning minutes, OTA ids or a room count.
+    elev8: 'coordinates and country per listing; and the way to hand a recommendation to the team as a to-do',
     pricelabs: 'market panel, pickup grid, change log',
-    channex: 'review text and subscores, ota_commission, taxes',
+    channex: 'the OTA mapping and room occupancy — the cohort depends on it; plus review text, ota_commission, taxes',
     mdv: 'direct HTTP API; the refresh token lives in the database because it rotates',
   },
   redirectUriLabel: 'Redirect URI for the app registration:',
@@ -272,6 +291,8 @@ export const en: Strings = {
   grantLive: r => `grant live, ${r} rotation${r === 1 ? '' : 's'} so far`,
   grantRevoked: 'grant revoked — a newly issued token is needed; re-seeding the old one cannot work',
   authoriseNow: 'authorise now',
+  grantReplace: 'replace this grant',
+  grantReplaceCaution: 'Only needed if the grant dies. It starts a fresh authorisation and, if that succeeds, the new refresh token replaces the stored one — the current grant keeps working until then. It will fail with <code>invalid_redirect_uri</code> unless the redirect URI above is registered for this client, which it is not when the provider issued the grant directly.',
   authBlockedNoAllowlist: 'authorisation is blocked while no sign-in is configured',
   signIn: 'Sign-in',
   signInActive: 'active',
@@ -284,6 +305,22 @@ export const en: Strings = {
   admittedEveryGateApplies: 'Every condition listed must match — so adding one can only narrow access.',
   admittedWholeTenant: 'Admitted: <b>everyone</b> in the Elev8-Suite tenant — <code>ALLOWED_EMAILS</code> narrows that.',
   signInOff: 'off',
+
+  importHeading: 'Import objects',
+  importLead: 'Reads the Booking properties and Airbnb listings from MyDataValue into the portfolio. Safe to run again: an object that is already known costs nothing, so only what is new or still unplaceable is fetched.',
+  importStart: 'Start import',
+  importNever: 'No import has run yet.',
+  importRunningSince: when => `Running since ${when}. This page does not refresh itself.`,
+  importFinishedAt: when => `Finished ${when}.`,
+  importCounts: (created, known, unresolved) =>
+    `${created} new object${created === 1 ? '' : 's'}, ${known} already known, `
+    + `${unresolved} could not be placed.`,
+  importFailedWith: reason => `It failed: ${reason}`,
+  importBusy: 'An import is already running. Nothing was started twice.',
+  importNeedsMdv: 'MyDataValue is not configured, so there is nothing to import from. <code>MDV_CLIENT_ID</code> and <code>MDV_CLIENT_SECRET</code> are needed.',
+  importDemoStillOn: '<b>Demonstration data is still switched on.</b> Real objects and <code>[Demo]</code> rows will sit side by side until <code>SEED_DEMO</code> is unset or set to anything other than <code>true</code> and the service restarts.',
+  importRefresh: 'reload',
+  importBack: 'back to readiness',
 
   noticeAuthBlocked: 'Authorisation blocked',
   noticeAuthBlockedBody: 'While no sign-in is configured this route stays shut. Otherwise anyone with the URL could park a foreign MyDataValue grant here.',
@@ -404,9 +441,9 @@ export const id: Strings = {
   connected: 'tersambung',
   missing: 'belum ada',
   sourceNotes: {
-    elev8: 'keunggulan kita: menit pembersihan, catatan housekeeping, kapasitas',
+    elev8: 'koordinat dan negara per listing; dan cara menyerahkan rekomendasi ke tim sebagai to-do',
     pricelabs: 'panel pasar, kisi pickup, log perubahan',
-    channex: 'teks ulasan dan subskor, ota_commission, pajak',
+    channex: 'pemetaan OTA dan okupansi kamar — kohort bergantung padanya; plus teks ulasan, ota_commission, pajak',
     mdv: 'API HTTP langsung; refresh token disimpan di basis data karena token itu berotasi',
   },
   redirectUriLabel: 'Redirect URI untuk pendaftaran aplikasi:',
@@ -415,6 +452,8 @@ export const id: Strings = {
   grantLive: r => `izin aktif, sudah ${r} kali rotasi`,
   grantRevoked: 'izin dicabut — diperlukan token yang baru diterbitkan; menanam ulang token lama tidak akan berhasil',
   authoriseNow: 'otorisasi sekarang',
+  grantReplace: 'ganti izin ini',
+  grantReplaceCaution: 'Hanya perlu jika izin mati. Ini memulai otorisasi baru dan, jika berhasil, refresh token baru menggantikan yang tersimpan — izin yang sekarang tetap berfungsi sampai saat itu. Akan gagal dengan <code>invalid_redirect_uri</code> kecuali redirect URI di atas terdaftar untuk klien ini, dan itu tidak terjadi jika penyedia menerbitkan izin secara langsung.',
   authBlockedNoAllowlist: 'otorisasi terkunci selama belum ada cara masuk yang dikonfigurasi',
   signIn: 'Cara masuk',
   signInActive: 'aktif',
@@ -427,6 +466,21 @@ export const id: Strings = {
   admittedEveryGateApplies: 'Setiap syarat yang tercantum harus terpenuhi — jadi menambah satu syarat hanya bisa mempersempit akses.',
   admittedWholeTenant: 'Diizinkan: <b>semua orang</b> di tenant Elev8-Suite — <code>ALLOWED_EMAILS</code> mempersempitnya.',
   signInOff: 'mati',
+
+  importHeading: 'Impor objek',
+  importLead: 'Membaca properti Booking dan listing Airbnb dari MyDataValue ke dalam portofolio. Aman dijalankan ulang: objek yang sudah dikenal tidak memakan biaya, jadi hanya yang baru atau yang masih belum bisa ditempatkan yang diambil.',
+  importStart: 'Mulai impor',
+  importNever: 'Belum ada impor yang dijalankan.',
+  importRunningSince: when => `Berjalan sejak ${when}. Halaman ini tidak menyegarkan dirinya sendiri.`,
+  importFinishedAt: when => `Selesai ${when}.`,
+  importCounts: (created, known, unresolved) =>
+    `${created} objek baru, ${known} sudah dikenal, ${unresolved} tidak dapat ditempatkan.`,
+  importFailedWith: reason => `Gagal: ${reason}`,
+  importBusy: 'Sebuah impor sedang berjalan. Tidak ada yang dimulai dua kali.',
+  importNeedsMdv: 'MyDataValue belum dikonfigurasi, jadi tidak ada sumber untuk diimpor. Diperlukan <code>MDV_CLIENT_ID</code> dan <code>MDV_CLIENT_SECRET</code>.',
+  importDemoStillOn: '<b>Data demonstrasi masih aktif.</b> Objek sungguhan dan baris <code>[Demo]</code> akan berdampingan sampai <code>SEED_DEMO</code> dihapus atau diisi selain <code>true</code> dan layanan dimulai ulang.',
+  importRefresh: 'muat ulang',
+  importBack: 'kembali ke kesiapan',
 
   noticeAuthBlocked: 'Otorisasi terkunci',
   noticeAuthBlockedBody: 'Selama belum ada cara masuk yang dikonfigurasi, rute ini tetap tertutup. Kalau tidak, siapa pun yang punya URL-nya bisa menitipkan izin MyDataValue milik orang lain di sini.',
