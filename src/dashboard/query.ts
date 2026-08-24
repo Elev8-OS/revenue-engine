@@ -31,6 +31,8 @@ export interface Row {
   label: string
   market: string
   band: string | null
+  /** What the band measures: 'bedrooms' or 'occupancy'. Never assume. */
+  bandBasis: string | null
   contract: string | null
   inHoldout: boolean
   atStake: number | null
@@ -68,7 +70,8 @@ export async function portfolio(
     select e.id                       as "entityId",
            e.label,
            e.market::text             as market,
-           e.bedroom_band             as band,
+           e.band                     as band,
+           e.band_basis               as "bandBasis",
            e.contract::text           as contract,
            e.in_holdout               as "inHoldout",
            -- largest single opportunity, never a sum

@@ -83,15 +83,15 @@ export class RateBudget {
  * listing. Returns the distinct panels to fetch and how many fetches it avoided.
  */
 export function dedupeMarketPanels(
-  entities: Array<{ market: string, bedroomBand: string | null }>,
+  entities: Array<{ market: string, band: string | null }>,
 ): { panels: Array<{ market: string, band: string }>, saved: number } {
   const seen = new Map<string, { market: string, band: string }>()
   let skipped = 0
   for (const e of entities) {
-    if (!e.bedroomBand) { skipped++; continue }
-    const key = `${e.market}::${e.bedroomBand}`
+    if (!e.band) { skipped++; continue }
+    const key = `${e.market}::${e.band}`
     if (seen.has(key)) skipped++
-    else seen.set(key, { market: e.market, band: e.bedroomBand })
+    else seen.set(key, { market: e.market, band: e.band })
   }
   return { panels: [...seen.values()], saved: skipped }
 }
