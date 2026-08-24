@@ -30,7 +30,7 @@ import { begin as mdvBegin, complete as mdvComplete, sweepFlows, DEFAULT_SCOPES 
   from './sources/mdv/oauth.js'
 import { storeInitialToken } from './sources/mdv/auth.js'
 import { seedRefreshToken } from './sources/mdv/client.js'
-import { startImport, latestRun, releaseAbandoned, ImportBusyError }
+import { startImport, latestRun, releaseAbandoned, reportCounts, ImportBusyError }
   from './import/run.js'
 import { pickLang, stringsFor, otherLang, langCookie, langCookieMaxAge, type Lang }
   from './i18n.js'
@@ -100,9 +100,22 @@ function sourceStates() {
   const env = process.env
   const need = (...n: string[]) => n.filter(x => !env[x])
   return [
-    { name: 'Elev8', key: 'elev8' as const, missing: need('ELEV8_API_BASE', 'ELEV8_API_TOKEN') },
+    // Two ways in, and either is enough. An API key is one header and nothing to
+    // store; a login is a service account that expires. Reporting only the key
+    // as "missing" would tell somebody who correctly configured the login that
+    // they had not.
+    { name: 'Elev8', key: 'elev8' as const,
+      missing: env.ELEV8_API_TOKEN || (env.ELEV8_LOGIN_EMAIL && env.ELEV8_LOGIN_PASSWORD)
+        ? need('ELEV8_API_BASE')
+        : [...need('ELEV8_API_BASE'), 'ELEV8_API_TOKEN or ELEV8_LOGIN_EMAIL+ELEV8_LOGIN_PASSWORD'] },
     { name: 'PriceLabs', key: 'pricelabs' as const, missing: need('PRICELABS_API_KEY') },
-    { name: 'Channex', key: 'channex' as const, missing: need('CHANNEX_API_KEY') },
+    // Channex is deliberately NOT listed any more. Elev8 proxies it in full —
+    // the same room and occupancy fields, the same channel mappings, plus the
+    // rooms Elev8 holds and Channex does not. A second row would ask for a
+    // second key and a second rate limit for data we already have, and a
+    // readiness page that asks for something nobody should set is worse than
+    // one that stays quiet. The variable stays declared in config.ts so a
+    // direct connection remains possible if that ever changes.
     { name: 'MyDataValue', key: 'mdv' as const,
       missing: need('MDV_CLIENT_ID', 'MDV_CLIENT_SECRET') },
   ].map(x => ({ ...x, ready: x.missing.length === 0 }))
@@ -557,8 +570,12 @@ ${gateEnabled && grant && !grant.revoked_at
 
   if (path === '/import' && req.method === 'POST') {
     if (!pool) { html(res, notice(lang, t.importHeading, t.loginFailed), 503); return }
+    const form = await formBody(req).catch(() => ({} as Record<string, string | undefined>))
+    // Whitelisted, not passed through. `source` reaches an importer lookup and
+    // an unknown value would only ever be a mistake or a probe.
+    const source = form.source === 'elev8' ? 'elev8' : 'mdv'
     try {
-      await startImport(pool, { startedBy: session.email || 'open' })
+      await startImport(pool, { startedBy: session.email || 'open', source })
     } catch (err) {
       // Busy is not an error worth a page of its own; the import page says it.
       if (!(err instanceof ImportBusyError)) throw err
@@ -573,13 +590,17 @@ ${gateEnabled && grant && !grant.revoked_at
     const mdvReady = Boolean(process.env.MDV_CLIENT_ID && process.env.MDV_CLIENT_SECRET)
     const demoOn = process.env.SEED_DEMO === 'true'
     const when = (d: Date) => d.toISOString().replace('T', ' ').slice(0, 16) + ' UTC'
+    const elev8Ready = Boolean(process.env.ELEV8_API_BASE
+      && (process.env.ELEV8_API_TOKEN
+          || (process.env.ELEV8_LOGIN_EMAIL && process.env.ELEV8_LOGIN_PASSWORD)))
     const state = !run ? `<p>${esc(t.importNever)}</p>`
       : !run.finishedAt ? `<p>${esc(t.importRunningSince(when(run.startedAt)))}</p>`
       : run.error ? `<p class="no">${esc(t.importFailedWith(run.error))}</p>`
-      : `<p><span class="ok">${esc(t.importFinishedAt(when(run.finishedAt)))}</span><br>`
-        + `${esc(t.importCounts(
-            (run.report?.bookingCreated ?? 0) + (run.report?.airbnbCreated ?? 0),
-            run.report?.alreadyKnown ?? 0, run.report?.unresolved ?? 0))}</p>`
+      : (() => {
+          const n = reportCounts(run.report)
+          return `<p><span class="ok">${esc(t.importFinishedAt(when(run.finishedAt)))}</span><br>`
+            + `${esc(t.importCounts(n.created, n.known, n.unresolved))}</p>`
+        })()
     html(res, `<!doctype html><html lang="${t.htmlLang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Revenue Engine — ${esc(t.importHeading)}</title>
@@ -601,8 +622,12 @@ ${demoOn ? `<div class="card warn">${t.importDemoStillOn}</div>` : ''}
 ${mdvReady ? '' : `<div class="card warn">${t.importNeedsMdv}</div>`}
 <div class="card"><p>${esc(t.importLead)}</p>${state}
 <form method="post" action="/import?lang=${lang}">
-  <button type="submit"${mdvReady && (!run || run.finishedAt) ? '' : ' disabled'}>${esc(t.importStart)}</button>
-</form></div>
+  ${esc(t.importStart)}:
+  <button type="submit" name="source" value="elev8"${elev8Ready && (!run || run.finishedAt) ? '' : ' disabled'}>Elev8</button>
+  <button type="submit" name="source" value="mdv"${mdvReady && (!run || run.finishedAt) ? '' : ' disabled'}>MyDataValue</button>
+</form>
+<p style="color:var(--mut);font-size:.85rem;margin:.8rem 0 0">
+  ${run ? esc(`${t.importHeading}: ${run.source}`) : ''}</p></div>
 </main></body></html>`)
     return
   }
