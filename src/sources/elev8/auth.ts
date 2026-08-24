@@ -2,16 +2,27 @@
  * Elev8 authentication — deliberately two modes, because which one we get is an
  * open question and the answer changes who has to do what.
  *
- *   'apikey'  A single header, no expiry, nothing to store. Elev8 has an
- *             API-key mechanism (/api/v1/admin/mcp-api-key,
- *             /api/v1/tenant/claude-api-key) and the MCP path demonstrably
- *             works with one. Whether that key is accepted on /api/v1/* REST is
- *             unconfirmed. If it is, this is the whole file's job done in one
- *             header and nobody needs a service account.
+ *   'jwt'     POST /api/v1/auth/login with an address and a password. A service
+ *             account: it expires, it can be locked out, and it is a password.
+ *             Also the ONLY thing that opens the Internal zone — see below.
  *
- *   'jwt'     POST /api/v1/auth/login with an address and a password. That is a
- *             service account: it expires, it can be locked out, and it is a
- *             password. The fallback, not the preference.
+ *   'apikey'  A single header, no expiry, nothing to store. Real, and useful for
+ *             the Partner zone (7 endpoints) and the Report zone (2) — but
+ *             MEASURED not to open /api/v1: a live import returned
+ *             `elev8 GET /api/v1/listing failed: Unauthenticated` with a valid
+ *             key. That question is now closed.
+ *
+ * WHICH ONE WINS, and why it changed. This file first preferred the API key,
+ * reasoning that a header which cannot expire is operationally better than one
+ * that can. True in general, and wrong here: since the key does not open the
+ * zone every caller in this codebase actually uses, preferring it meant that
+ * setting a key made the import fail EVEN WHEN a working service account sat
+ * right beside it. That is a trap, and it caught a real person on the first try.
+ *
+ * So the service account wins. The key stays supported rather than rejected,
+ * because the Partner zone is genuinely useful later — pushing a recommendation
+ * into the team's to-do list is a Partner endpoint — and nobody should have to
+ * delete a working credential to make an unrelated import run.
  *
  * The mode is chosen by which variables are set, and `/status` reports which one
  * is live — so "we are running on a password" is never a quiet state.
@@ -55,15 +66,23 @@ export type Elev8Auth =
  */
 export function authFromEnv(env: NodeJS.ProcessEnv = process.env):
   { auth: Elev8Auth } | { auth: null, reason: string } {
-  const key = env.ELEV8_API_TOKEN?.trim()
-  if (key) return { auth: { mode: 'apikey', apiKey: key } }
   const email = env.ELEV8_LOGIN_EMAIL?.trim()
   const password = env.ELEV8_LOGIN_PASSWORD
+  const key = env.ELEV8_API_TOKEN?.trim()
+
+  // The service account first: it is the only credential measured to open the
+  // Internal zone, so a set key must not shadow it.
   if (email && password) return { auth: { mode: 'jwt', email, password } }
+
+  // Half-configured is an error even when a key exists. Falling back silently
+  // would answer "why is my login ignored?" with a failure somewhere else
+  // entirely — and a half-set password is a typo, not a decision.
   if (email || password) {
     return { auth: null, reason: 'ELEV8_LOGIN_EMAIL and ELEV8_LOGIN_PASSWORD must be set together' }
   }
-  return { auth: null, reason: 'no ELEV8_API_TOKEN and no ELEV8_LOGIN_EMAIL/PASSWORD' }
+
+  if (key) return { auth: { mode: 'apikey', apiKey: key } }
+  return { auth: null, reason: 'no ELEV8_LOGIN_EMAIL/PASSWORD and no ELEV8_API_TOKEN' }
 }
 
 export interface LoginResult {
