@@ -147,7 +147,7 @@ check('a dataset with no timestamp is recorded as unknown, not as fresh',
       JSON.stringify(fresh.rows))
 
 const bands = await c.query<{ n: number }>(
-  `select count(*)::int n from entity where bedroom_band is null`)
+  `select count(*)::int n from entity where band is null`)
 check('no bedroom band is invented, so the cohort stays honestly unresolved',
       bands.rows[0]!.n === 6, String(bands.rows[0]!.n))
 
