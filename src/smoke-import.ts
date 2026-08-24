@@ -8,7 +8,8 @@
  */
 import { createServer } from 'node:http'
 import { Pool } from 'pg'
-import { startImport, latestRun, releaseAbandoned, ImportBusyError } from './import/run.js'
+import { startImport, latestRun, releaseAbandoned, ImportBusyError,
+  isElev8Report, reportCounts } from './import/run.js'
 import { seedRefreshToken } from './sources/mdv/client.js'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL! })
@@ -78,8 +79,14 @@ await settle()
 const done = await latestRun(c)
 check('the run finishes and records its report', done?.finishedAt !== null && !done?.error,
       done?.error ?? '')
-check('the report survives verbatim', done?.report?.bookingCreated === 1,
-      JSON.stringify(done?.report))
+// The narrowing is itself the assertion: two importers now share one column,
+// and a reader that guessed by key would read an Elev8 report as an MDV one.
+const stored = done?.report ?? null
+check('the stored report is recognisably the MDV shape', !isElev8Report(stored))
+check('the report survives verbatim',
+      !isElev8Report(stored) && stored?.bookingCreated === 1, JSON.stringify(stored))
+check('the page counts come out of either shape the same way',
+      reportCounts(stored).created === 1)
 const ent = await c.query<{ label: string, market: string }>(
   `select label, market::text from entity`)
 check('and the object actually landed', ent.rows[0]?.label === 'Imported Flat'

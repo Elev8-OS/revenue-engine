@@ -14,6 +14,16 @@
 import type { Pool, PoolClient } from 'pg'
 import { MdvClient } from '../sources/mdv/client.js'
 import { importObjects, type ImportReport } from '../sources/mdv/objects.js'
+import { Elev8Client } from '../sources/elev8/client.js'
+import { authFromEnv } from '../sources/elev8/auth.js'
+import { importElev8, type Elev8ImportReport } from '../sources/elev8/import.js'
+
+/**
+ * Two importers, two report shapes, one column. Discriminated by `source`
+ * rather than by which keys are present: a tag narrows reliably, and a reader
+ * six months from now should not have to infer which importer wrote a row.
+ */
+export type AnyReport = ImportReport | Elev8ImportReport
 
 export interface RunRow {
   id: string
@@ -21,9 +31,13 @@ export interface RunRow {
   startedBy: string | null
   startedAt: Date
   finishedAt: Date | null
-  report: ImportReport | null
+  report: AnyReport | null
   error: string | null
 }
+
+/** Narrows a stored report without trusting the caller to know the source. */
+export const isElev8Report = (r: AnyReport | null): r is Elev8ImportReport =>
+  Boolean(r) && 'listings' in (r as Elev8ImportReport)
 
 export class ImportBusyError extends Error {
   constructor() { super('an import is already running') }
@@ -33,7 +47,7 @@ export class ImportBusyError extends Error {
 export async function latestRun(client: PoolClient): Promise<RunRow | undefined> {
   const { rows } = await client.query<{
     id: string, source: string, started_by: string | null, started_at: Date,
-    finished_at: Date | null, report: ImportReport | null, error: string | null
+    finished_at: Date | null, report: AnyReport | null, error: string | null
   }>(`select id::text, source, started_by, started_at, finished_at, report, error
         from import_run order by started_at desc limit 1`)
   const r = rows[0]
@@ -77,26 +91,15 @@ export async function startImport(
 async function run(pool: Pool, runId: string, source: string): Promise<void> {
   const client = await pool.connect()
   try {
-    if (source !== 'mdv') throw new Error(`no importer for source ${source}`)
-    const clientId = process.env.MDV_CLIENT_ID
-    const clientSecret = process.env.MDV_CLIENT_SECRET
-    if (!clientId || !clientSecret) {
-      throw new Error('MDV_CLIENT_ID and MDV_CLIENT_SECRET must both be set')
-    }
-    const mdv = new MdvClient({
-      clientId, clientSecret,
-      base: process.env.MDV_BASE_URL ?? undefined,
-      // A seam, not a knob: without it this function cannot be tested against a
-      // stand-in provider, and an untested importer is one nobody can trust
-      // with a portfolio.
-      tokenUrl: process.env.MDV_TOKEN_URL ?? undefined,
-    })
-    const report = await importObjects(client, mdv)
+    const report = source === 'elev8'
+      ? await runElev8(client)
+      : source === 'mdv' ? await runMdv(client)
+      : (() => { throw new Error(`no importer for source ${source}`) })()
     await client.query(
       `update import_run set finished_at = now(), report = $2::jsonb where id = $1`,
       [runId, JSON.stringify(report)],
     )
-    console.log(`import ${runId} finished: ${JSON.stringify(report)}`)
+    console.log(`import ${runId} (${source}) finished`)
   } catch (err) {
     const message = (err as Error).message
     // Finish the row even on failure. An unfinished row would block every later
@@ -108,6 +111,69 @@ async function run(pool: Pool, runId: string, source: string): Promise<void> {
     ).catch(() => {})
     console.error(`import ${runId} failed: ${message}`)
   } finally { client.release() }
+}
+
+/**
+ * Elev8 needs no grant, only a credential — which is the operational difference
+ * that matters. An MDV import can be blocked by a revoked grant that a human has
+ * to repair with the provider; an Elev8 import is blocked only by a variable
+ * nobody has set yet.
+ */
+async function runElev8(client: PoolClient): Promise<Elev8ImportReport> {
+  const resolved = authFromEnv()
+  if (!resolved.auth) throw new Error(`elev8 not configured: ${resolved.reason}`)
+  const api = new Elev8Client({
+    auth: resolved.auth,
+    base: process.env.ELEV8_API_BASE ?? undefined,
+  })
+  return importElev8(client, api)
+}
+
+async function runMdv(client: PoolClient): Promise<ImportReport> {
+  const clientId = process.env.MDV_CLIENT_ID
+  const clientSecret = process.env.MDV_CLIENT_SECRET
+  if (!clientId || !clientSecret) {
+    throw new Error('MDV_CLIENT_ID and MDV_CLIENT_SECRET must both be set')
+  }
+  const mdv = new MdvClient({
+    clientId, clientSecret,
+    base: process.env.MDV_BASE_URL ?? undefined,
+    // A seam, not a knob: without it this function cannot be tested against a
+    // stand-in provider, and an untested importer is one nobody can trust
+    // with a portfolio.
+    tokenUrl: process.env.MDV_TOKEN_URL ?? undefined,
+  })
+  return importObjects(client, mdv)
+}
+
+/**
+ * The three numbers the import page shows, from either report shape.
+ *
+ * Here rather than in the page so that adding a third importer does not mean
+ * editing the HTML, and so the two shapes are reconciled in one place where the
+ * mapping is visible. "Created" means objects that did not exist before,
+ * whichever source found them.
+ */
+export function reportCounts(r: AnyReport | null): {
+  created: number, known: number, unresolved: number
+} {
+  if (!r) return { created: 0, known: 0, unresolved: 0 }
+  if (isElev8Report(r)) {
+    return {
+      created: r.listings.created,
+      known: r.listings.alreadyKnown,
+      // A listing with no market and an OTA id with no entity are both rows we
+      // saw and could not place. Counting them together is the honest total,
+      // because both surface as "not assessable".
+      unresolved: r.listings.noMarket
+        + r.channels.links.reduce((n, l) => n + l.noEntity, 0),
+    }
+  }
+  return {
+    created: r.bookingCreated + r.airbnbCreated,
+    known: r.alreadyKnown,
+    unresolved: r.unresolved,
+  }
 }
 
 /**
