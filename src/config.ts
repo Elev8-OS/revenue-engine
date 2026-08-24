@@ -7,10 +7,34 @@ import { z } from 'zod'
 const schema = z.object({
   DATABASE_URL: z.string().min(1),
 
+  /**
+   * Elev8 has two doors and either opens it.
+   *
+   *   ELEV8_API_TOKEN   an X-Api-Key. Confirmed for the Partner zone (7
+   *                     endpoints) and the Report zone (2). Whether the
+   *                     MCP/Claude key also opens the Internal zone (866,
+   *                     including rooms and the channel mappings) is an open
+   *                     question with Elev8 — if it does, this is all we need.
+   *   the login pair    POST /api/v1/auth/login. That is a service account: it
+   *                     expires, it can be locked out, and it is a password.
+   *                     The fallback, not the preference.
+   *
+   * The token is preferred where both are set, because a header that cannot
+   * expire is strictly better operationally than one that can.
+   */
   ELEV8_API_BASE: z.string().url().optional(),
   ELEV8_API_TOKEN: z.string().optional(),
+  ELEV8_LOGIN_EMAIL: z.string().optional(),
+  ELEV8_LOGIN_PASSWORD: z.string().optional(),
 
   PRICELABS_API_KEY: z.string().optional(),
+  /**
+   * Kept declared, deliberately unused. Elev8 proxies Channex in full — the
+   * same occupancy fields, the same channel mappings — so a direct connection
+   * would buy a second credential and a second rate limit for data we already
+   * have. Declared rather than deleted because the day Elev8's proxy stops
+   * being enough, the name should not have to be rediscovered.
+   */
   CHANNEX_API_KEY: z.string().optional(),
 
   /**
@@ -60,7 +84,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 /** Which sources are usable right now. Lets the worker run partially. */
 export function availableSources(c: Config) {
   return {
-    elev8: Boolean(c.ELEV8_API_BASE && c.ELEV8_API_TOKEN),
+    elev8: Boolean(c.ELEV8_API_BASE
+      && (c.ELEV8_API_TOKEN || (c.ELEV8_LOGIN_EMAIL && c.ELEV8_LOGIN_PASSWORD))),
     pricelabs: Boolean(c.PRICELABS_API_KEY),
     channex: Boolean(c.CHANNEX_API_KEY),
     // Ready means a client is configured. Whether a live grant exists is a
