@@ -12,7 +12,7 @@
  *     has to state the gate rather than a label somebody typed.
  */
 import type { PoolClient } from 'pg'
-import type { Lang } from '../i18n.js'
+import { stringsFor, type Lang } from '../i18n.js'
 
 export type Basis = 'revenue' | 'margin'
 
@@ -109,13 +109,39 @@ export async function evidence(client: PoolClient, findingId: string, lang: Lang
   return rows
 }
 
-/** Rooms a check could not reach, with the missing signal named. */
+/**
+ * Rooms that cannot be assessed, from two sources that mean different things.
+ *
+ *   not_assessable   A CHECK RAN and could not reach this room — a missing
+ *                    signal, stale data, a gate that refused. Written per day by
+ *                    a check run.
+ *   no band          A STRUCTURAL fact: without a room count or a capacity there
+ *                    is no cohort, so nothing can be compared no matter which
+ *                    checks run. True before any check exists.
+ *
+ * Both belong in the same count, because the reader's question is "how much of
+ * my portfolio did this actually look at". Splitting them across two numbers
+ * would answer a question nobody asked.
+ *
+ * The reason this exists at all: the tile read 0 on a portfolio where four rooms
+ * had no band, because it only queried not_assessable — a table nothing writes
+ * until the check runner is built. The one number whose job is to stop a
+ * half-assessed portfolio looking healthy was doing the opposite.
+ */
 export async function notAssessable(client: PoolClient, lang: Lang) {
   const { rows } = await client.query<{ label: string, reason: string }>(
     `select e.label, ${say('n.reason', '$1')} as reason
        from not_assessable n join entity e on e.id = n.entity_id
       where n.as_of = (select max(as_of) from not_assessable)
-      order by e.label`, [lang])
+     union
+     select e.label, $2 as reason
+       from entity e
+      where e.active and e.band is null
+        -- Not twice. A room with no band that a check also could not reach is
+        -- one room, and the check's reason is the more specific of the two.
+        and e.id not in (select entity_id from not_assessable
+                          where as_of = (select max(as_of) from not_assessable))
+      order by label`, [lang, stringsFor(lang).reasonNoBand])
   return rows
 }
 
