@@ -17,11 +17,11 @@ const c = await pool.connect()
 
 // ---- entities
 const bali = (await c.query(
-  `insert into entity (label, market, bedroom_band, contract)
-   values ('The R Villa Masurai', 'bali', '2BR', 'guaranteed_rent') returning id`)).rows[0].id
+  `insert into entity (label, market, band, band_basis, contract)
+   values ('The R Villa Masurai', 'bali', '2BR', 'bedrooms', 'guaranteed_rent') returning id`)).rows[0].id
 const dupA = (await c.query(
-  `insert into entity (label, market, bedroom_band) values ('The R Villa Merapi', 'bali', '1BR') returning id`)).rows[0].id
-await c.query(`insert into entity (label, market, bedroom_band) values ('The R Villa Merapi', 'bali', '1BR')`)
+  `insert into entity (label, market, band, band_basis) values ('The R Villa Merapi', 'bali', '1BR', 'bedrooms') returning id`)).rows[0].id
+await c.query(`insert into entity (label, market, band, band_basis) values ('The R Villa Merapi', 'bali', '1BR', 'bedrooms')`)
 
 // ---- pure helpers
 check('PriceLabs composite splits', splitPriceLabsId('2fc503c2___5e786457')?.right === '5e786457')
@@ -87,9 +87,9 @@ check('freshness gate catches property_core only', stale.length === 1 && stale[0
 
 // ---- market panel dedupe
 const { panels, saved } = dedupeMarketPanels([
-  { market: 'bali', bedroomBand: '2BR' }, { market: 'bali', bedroomBand: '2BR' },
-  { market: 'bali', bedroomBand: '1BR' }, { market: 'ch', bedroomBand: '2BR' },
-  { market: 'bali', bedroomBand: null },
+  { market: 'bali', band: '2BR' }, { market: 'bali', band: '2BR' },
+  { market: 'bali', band: '1BR' }, { market: 'ch', band: '2BR' },
+  { market: 'bali', band: null },
 ])
 check('panel dedupe collapses duplicates and skips unbanded', panels.length === 3 && saved === 2,
       `${panels.length} panels, ${saved} fetches avoided`)
