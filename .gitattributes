@@ -1,0 +1,21 @@
+# Line endings are decided here, not per machine.
+#
+# Without this file every Windows clone rewrites all 61 files to CRLF on
+# checkout while the objects hold LF, so `git status` reports the whole
+# repository as modified — 8598 insertions and 8598 deletions with no content
+# change at all. That noise is not harmless: it hid the question "does this
+# working tree hold uncommitted work?" twice, and answering it needed a diff
+# with --ignore-all-space to prove the changes were empty.
+#
+# The service runs on Linux and the SQL is executed by Postgres, so LF is the
+# right answer in the objects AND in the working copy. eol=lf makes that true on
+# every platform instead of depending on how core.autocrlf happens to be set.
+* text=auto eol=lf
+
+# Nothing in here is binary today. Declared anyway, because the day someone adds
+# a screenshot to the README is not the day to discover that text=auto mangled it.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
+*.ico binary
