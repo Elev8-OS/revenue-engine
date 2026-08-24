@@ -30,6 +30,8 @@ import { begin as mdvBegin, complete as mdvComplete, sweepFlows, DEFAULT_SCOPES 
   from './sources/mdv/oauth.js'
 import { storeInitialToken } from './sources/mdv/auth.js'
 import { seedRefreshToken } from './sources/mdv/client.js'
+import { startImport, latestRun, releaseAbandoned, ImportBusyError }
+  from './import/run.js'
 import { pickLang, stringsFor, otherLang, langCookie, langCookieMaxAge, type Lang }
   from './i18n.js'
 import * as q from './dashboard/query.js'
@@ -161,6 +163,12 @@ async function boot(): Promise<void> {
       // seedRefreshToken: after the first refresh the stored token has rotated
       // while the variable still holds the original, and presenting that is what
       // MDV treats as theft. So this is safe to leave running on every boot.
+
+      // A redeploy is exactly when a run gets killed mid-import, and an
+      // unfinished row would block every later attempt for good.
+      const freed = await releaseAbandoned(c)
+      if (freed) console.log(`import: released ${freed} abandoned run(s)`)
+
       if (process.env.MDV_CLIENT_ID) {
         const outcome = await seedRefreshToken(c, {
           clientId: process.env.MDV_CLIENT_ID,
@@ -509,8 +517,16 @@ ${srcs.map(x => `<tr><td><b>${x.name}</b></td><td>${x.ready
 <code>${esc(entra.redirectUri)}</code> · ${esc(t.tenantLabel)} <code>${esc(entra.tenantId)}</code></div>
 <div class="card"><b>MyDataValue</b> — ${grantText}<br>${esc(t.redirectUriLabel)}
 <code>${esc(mdvRedirectUri)}</code>${gateEnabled
-  ? ` · <a href="/auth/mdv?lang=${lang}">${esc(t.authoriseNow)}</a>`
-  : ` · ${esc(t.authBlockedNoAllowlist)}`}</div>
+  ? ` · <a href="/auth/mdv?lang=${lang}">${esc(grant && !grant.revoked_at
+      ? t.grantReplace : t.authoriseNow)}</a>`
+  : ` · ${esc(t.authBlockedNoAllowlist)}`}
+${gateEnabled && grant && !grant.revoked_at
+  // A live grant plus a prominent "authorise now" invites somebody to break a
+  // working connection. Say what the link does before they find out — and only
+  // where the link is actually shown, or the caution refers to nothing.
+  ? `<br><span style="color:var(--mut);font-size:.85rem">${t.grantReplaceCaution}</span>`
+  : ''}</div>
+<div class="card"><b>${esc(t.importHeading)}</b> — <a href="/import?lang=${lang}">${esc(t.importStart)}</a></div>
 <div class="card"><b>${esc(t.signIn)}</b> — ${gateEnabled
   ? `<span class="ok">${esc(t.signInActive)}</span>: ${[
       ssoEnabled ? esc(t.signInMicrosoft) : null,
@@ -525,6 +541,60 @@ ${srcs.map(x => `<tr><td><b>${x.name}</b></td><td>${x.ready
         + (gates.length > 1 ? ` ${t.admittedEveryGateApplies}` : '')
     })()}`
   : `<span class="no">${esc(t.signInOff)}</span> — ${t.loginNoMethod}`}</div>
+</main></body></html>`)
+    return
+  }
+
+  /* ------------------------------------------------------------------ import */
+
+  if (path === '/import' && req.method === 'POST') {
+    if (!pool) { html(res, notice(lang, t.importHeading, t.loginFailed), 503); return }
+    try {
+      await startImport(pool, { startedBy: session.email || 'open' })
+    } catch (err) {
+      // Busy is not an error worth a page of its own; the import page says it.
+      if (!(err instanceof ImportBusyError)) throw err
+      console.log('[import] refused: already running')
+    }
+    redirect(res, `/import?lang=${lang}`)
+    return
+  }
+
+  if (path === '/import') {
+    const run = await withClient(c => latestRun(c))
+    const mdvReady = Boolean(process.env.MDV_CLIENT_ID && process.env.MDV_CLIENT_SECRET)
+    const demoOn = process.env.SEED_DEMO === 'true'
+    const when = (d: Date) => d.toISOString().replace('T', ' ').slice(0, 16) + ' UTC'
+    const state = !run ? `<p>${esc(t.importNever)}</p>`
+      : !run.finishedAt ? `<p>${esc(t.importRunningSince(when(run.startedAt)))}</p>`
+      : run.error ? `<p class="no">${esc(t.importFailedWith(run.error))}</p>`
+      : `<p><span class="ok">${esc(t.importFinishedAt(when(run.finishedAt)))}</span><br>`
+        + `${esc(t.importCounts(
+            (run.report?.bookingCreated ?? 0) + (run.report?.airbnbCreated ?? 0),
+            run.report?.alreadyKnown ?? 0, run.report?.unresolved ?? 0))}</p>`
+    html(res, `<!doctype html><html lang="${t.htmlLang}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Revenue Engine — ${esc(t.importHeading)}</title>
+<style>:root{color-scheme:light dark;--paper:#F1F3F1;--ink:#171C1B;--mut:#5D6B69;--line:#D2DAD6;--surface:#FBFCFA;--teal:#0D615E;--rust:#97392B;--brass:#8A6A1C}
+@media(prefers-color-scheme:dark){:root{--paper:#0F1312;--ink:#E7ECE9;--mut:#94A3A0;--line:#28302E;--surface:#161B1A;--teal:#58C4BC;--rust:#E28A7C;--brass:#DFB44E}}
+body{margin:0;background:var(--paper);color:var(--ink);padding:2.5rem 1.25rem;font:15px/1.6 ui-sans-serif,system-ui,sans-serif}
+main{max-width:44rem;margin:0 auto}h1{font-size:1.4rem;margin:0 0 .3rem}
+p{margin:0 0 1rem}p.s{color:var(--mut);font-size:.9rem;margin-bottom:1.5rem}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:1rem 1.1rem;margin-bottom:.8rem}
+.warn{border-left:3px solid var(--brass)}
+button{font:inherit;font-weight:600;padding:.55rem 1rem;border-radius:3px;border:1px solid var(--ink);
+background:var(--ink);color:var(--paper);cursor:pointer}
+button[disabled]{opacity:.45;cursor:not-allowed}
+code{font:500 .82em ui-monospace,monospace;color:var(--teal)}
+.ok{color:var(--teal);font-weight:600}.no{color:var(--rust);font-weight:600}a{color:inherit}</style></head>
+<body><main><h1>${esc(t.importHeading)}</h1>
+<p class="s"><a href="/status?lang=${lang}">${esc(t.importBack)}</a> · <a href="/import?lang=${lang}">${esc(t.importRefresh)}</a></p>
+${demoOn ? `<div class="card warn">${t.importDemoStillOn}</div>` : ''}
+${mdvReady ? '' : `<div class="card warn">${t.importNeedsMdv}</div>`}
+<div class="card"><p>${esc(t.importLead)}</p>${state}
+<form method="post" action="/import?lang=${lang}">
+  <button type="submit"${mdvReady && (!run || run.finishedAt) ? '' : ' disabled'}>${esc(t.importStart)}</button>
+</form></div>
 </main></body></html>`)
     return
   }
