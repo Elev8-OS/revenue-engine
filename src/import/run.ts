@@ -99,7 +99,11 @@ async function run(pool: Pool, runId: string, source: string): Promise<void> {
       `update import_run set finished_at = now(), report = $2::jsonb where id = $1`,
       [runId, JSON.stringify(report)],
     )
-    console.log(`import ${runId} (${source}) finished`)
+    // The report, not just the fact. Shortened to "finished" when this grew a
+    // second importer, which removed the only place a run's outcome could be
+    // read without a browser — and the log is exactly where somebody looks
+    // after a run they were not watching.
+    console.log(`import ${runId} (${source}) finished: ${JSON.stringify(report)}`)
   } catch (err) {
     const message = (err as Error).message
     // Finish the row even on failure. An unfinished row would block every later

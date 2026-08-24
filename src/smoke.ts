@@ -5,6 +5,7 @@ import { rateFor, convert, FxError } from './fx/index.js'
 import { resolve, resolveByLabel, link, splitPriceLabsId, normaliseElev8Id } from './entity/resolve.js'
 import { writeSnapshots, pickup, recordFreshness, staleDatasets } from './snapshot/write.js'
 import { dedupeMarketPanels } from './scheduler/budget.js'
+import * as q from './dashboard/query.js'
 
 const pool = getPool(process.env.DATABASE_URL!)
 let fails = 0
@@ -84,6 +85,29 @@ await recordFreshness(c, 'mdv_booking', 'property_core', bali, new Date(Date.now
 const stale = await staleDatasets(c, bali, 24)
 check('freshness gate catches property_core only', stale.length === 1 && stale[0]!.dataset === 'property_core',
       stale.map(s => `${s.dataset} ${s.ageHours.toFixed(0)}h`).join(', '))
+
+// ---- not assessable: the structural case AND the check case, once each
+// The tile read 0 on a portfolio with four unbanded rooms, because it only
+// queried a table that nothing writes until the check runner exists.
+const unbanded = (await c.query(
+  `insert into entity (label, market) values ('No Band Villa', 'bali') returning id`)).rows[0].id
+const naStructural = await q.notAssessable(c, 'en')
+check('a room with no band is not assessable, before any check runs',
+      naStructural.some(r => r.label === 'No Band Villa'), JSON.stringify(naStructural))
+check('and a banded room is NOT on the list',
+      !naStructural.some(r => r.label === 'The R Villa Masurai'))
+await c.query(
+  `insert into not_assessable (entity_id, as_of, reason) values ($1, current_date, 'stale pricing')`,
+  [unbanded])
+const naBoth = await q.notAssessable(c, 'en')
+// One room, one row: the check's reason is the more specific of the two and the
+// count must not double.
+check('a room that is both unbanded and unreached appears exactly once',
+      naBoth.filter(r => r.label === 'No Band Villa').length === 1, JSON.stringify(naBoth))
+check("and it reports the check's reason, not the structural one",
+      naBoth.find(r => r.label === 'No Band Villa')?.reason === 'stale pricing')
+await c.query(`delete from not_assessable`)
+await c.query(`delete from entity where id = $1`, [unbanded])
 
 // ---- market panel dedupe
 const { panels, saved } = dedupeMarketPanels([
