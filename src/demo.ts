@@ -146,8 +146,8 @@ export async function seedDemo(client: PoolClient): Promise<number> {
   await client.query(`delete from entity where label like '[Demo]%'`)
   for (const s of SEEDS) {
     const { rows } = await client.query<{ id: string }>(
-      `insert into entity (label, market, bedroom_band, location_type, location_code, contract, in_holdout)
-       values ($1,'bali',$2,'beach','ID-BA-BADUNG',$3,$4) returning id`,
+      `insert into entity (label, market, band, band_basis, location_type, location_code, contract, in_holdout)
+       values ($1,'bali',$2,'bedrooms','beach','ID-BA-BADUNG',$3,$4) returning id`,
       [s.label, s.band, s.contract, s.holdout])
     const entityId = rows[0]!.id
 
@@ -188,7 +188,7 @@ export async function seedDemo(client: PoolClient): Promise<number> {
   ]
   for (const [label, reason] of unreachable) {
     const { rows } = await client.query<{ id: string }>(
-      `insert into entity (label, market, bedroom_band) values ($1,'bali','2BR') returning id`, [label])
+      `insert into entity (label, market, band, band_basis) values ($1,'bali','2BR','bedrooms') returning id`, [label])
     await client.query(
       `insert into not_assessable (entity_id, as_of, reason, text_i18n)
        values ($1, current_date, $2, $3::jsonb)`,
