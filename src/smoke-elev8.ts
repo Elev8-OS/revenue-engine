@@ -99,9 +99,21 @@ const keyClient = () => new Elev8Client({ auth: { mode: 'apikey', apiKey: 'elv8_
 
 /* ------------------------------------------------------- 1 · mode resolution */
 
-check('an API key wins when both are set',
+// The precedence was the other way round for one hour, and it cost a real
+// person two failed imports: the API key is MEASURED not to open /api/v1
+// (`Unauthenticated` on GET /api/v1/listing with a valid key), so preferring it
+// meant a set key made the import fail even beside a working service account.
+check('the service account wins when both are set — it is the one that works',
       authFromEnv({ ELEV8_API_TOKEN: 'k', ELEV8_LOGIN_EMAIL: 'a@b.c', ELEV8_LOGIN_PASSWORD: 'p' } as NodeJS.ProcessEnv)
-        .auth?.mode === 'apikey')
+        .auth?.mode === 'jwt')
+check('an API key alone is still accepted, for the Partner and Report zones',
+      authFromEnv({ ELEV8_API_TOKEN: 'k' } as NodeJS.ProcessEnv).auth?.mode === 'apikey')
+// A half-set login must not fall through to the key: that answers "why is my
+// login ignored?" with a failure somewhere else entirely.
+const halfWithKey = authFromEnv(
+  { ELEV8_API_TOKEN: 'k', ELEV8_LOGIN_EMAIL: 'a@b.c' } as NodeJS.ProcessEnv)
+check('a half-set login is an error even when a key is present',
+      halfWithKey.auth === null, JSON.stringify(halfWithKey))
 check('email and password give jwt mode',
       authFromEnv({ ELEV8_LOGIN_EMAIL: 'a@b.c', ELEV8_LOGIN_PASSWORD: 'p' } as NodeJS.ProcessEnv)
         .auth?.mode === 'jwt')
