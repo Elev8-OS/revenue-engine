@@ -36,6 +36,7 @@ import { pickLang, stringsFor, otherLang, langCookie, langCookieMaxAge, type Lan
   from './i18n.js'
 import { publicOrigin } from './public-origin.js'
 import { authFromEnv, sessionState as elev8Session } from './sources/elev8/auth.js'
+import { knownShapes, latestShape } from './sources/elev8/shape.js'
 import * as q from './dashboard/query.js'
 import { renderDashboard, renderLogin } from './dashboard/render.js'
 
@@ -107,11 +108,14 @@ function sourceStates() {
     // store; a login is a service account that expires. Reporting only the key
     // as "missing" would tell somebody who correctly configured the login that
     // they had not.
-    { name: 'Elev8', key: 'elev8' as const,
+    { name: 'Elev8', key: 'elev8' as const, reads: true,
       missing: env.ELEV8_API_TOKEN || (env.ELEV8_LOGIN_EMAIL && env.ELEV8_LOGIN_PASSWORD)
         ? need('ELEV8_API_BASE')
         : [...need('ELEV8_API_BASE'), 'ELEV8_API_TOKEN or ELEV8_LOGIN_EMAIL+ELEV8_LOGIN_PASSWORD'] },
-    { name: 'PriceLabs', key: 'pricelabs' as const, missing: need('PRICELABS_API_KEY') },
+    // reads:false is the honest state and it has to be visible. A green row for
+    // a source with no adapter told somebody their data was flowing when the key
+    // was read in exactly three places: the schema, this list, and nowhere else.
+    { name: 'PriceLabs', key: 'pricelabs' as const, reads: false, missing: need('PRICELABS_API_KEY') },
     // Channex is deliberately NOT listed any more. Elev8 proxies it in full —
     // the same room and occupancy fields, the same channel mappings, plus the
     // rooms Elev8 holds and Channex does not. A second row would ask for a
@@ -119,7 +123,7 @@ function sourceStates() {
     // readiness page that asks for something nobody should set is worse than
     // one that stays quiet. The variable stays declared in config.ts so a
     // direct connection remains possible if that ever changes.
-    { name: 'MyDataValue', key: 'mdv' as const,
+    { name: 'MyDataValue', key: 'mdv' as const, reads: true,
       missing: need('MDV_CLIENT_ID', 'MDV_CLIENT_SECRET') },
   ].map(x => ({ ...x, ready: x.missing.length === 0 }))
 }
@@ -516,8 +520,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     html(res, `<!doctype html><html lang="${t.htmlLang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Revenue Engine — ${esc(t.readinessHeading)}</title>
-<style>:root{color-scheme:light dark;--paper:#F1F3F1;--ink:#171C1B;--mut:#5D6B69;--line:#D2DAD6;--surface:#FBFCFA;--teal:#0D615E;--rust:#97392B}
-@media(prefers-color-scheme:dark){:root{--paper:#0F1312;--ink:#E7ECE9;--mut:#94A3A0;--line:#28302E;--surface:#161B1A;--teal:#58C4BC;--rust:#E28A7C}}
+<style>:root{color-scheme:light dark;--paper:#F1F3F1;--ink:#171C1B;--mut:#5D6B69;--line:#D2DAD6;--surface:#FBFCFA;--teal:#0D615E;--rust:#97392B;--brass:#8A6A1C}
+@media(prefers-color-scheme:dark){:root{--paper:#0F1312;--ink:#E7ECE9;--mut:#94A3A0;--line:#28302E;--surface:#161B1A;--teal:#58C4BC;--rust:#E28A7C;--brass:#DFB44E}}
 body{margin:0;background:var(--paper);color:var(--ink);padding:2.5rem 1.25rem;font:15px/1.6 ui-sans-serif,system-ui,sans-serif}
 main{max-width:56rem;margin:0 auto}h1{font-size:1.4rem;margin:0 0 .3rem}
 p.s{color:var(--mut);margin:0 0 1.5rem;font-size:.9rem}
@@ -526,7 +530,8 @@ table{width:100%;border-collapse:collapse;font-size:.9rem}
 th{text-align:left;font-size:.64rem;text-transform:uppercase;letter-spacing:.1em;color:var(--mut);padding:0 .5rem .4rem 0;border-bottom:1px solid var(--line)}
 td{padding:.5rem .5rem .5rem 0;border-bottom:1px solid var(--line);vertical-align:top}
 tr:last-child td{border-bottom:none}code{font:500 .82em ui-monospace,monospace;color:var(--teal)}
-.ok{color:var(--teal);font-weight:600}.no{color:var(--rust);font-weight:600}a{color:inherit}</style></head>
+.ok{color:var(--teal);font-weight:600}.no{color:var(--rust);font-weight:600}
+.part{color:var(--brass);font-weight:600}a{color:inherit}</style></head>
 <body><main><h1>${esc(t.readinessHeading)}</h1>
 <p class="s">${t.readinessLead} · <a href="/?lang=${lang}">${esc(t.toDashboard)}</a>
  · <a href="/status?lang=${otherLang(lang)}" hreflang="${otherLang(lang)}">${esc(t.otherLangName)}</a></p>
@@ -538,7 +543,9 @@ tr:last-child td{border-bottom:none}code{font:500 .82em ui-monospace,monospace;c
 <div class="card"><table><thead><tr><th>${esc(t.colSource)}</th><th>${esc(t.colState)}</th>
 <th>${esc(t.colWhatFor)}</th></tr></thead><tbody>
 ${srcs.map(x => `<tr><td><b>${x.name}</b></td><td>${x.ready
-  ? `<span class="ok">${esc(t.connected)}</span>`
+  ? x.reads
+    ? `<span class="ok">${esc(t.connected)}</span>`
+    : `<span class="part">${esc(t.notRead)}</span>`
   : `<span class="no">${esc(t.missing)}</span> ${x.missing.map(m => `<code>${m}</code>`).join(' ')}`}</td>
   <td style="color:var(--mut)">${esc(t.sourceNotes[x.key])}</td></tr>`).join('')}
 </tbody></table></div>
@@ -591,7 +598,8 @@ ${gateEnabled && grant && !grant.revoked_at
   return `<span class="ok">using <code>ELEV8_LOGIN_EMAIL</code></span> — signed in, `
     + `valid until ${esc(st.expiresAt?.toISOString().replace('T', ' ').slice(0, 16) ?? '?')} UTC`
 })()}</div>
-<div class="card"><b>${esc(t.importHeading)}</b> — <a href="/import?lang=${lang}">${esc(t.importStart)}</a></div>
+<div class="card"><b>${esc(t.importHeading)}</b> — <a href="/import?lang=${lang}">${esc(t.importStart)}</a>
+ · <a href="/shapes">API response shapes</a></div>
 <div class="card"><b>${esc(t.signIn)}</b> — ${gateEnabled
   ? `<span class="ok">${esc(t.signInActive)}</span>: ${[
       ssoEnabled ? esc(t.signInMicrosoft) : null,
@@ -606,6 +614,76 @@ ${gateEnabled && grant && !grant.revoked_at
         + (gates.length > 1 ? ` ${t.admittedEveryGateApplies}` : '')
     })()}`
   : `<span class="no">${esc(t.signInOff)}</span> — ${t.loginNoMethod}`}</div>
+</main></body></html>`)
+    return
+  }
+
+  /* ------------------------------------------------------------------ shapes */
+
+  /**
+   * What the sources actually returned, as shapes rather than as data.
+   *
+   * This page is the payoff of api_shape, and it exists because of a specific
+   * mistake. The importer had a rule meant to skip rows that are not rentable
+   * objects, calibrated against a field called `listing_id` that was empty on 17
+   * of 72 rows — measured through the MCP view. The REST endpoint names a
+   * different field, so the rule never fired and a storage cupboard and an
+   * office are now sitting in a revenue cohort.
+   *
+   * The fix is not another guess. It is looking at what the endpoint returns and
+   * which of its fields is actually filled — which is exactly what got recorded
+   * during the import and had nowhere to be read.
+   *
+   * Untranslated on purpose: field paths, JSON types and counts read the same in
+   * every language, and inventing Indonesian for `rooms[].bed_type_id` would
+   * make it harder to match against the API, not easier.
+   */
+  if (path === '/shapes') {
+    const rows = await withClient(c => knownShapes(c))
+    const want = url.searchParams.get('endpoint')
+    const detail = want ? await withClient(c => latestShape(c, 'elev8', want)) : null
+    const pct = (f: number, n: number) => n ? `${Math.round((f / n) * 100)}%` : '—'
+    html(res, `<!doctype html><html lang="${t.htmlLang}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Revenue Engine — API response shapes</title>
+<style>:root{color-scheme:light dark;--paper:#F1F3F1;--ink:#171C1B;--mut:#5D6B69;--line:#D2DAD6;--surface:#FBFCFA;--teal:#0D615E;--rust:#97392B;--brass:#8A6A1C}
+@media(prefers-color-scheme:dark){:root{--paper:#0F1312;--ink:#E7ECE9;--mut:#94A3A0;--line:#28302E;--surface:#161B1A;--teal:#58C4BC;--rust:#E28A7C;--brass:#DFB44E}}
+body{margin:0;background:var(--paper);color:var(--ink);padding:2.5rem 1.25rem;font:15px/1.6 ui-sans-serif,system-ui,sans-serif}
+main{max-width:60rem;margin:0 auto}h1{font-size:1.4rem;margin:0 0 .3rem}
+h2{font-size:1rem;margin:1.8rem 0 .6rem}
+p.s{color:var(--mut);margin:0 0 1.5rem;font-size:.9rem}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:1rem 1.1rem;margin-bottom:.8rem;overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:.88rem}
+th{text-align:left;font-size:.64rem;text-transform:uppercase;letter-spacing:.1em;color:var(--mut);padding:0 .6rem .4rem 0;border-bottom:1px solid var(--line)}
+td{padding:.35rem .6rem .35rem 0;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:none}
+code{font:500 .84em ui-monospace,monospace;color:var(--teal)}
+.full{color:var(--teal);font-weight:600}.some{color:var(--brass);font-weight:600}.none{color:var(--rust);font-weight:600}
+a{color:inherit}</style></head>
+<body><main><h1>API response shapes</h1>
+<p class="s">Paths, JSON types and how often each was non-empty. Values are never
+recorded — a shape is safe to keep, a sample of live data is not.
+ · <a href="/status?lang=${lang}">${esc(t.readiness)}</a></p>
+${!rows?.length ? '<div class="card">Nothing observed yet. Run an import.</div>' : `
+<div class="card"><table><thead><tr><th>Endpoint</th><th>Observed</th><th>Samples</th>
+<th>Paths</th></tr></thead><tbody>
+${rows.map(r => `<tr><td><a href="/shapes?endpoint=${encodeURIComponent(r.endpoint)}"><code>${esc(r.endpoint)}</code></a></td>
+<td>${esc(r.observedAt.toISOString().replace('T', ' ').slice(0, 16))} UTC</td>
+<td>${r.sampleCount}</td><td>${r.paths}</td></tr>`).join('')}
+</tbody></table></div>`}
+${detail ? `<h2><code>${esc(want ?? '')}</code> — ${detail.sampleCount} sample(s)${
+  detail.note ? `, ${esc(detail.note)}` : ''}</h2>
+<div class="card"><table><thead><tr><th>Path</th><th>Types</th><th>Filled</th><th></th>
+</tr></thead><tbody>
+${detail.shape.map(e => {
+  // The fill share is the whole reason this page exists: a field that exists and
+  // is empty is the failure mode reading documentation cannot catch.
+  const share = e.total ? e.filled / e.total : 0
+  const cls = share === 1 ? 'full' : share > 0 ? 'some' : 'none'
+  return `<tr><td><code>${esc(e.path)}</code></td><td style="color:var(--mut)">${esc(e.types.join(' | '))}</td>
+<td class="${cls}">${e.filled}/${e.total}</td><td class="${cls}">${pct(e.filled, e.total)}</td></tr>`
+}).join('')}
+</tbody></table></div>` : want ? `<div class="card">No shape recorded for <code>${esc(want)}</code>.</div>` : ''}
 </main></body></html>`)
     return
   }
