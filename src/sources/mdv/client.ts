@@ -90,22 +90,39 @@ export type SeedOutcome =
   | 'seeded'
   /** A live grant already exists; the variable was ignored. */
   | 'kept_existing'
-  /** A revoked grant exists. Re-seeding would present a certainly-dead token. */
+  /**
+   * A revoked grant existed and the variable holds a DIFFERENT token, so a
+   * human has clearly fetched a new one. The dead chain was replaced.
+   */
+  | 'reseeded'
+  /**
+   * A revoked grant exists and the variable still holds the very token that
+   * died with it. Presenting it again would fail identically.
+   */
   | 'kept_revoked'
   | 'not_configured'
 
 /**
- * Stores a refresh token handed over out-of-band, ONCE.
+ * Stores a refresh token handed over out-of-band, ONCE per chain.
  *
  * The guard is the whole point. A seed variable stays set in the deployment
  * config, so every restart would re-run this — and by then the stored token has
  * rotated several times while the variable still holds the original. Presenting
  * that original is exactly what MDV treats as a stolen token, which revokes the
- * grant. So: seed only when there is no row at all.
+ * grant. So a LIVE grant is never touched, whatever the variable says.
  *
- * A REVOKED row also blocks. It is tempting to treat re-seeding as the fix for a
- * revoked grant, but the seed value came from the same chain and is dead too;
- * the only real fix is a newly issued token, and a human has to fetch it.
+ * A REVOKED grant is the opposite case, and the first version of this function
+ * got it wrong. It refused to re-seed on the reasoning that the seed value came
+ * from the same dead chain — true, but only while the variable is unchanged.
+ * The effect was a dead end: the grant died, and the one recovery route that
+ * needs no registered redirect URI was closed by our own guard, so the operator
+ * had nothing left to try.
+ *
+ * The distinction that actually matters is not live-versus-revoked but
+ * SAME-VERSUS-DIFFERENT. A revoked grant holds nothing worth protecting, so a
+ * token the operator has newly fetched replaces it. A token identical to the one
+ * that died is refused — not because it is unsafe, but because it is futile,
+ * and "kept_revoked" in the log says the variable was never updated.
  */
 export async function seedRefreshToken(
   client: PoolClient,
@@ -113,11 +130,31 @@ export async function seedRefreshToken(
 ): Promise<SeedOutcome> {
   const provider = opts.provider ?? 'mdv'
   if (!opts.refreshToken) return 'not_configured'
-  const { rows } = await client.query<{ revoked_at: Date | null }>(
-    'select revoked_at from oauth_token where provider = $1', [provider],
+  const { rows } = await client.query<{ revoked_at: Date | null, refresh_token: string }>(
+    'select revoked_at, refresh_token from oauth_token where provider = $1', [provider],
   )
   const existing = rows[0]
-  if (existing) return existing.revoked_at ? 'kept_revoked' : 'kept_existing'
+  if (existing) {
+    if (!existing.revoked_at) return 'kept_existing'
+    if (existing.refresh_token === opts.refreshToken) return 'kept_revoked'
+    // Compared, never logged. Which token it is stays out of the audit trail;
+    // that the operator supplied a new one is the whole entry.
+    await client.query(
+      `update oauth_token
+          set client_id = $2, access_token = '', refresh_token = $3,
+              access_expires_at = now() - interval '1 minute',
+              rotation = 0, refreshed_at = now(),
+              revoked_at = null, revoked_reason = null
+        where provider = $1`,
+      [provider, opts.clientId, opts.refreshToken],
+    )
+    await client.query(
+      `insert into oauth_event (provider, event, rotation, detail)
+       values ($1, 'refreshed', 0, 'reseeded from configuration after revocation')`,
+      [provider],
+    )
+    return 'reseeded'
+  }
 
   // access_expires_at in the past on purpose: we were given a refresh token and
   // no access token, so the first call must refresh. Writing a fake expiry in
