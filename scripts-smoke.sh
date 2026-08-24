@@ -15,3 +15,4 @@ npx tsx src/smoke-oauth.ts
 npx tsx src/smoke-sso.ts
 npx tsx src/smoke-mdv-client.ts
 npx tsx src/smoke-mdv-objects.ts
+npx tsx src/smoke-import.ts
