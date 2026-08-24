@@ -36,6 +36,7 @@ import { pickLang, stringsFor, otherLang, langCookie, langCookieMaxAge, type Lan
   from './i18n.js'
 import { publicOrigin } from './public-origin.js'
 import { authFromEnv, sessionState as elev8Session } from './sources/elev8/auth.js'
+import { retire, verdictFor, candidates as retireCandidates } from './entity/retire.js'
 import { knownShapes, latestShape } from './sources/elev8/shape.js'
 import * as q from './dashboard/query.js'
 import { renderDashboard, renderLogin } from './dashboard/render.js'
@@ -599,7 +600,7 @@ ${gateEnabled && grant && !grant.revoked_at
     + `valid until ${esc(st.expiresAt?.toISOString().replace('T', ' ').slice(0, 16) ?? '?')} UTC`
 })()}</div>
 <div class="card"><b>${esc(t.importHeading)}</b> — <a href="/import?lang=${lang}">${esc(t.importStart)}</a>
- · <a href="/shapes">API response shapes</a></div>
+ · <a href="/shapes">API response shapes</a> · <a href="/objects">Objects with no PMS id</a></div>
 <div class="card"><b>${esc(t.signIn)}</b> — ${gateEnabled
   ? `<span class="ok">${esc(t.signInActive)}</span>: ${[
       ssoEnabled ? esc(t.signInMicrosoft) : null,
@@ -614,6 +615,122 @@ ${gateEnabled && grant && !grant.revoked_at
         + (gates.length > 1 ? ` ${t.admittedEveryGateApplies}` : '')
     })()}`
   : `<span class="no">${esc(t.signInOff)}</span> — ${t.loginNoMethod}`}</div>
+</main></body></html>`)
+    return
+  }
+
+  /* ----------------------------------------------------------------- objects */
+
+  /**
+   * Objects with no PMS property id, with the evidence for and against each.
+   *
+   * A report, not a cleanup, and the distinction was earned. Three rows looked
+   * like junk by name — a storage cupboard, an office, and "1 - 3 Plunge Pool" —
+   * and deleting them was agreed. Then the PriceLabs account turned out to price
+   * a listing called "1 - 3 Plunge Pool" with three units. A name is not
+   * evidence, and the request had been made on the strength of one.
+   *
+   * So this page shows what the other systems say instead: a Channex room id
+   * means the channel manager gave it a bookable unit, and an OTA link means it
+   * is published for sale. Either one makes it a letting whatever it is called.
+   * Neither makes it safe to remove. Nothing here changes any data.
+   */
+
+  /**
+   * Acts on exactly the objects named in the form, and reports every one it
+   * refused. Never "everything on the previous page": the list a reader is
+   * looking at is the not-assessable list, which is objects with no BAND — a
+   * different set from objects nothing sells. An object can lack a band because
+   * nobody set its rooms up in Elev8, which is a data gap and not a reason to
+   * delete a letting.
+   */
+  if (path === '/objects' && req.method === 'POST') {
+    if (!pool) { html(res, notice(lang, 'Objects', t.loginFailed), 503); return }
+    const form = await formBody(req).catch(() => ({} as Record<string, string | undefined>))
+    const labels = (form.labels ?? '').split('\n').map(x => x.trim()).filter(Boolean)
+    const outcome = await withClient(c => retire(c, labels))
+    console.log(`objects retired by ${session.email || 'open'}: `
+      + `${outcome?.deleted.length ?? 0} deleted, ${outcome?.deactivated.length ?? 0} deactivated, `
+      + `${outcome?.kept.length ?? 0} kept`)
+    const list = (items: { label: string, reason?: string }[]) => items.length
+      ? `<ul>${items.map(i => `<li><b>${esc(i.label)}</b>${
+          i.reason ? ` — ${esc(i.reason)}` : ''}</li>`).join('')}</ul>`
+      : '<p style="color:var(--mut)">none</p>'
+    html(res, notice(lang, 'Objects reviewed', `
+<b>Deleted</b> ${list(outcome?.deleted ?? [])}
+<b>Deactivated, record kept</b> ${list(outcome?.deactivated ?? [])}
+<b>Kept — something sells these</b> ${list(outcome?.kept ?? [])}
+<p><a href="/objects">back to the review</a></p>`))
+    return
+  }
+
+  if (path === '/objects') {
+    const rows = await withClient(c => q.withoutPmsId(c))
+    const all = await withClient(c => retireCandidates(c))
+    const removable = (all ?? []).map(c => ({ c, v: verdictFor(c) }))
+      .filter(x => x.v.action !== 'keep')
+    const safe = (rows ?? []).filter(r => !r.roomIds && !r.otaLinks)
+    html(res, `<!doctype html><html lang="${t.htmlLang}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Revenue Engine — Objects with no PMS id</title>
+<style>:root{color-scheme:light dark;--paper:#F1F3F1;--ink:#171C1B;--mut:#5D6B69;--line:#D2DAD6;--surface:#FBFCFA;--teal:#0D615E;--rust:#97392B;--brass:#8A6A1C}
+@media(prefers-color-scheme:dark){:root{--paper:#0F1312;--ink:#E7ECE9;--mut:#94A3A0;--line:#28302E;--surface:#161B1A;--teal:#58C4BC;--rust:#E28A7C;--brass:#DFB44E}}
+body{margin:0;background:var(--paper);color:var(--ink);padding:2.5rem 1.25rem;font:15px/1.6 ui-sans-serif,system-ui,sans-serif}
+main{max-width:58rem;margin:0 auto}h1{font-size:1.4rem;margin:0 0 .3rem}
+p{margin:0 0 1rem}p.s{color:var(--mut);margin:0 0 1.5rem;font-size:.9rem}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:1rem 1.1rem;margin-bottom:.8rem;overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:.9rem}
+th{text-align:left;font-size:.64rem;text-transform:uppercase;letter-spacing:.1em;color:var(--mut);padding:0 .6rem .4rem 0;border-bottom:1px solid var(--line)}
+td{padding:.4rem .6rem .4rem 0;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:none}
+code{font:500 .84em ui-monospace,monospace;color:var(--teal)}
+.keep{color:var(--teal);font-weight:600}.drop{color:var(--rust);font-weight:600}
+a{color:inherit}</style></head>
+<body><main><h1>Objects with no PMS id</h1>
+<p class="s">Nothing on this page changes any data.
+ · <a href="/status?lang=${lang}">${esc(t.readiness)}</a></p>
+<div class="card"><p>An object with no Channex property id is <b>probably</b> not a
+letting — but a name is not evidence. These two columns are:</p>
+<p><b>Room ids</b> — the channel manager gave it a bookable unit.<br>
+<b>OTA links</b> — it is published for sale on an OTA.<br>
+Either one means it is a real letting, whatever it is called. <b>Both zero</b>
+means nothing in any connected system treats it as bookable.</p></div>
+${!rows?.length
+  ? '<div class="card">Every active object has a PMS property id. Nothing to review.</div>'
+  : `<div class="card"><table><thead><tr><th>Object</th><th>Market</th><th>Room ids</th>
+<th>OTA links</th><th>Band</th><th>Sleeps</th><th>Verdict</th></tr></thead><tbody>
+${rows.map(r => {
+  const bookable = r.roomIds > 0 || r.otaLinks > 0
+  return `<tr><td><b>${esc(r.label)}</b></td><td>${esc(r.market)}</td>
+<td class="${r.roomIds ? 'keep' : ''}">${r.roomIds}</td>
+<td class="${r.otaLinks ? 'keep' : ''}">${r.otaLinks}${
+  r.otaSources ? ` <span style="color:var(--mut)">${esc(r.otaSources)}</span>` : ''}</td>
+<td>${r.band ? esc(r.band) : '—'}</td><td>${r.sleeps ?? '—'}</td>
+<td class="${bookable ? 'keep' : 'drop'}">${bookable
+  ? 'a letting — keep' : 'nothing treats it as bookable'}</td></tr>`
+}).join('')}
+</tbody></table></div>
+<div class="card"><p><b>${rows.length}</b> object(s) without a PMS property id, of
+which <b>${safe.length}</b> have no room id and no OTA link.</p></div>`}
+${removable.length ? `<div class="card"><p><b>Remove these ${removable.length}?</b>
+Chosen by evidence, not by name: nothing in Elev8, Channex or either OTA treats
+them as bookable.</p>
+<table><thead><tr><th>Object</th><th>What happens</th><th>Why</th></tr></thead><tbody>
+${removable.map(x => `<tr><td><b>${esc(x.c.label)}</b></td>
+<td class="${x.v.action === 'delete' ? 'drop' : ''}">${x.v.action === 'delete'
+  ? 'deleted' : 'deactivated, record kept'}</td>
+<td style="color:var(--mut)">${esc(x.v.reason)}</td></tr>`).join('')}
+</tbody></table>
+<form method="post" action="/objects" style="margin-top:1rem">
+<input type="hidden" name="labels" value="${esc(removable.map(x => x.c.label).join('\n'))}">
+<button type="submit" style="font:inherit;font-weight:600;padding:.55rem 1rem;border-radius:3px;
+border:1px solid var(--ink);background:var(--ink);color:var(--paper);cursor:pointer">
+Remove these ${removable.length}</button>
+</form>
+<p style="color:var(--mut);font-size:.85rem;margin-top:.8rem">Anything with a room
+id, an OTA link or a PMS property id is not on this list and cannot be removed
+from here, whatever it is called. An object that has been measured is
+deactivated rather than deleted, so the numbers behind it survive.</p></div>` : ''}
 </main></body></html>`)
     return
   }

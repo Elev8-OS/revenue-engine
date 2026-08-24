@@ -35,10 +35,53 @@ await link(c, { source: 'mdv_booking', kind: 'property', externalId: '12554884' 
 const r1 = await resolve(c, { source: 'mdv_booking', kind: 'property', externalId: '12554884' })
 check('direct alias resolves', r1.ok && r1.entityId === bali)
 
+// MEASURED: all 62 PriceLabs listings are `<channex_property>___<channex_room>`
+// with pms_name 'channex'. The right half is the unit, the left is the building.
 await link(c, { source: 'channex', kind: 'room', externalId: '5e786457' }, bali, 'explicit')
 const r2 = await resolve(c, { source: 'pricelabs', kind: 'room', externalId: '2fc503c2___5e786457' })
-check('composite half resolves and self-links', r2.ok && r2.entityId === bali,
-      r2.ok ? r2.matchedBy : '')
+check('the ROOM half resolves, and says which half it was',
+      r2.ok && r2.entityId === bali && r2.matchedBy === 'pricelabs_room_half',
+      r2.ok ? r2.matchedBy : r2.reason)
+
+// THE trap, and why the property half is not a fallback at all. "The R Villa
+// Merapi" is ONE Channex property with TWO rooms, so matching on the building
+// would price two units as one — and it would look like a successful match.
+const unitA = (await c.query(
+  `insert into entity (label, market, pms_property_id)
+   values ('Merapi Room 1-4', 'bali', 'afa397b2') returning id`)).rows[0].id
+const unitB = (await c.query(
+  `insert into entity (label, market, pms_property_id)
+   values ('Merapi Room 5', 'bali', 'afa397b2') returning id`)).rows[0].id
+const shared = await resolve(c, { source: 'pricelabs', kind: 'room', externalId: 'afa397b2___unseen' })
+check('an unknown room half REFUSES rather than matching the building',
+      !shared.ok, shared.ok ? `matched ${shared.matchedBy}` : shared.reason)
+const sharedWhy = (await c.query<{ reason: string }>(
+  `select reason from unresolved_alias where external_id = 'afa397b2___unseen'`)).rows[0]?.reason
+check('and the recorded reason says how many units would have collapsed',
+      Boolean(sharedWhy?.includes('2 unit')), sharedWhy ?? '')
+
+// The unique constraint on entity_alias exists so a second claim is loud. It was
+// not: `on conflict do nothing` made an id already pointing elsewhere look like
+// a successful write, which is how the property id recorded an arbitrary winner.
+check('claiming the same id for a second object is reported as a conflict',
+      await link(c, { source: 'channex', kind: 'room', externalId: 'shared-room' }, unitA, 'explicit')
+        === 'linked')
+check('the same claim again is recognised as ours, not a conflict',
+      await link(c, { source: 'channex', kind: 'room', externalId: 'shared-room' }, unitA, 'explicit')
+        === 'already_ours')
+check('a DIFFERENT object claiming it conflicts, and is not silently dropped',
+      await link(c, { source: 'channex', kind: 'room', externalId: 'shared-room' }, unitB, 'explicit')
+        === 'conflict')
+check('and the conflict is recorded where it can surface',
+      (await c.query<{ n: number }>(
+        `select count(*)::int n from unresolved_alias where external_id = 'shared-room'`))
+        .rows[0]!.n === 1)
+check('the original claim still stands — the loser did not overwrite it',
+      (await c.query<{ entity_id: string }>(
+        `select entity_id::text from entity_alias where external_id = 'shared-room'`))
+        .rows[0]!.entity_id === unitA)
+await c.query(`delete from unresolved_alias where external_id in ('shared-room','afa397b2___unseen')`)
+await c.query(`delete from entity where id = any($1::uuid[])`, [[unitA, unitB]])
 
 const r3 = await resolveByLabel(c, { source: 'elev8', kind: 'listing', externalId: 'x1', label: 'The R Villa Merapi' })
 check('ambiguous label stays UNRESOLVED', !r3.ok, r3.ok ? '' : r3.reason)

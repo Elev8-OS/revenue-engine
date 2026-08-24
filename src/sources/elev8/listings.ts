@@ -52,6 +52,8 @@ export interface ListingImportReport {
   noMarket: number
   /** Container listings among those imported — their units are separate rows. */
   parents: number
+  /** Room ids already claimed by another object. Never silent. */
+  roomIdConflicts: number
   ota: OtaLinkCounts
 }
 
@@ -135,7 +137,8 @@ export async function importListings(
 
   const report: ListingImportReport = {
     seen: rows.length, notRentable: 0, created: 0, alreadyKnown: 0, noMarket: 0,
-    parents: 0, ota: { linked: 0, alreadyLinked: 0, unknownChannel: [], noOtaId: 0 },
+    parents: 0, roomIdConflicts: 0,
+    ota: { linked: 0, alreadyLinked: 0, unknownChannel: [], noOtaId: 0 },
   }
 
   for (const row of rows) {
@@ -185,20 +188,38 @@ export async function importListings(
 
     if (row.is_parent) report.parents++
 
-    // The PMS ids, aliased under 'channex' because that is whose namespace they
-    // are. This is not bookkeeping: PriceLabs identifies a room by a composite
-    // `<uuid>___<uuid>` and reports `pms_name: 'channex'`, and `resolve()`
-    // already tries each half of that composite against existing aliases. So
-    // recording pms_room_id here is what will make the PriceLabs join resolve
-    // later — through code that already exists, with no matching to write.
-    for (const [kind, value] of [
-      ['property', row.pms_listing_id],
-      ['room', row.pms_room_id],
-    ] as const) {
-      if (value && value.trim()) {
-        await link(db, { source: 'channex', kind, externalId: value.trim() },
-                   entityId, 'elev8_pms_field')
-      }
+    /**
+     * The two PMS ids go to two different places, and the distinction was a bug
+     * before it was a design.
+     *
+     *   pms_room_id      one room is one unit → a KEY. Aliased under 'channex',
+     *                    because that is whose namespace it is, and because
+     *                    PriceLabs identifies a listing as
+     *                    `<channex_property>___<channex_room>`. Recording it
+     *                    here is what makes the PriceLabs join resolve later,
+     *                    through resolution code that already exists.
+     *   pms_listing_id   one property, MANY units → an ATTRIBUTE. In the live
+     *                    account "The R Villa Merapi" is one Channex property
+     *                    with two rooms. As an alias it recorded whichever unit
+     *                    was imported first and dropped the rest silently;
+     *                    as a column it is the multi-unit structure made
+     *                    explicit — units in one building share this value.
+     */
+    const property = row.pms_listing_id?.trim()
+    if (property) {
+      await db.query(
+        `update entity set pms_property_id = $2, updated_at = now()
+          where id = $1 and coalesce(pms_property_id, '') <> $2`,
+        [entityId, property])
+    }
+    const roomId = row.pms_room_id?.trim()
+    if (roomId) {
+      const outcome = await link(db, { source: 'channex', kind: 'room', externalId: roomId },
+                                 entityId, 'elev8_pms_field')
+      // A room id claimed by another object is reported by link() itself. Count
+      // it here too, so a pass that hit one is legible in the report rather than
+      // only in a table somebody has to go and read.
+      if (outcome === 'conflict') report.roomIdConflicts++
     }
 
     await linkOtaChannels(db, entityId, row.ota_channels, report.ota)

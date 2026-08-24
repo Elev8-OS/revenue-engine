@@ -101,22 +101,51 @@ export async function resolve(
   const hit = direct.rows[0]
   if (hit) return { ok: true, entityId: hit.entity_id, matchedBy: hit.matched_by }
 
-  // PriceLabs composite: try each half before giving up.
+  /**
+   * PriceLabs composite ids, and the order is load-bearing.
+   *
+   * MEASURED against the live account: all 62 PriceLabs listings are
+   * `<channex_property_id>___<channex_room_id>` with `pms_name: 'channex'`. So
+   * the RIGHT half identifies the unit and the LEFT half identifies the building
+   * it sits in.
+   *
+   * The first version tried [left, right] in that order, which is the wrong way
+   * round and would have been invisible. "The R Villa Merapi" is ONE Channex
+   * property with TWO rooms:
+   *
+   *   afa397b2-…___05e77a25-…    ROOM 1-4  (4 units)
+   *   afa397b2-…___d92c422a-…    Room 5
+   *
+   * Matching on the left half maps both PriceLabs listings onto whichever entity
+   * holds property `afa397b2` — two different units silently collapsed into one,
+   * and then priced as one. The room half distinguishes them.
+   */
   if (input.source === 'pricelabs') {
     const split = splitPriceLabsId(input.externalId)
     if (split) {
-      for (const half of [split.left, split.right]) {
-        const { rows } = await client.query<{ entity_id: string }>(
-          `select entity_id from entity_alias
-            where kind = $1 and external_id = $2 limit 1`,
-          [input.kind, half],
-        )
-        const row = rows[0]
-        if (row) {
-          await link(client, input, row.entity_id, 'pricelabs_composite_half')
-          return { ok: true, entityId: row.entity_id, matchedBy: 'pricelabs_composite_half' }
-        }
+      const room = await client.query<{ entity_id: string }>(
+        `select entity_id from entity_alias where kind = 'room' and external_id = $1`,
+        [split.right],
+      )
+      if (room.rows[0]) {
+        await link(client, input, room.rows[0].entity_id, 'pricelabs_room_half')
+        return { ok: true, entityId: room.rows[0].entity_id, matchedBy: 'pricelabs_room_half' }
       }
+      // The property half is deliberately NOT a fallback. It names the building,
+      // and a building can hold several units — "The R Villa Merapi" is one
+      // Channex property with two rooms. Resolving on it would map every unit in
+      // a building onto one entity and then price them as one, which is a
+      // mistake that looks like a match. Where the room half is unknown the
+      // honest answer is that we do not know which unit this is.
+      const shared = await client.query<{ n: number }>(
+        `select count(*)::int n from entity where pms_property_id = $1`, [split.left])
+      const units = shared.rows[0]?.n ?? 0
+      await recordUnresolved(client, input,
+        units > 0
+          ? `the room half is unknown; the property half names a building with `
+            + `${units} unit(s), and matching the building would price them as one`
+          : 'neither half is a known room or building')
+      return { ok: false, reason: 'the room half is unknown' }
     }
   }
 
@@ -147,15 +176,44 @@ export async function resolveByLabel(
   return { ok: false, reason }
 }
 
+export type LinkOutcome = 'linked' | 'already_ours' | 'conflict'
+
+/**
+ * Records an alias, and REPORTS a conflicting claim instead of swallowing it.
+ *
+ * Migration 002 says the unique constraint exists so that "a second claim on it
+ * is an error we want loudly at write time rather than quietly at report time".
+ * The code did not honour that: `on conflict do nothing` made a second claim
+ * silent, so an id already pointing at another entity looked like a successful
+ * write. That is how the Channex property id ended up recording whichever unit
+ * was imported first while the others vanished without a trace.
+ *
+ * A conflict is not always a bug — it can mean the source reuses an id across
+ * things we treat as separate — but it is never nothing, so it lands in
+ * unresolved_alias where it surfaces as "not assessable" rather than nowhere.
+ */
 export async function link(
   client: PoolClient, input: ResolveInput, entityId: string, matchedBy: string,
-): Promise<void> {
-  await client.query(
+): Promise<LinkOutcome> {
+  const { rowCount } = await client.query(
     `insert into entity_alias (entity_id, source, kind, external_id, matched_by)
      values ($1, $2, $3, $4, $5)
      on conflict (source, kind, external_id) do nothing`,
     [entityId, input.source, input.kind, input.externalId, matchedBy],
   )
+  if (rowCount) return 'linked'
+
+  const { rows } = await client.query<{ entity_id: string }>(
+    `select entity_id from entity_alias
+      where source = $1 and kind = $2 and external_id = $3`,
+    [input.source, input.kind, input.externalId],
+  )
+  if (rows[0]?.entity_id === entityId) return 'already_ours'
+
+  await recordUnresolved(client, input,
+    `already claimed by another object — one external id cannot mean two things, `
+    + `so this claim was not recorded`)
+  return 'conflict'
 }
 
 /**

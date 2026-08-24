@@ -169,3 +169,53 @@ export async function isDemo(client: PoolClient): Promise<boolean> {
     `select count(*)::int n from entity where label like '[Demo]%'`)
   return (rows[0]?.n ?? 0) > 0
 }
+
+export interface NoPmsRow {
+  entityId: string
+  label: string
+  market: string
+  band: string | null
+  sleeps: number | null
+  /** Channex room ids: a room id means one bookable unit. */
+  roomIds: number
+  /** OTA listings linked to it. Published somewhere means it is real. */
+  otaLinks: number
+  otaSources: string | null
+}
+
+/**
+ * Objects with no PMS property id — candidates for not being lettings at all.
+ *
+ * This is a REPORT, not a cleanup. It exists because the cleanup nearly went
+ * ahead on a wrong premise: three rows looked like junk by name — a storage
+ * cupboard, an office, and "1 - 3 Plunge Pool" — and then PriceLabs turned out
+ * to price a listing called "1 - 3 Plunge Pool" with three units. Names are not
+ * evidence. So the columns here are the evidence:
+ *
+ *   roomIds > 0   the channel manager gave it a bookable room → it is a letting
+ *   otaLinks > 0  it is published on an OTA → it is a letting
+ *   both zero     nothing in any source treats it as bookable
+ *
+ * A row with neither is safe to remove. A row with either is not, whatever it is
+ * called, and deleting it would have taken a real object out of the portfolio.
+ */
+export async function withoutPmsId(client: PoolClient): Promise<NoPmsRow[]> {
+  const { rows } = await client.query<NoPmsRow>(
+    `select e.id                        as "entityId",
+            e.label,
+            e.market::text              as market,
+            e.band,
+            e.sleeps,
+            count(distinct case when a.source = 'channex' and a.kind = 'room'
+                                then a.external_id end)::int as "roomIds",
+            count(distinct case when a.source in ('mdv_airbnb','mdv_booking')
+                                then a.external_id end)::int as "otaLinks",
+            nullif(string_agg(distinct case when a.source in ('mdv_airbnb','mdv_booking')
+                                            then a.source::text end, ', '), '') as "otaSources"
+       from entity e
+       left join entity_alias a on a.entity_id = e.id
+      where e.active and e.pms_property_id is null
+      group by e.id
+      order by "otaLinks" desc, "roomIds" desc, e.label`)
+  return rows
+}

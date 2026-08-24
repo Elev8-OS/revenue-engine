@@ -363,17 +363,20 @@ check('but capacity alone sets NO band', ents.rows.every(r => r.band === null),
 
 /* -------------------------------------------- 9 · the PMS and OTA aliases */
 
-// pms_room_id is aliased under 'channex' because that is whose namespace it is,
-// and because resolve() already tries each half of a PriceLabs `a___b` composite
-// against existing aliases. Recording it here is what will make the PriceLabs
-// join resolve later, through code that already exists.
+// The two PMS ids go to two different places, and getting that wrong was a bug.
+// A room is one unit, so its id is a KEY and belongs in entity_alias. A property
+// holds MANY units — Merapi is one Channex property with two rooms — so as an
+// alias it recorded whichever unit was imported first and dropped the rest.
 const pmsAliases = await c.query<{ kind: string, external_id: string, matched_by: string }>(
   `select kind::text, external_id, matched_by from entity_alias
     where source = 'channex' order by kind`)
-check('the PMS property id is aliased under channex',
-      pmsAliases.rows.some(r => r.kind === 'property' && r.external_id === 'pms-1'))
-check('and so is the PMS room id',
+check('the PMS ROOM id is aliased under channex',
       pmsAliases.rows.some(r => r.kind === 'room' && r.external_id === 'room-1'))
+check('the PMS PROPERTY id is NOT an alias — it is not unique per object',
+      !pmsAliases.rows.some(r => r.kind === 'property'), JSON.stringify(pmsAliases.rows))
+check('it is a column instead, so units in one building can share it',
+      (await c.query<{ n: number }>(
+        `select count(*)::int n from entity where pms_property_id = 'pms-1'`)).rows[0]!.n === 1)
 check('recorded as coming from an Elev8 field, not from matching',
       pmsAliases.rows.every(r => r.matched_by === 'elev8_pms_field'),
       JSON.stringify(pmsAliases.rows))
