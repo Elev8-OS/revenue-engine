@@ -12,7 +12,9 @@
  *   Channex    documented ARI limits only: 20 requests/minute overall and
  *              10/minute per property, page size max 100. Reviews and bookings
  *              have NO documented limit, which is an unknown, not a licence.
- *   MDV        shared rate limit, token scoped to exactly one team.
+ *   MDV        120 requests/minute, stated by the provider, with Retry-After on
+ *              429. The one documented limit of the four — so it is the one
+ *              bucket that is a fact rather than a guess.
  *   Elev8      unknown until the API is connected — treated as the strictest
  *              until measured.
  */
@@ -44,7 +46,10 @@ export const LIMITS: Record<string, Limit> = {
     perMinute: 20, maxPageSize: 100,
     note: 'undocumented for reviews/bookings; borrow the ARI ceiling deliberately',
   },
-  mdv: { perMinute: 60, note: 'shared limit, token scoped to one team; assumed, verify' },
+  // Corrected from an assumed 60 once the provider stated it. Kept as the real
+  // ceiling rather than a safety margin, because 429 is handled and honoured:
+  // pretending the limit is lower just makes a full pass take twice as long.
+  mdv: { perMinute: 120, note: 'documented by the provider: 120/min, honour Retry-After on 429' },
   elev8: { perMinute: 30, note: 'unknown until connected; strictest assumption until measured' },
 }
 
