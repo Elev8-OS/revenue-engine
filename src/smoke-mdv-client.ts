@@ -102,13 +102,51 @@ check('a restart with the variable still set does NOT re-seed',
       await seedRefreshToken(c, { clientId: CLIENT, refreshToken: 'seed-token-0' }) === 'kept_existing')
 await c.query(`update oauth_token set revoked_at = now(), revoked_reason = 'test'
                 where provider = 'mdv'`)
-check('a revoked grant is not re-seeded either',
+// Futile, not unsafe: the variable still holds the token that died with the
+// grant, so presenting it would fail in exactly the same way.
+check('a revoked grant is not re-seeded with the SAME token',
       await seedRefreshToken(c, { clientId: CLIENT, refreshToken: 'seed-token-0' }) === 'kept_revoked')
-const seededRow = await c.query<{ access_expires_at: Date, rotation: number }>(
-  `select access_expires_at, rotation from oauth_token where provider = 'mdv'`)
+const seedStillDead = await c.query<{ revoked_at: Date | null }>(
+  `select revoked_at from oauth_token where provider = 'mdv'`)
+check('and the refusal leaves it revoked rather than half-reviving it',
+      seedStillDead.rows[0]!.revoked_at !== null)
+
+// The recovery path. Without it a revoked grant is a dead end whenever the
+// authorisation-code route is unavailable — which is the normal case for a
+// grant the provider issued directly, with no redirect URI registered.
+check('a revoked grant IS re-seeded with a newly issued token',
+      await seedRefreshToken(c, { clientId: CLIENT, refreshToken: 'fresh-token-x' }) === 'reseeded')
+const seedRevived = await c.query<{
+  revoked_at: Date | null, revoked_reason: string | null,
+  rotation: number, refresh_token: string, access_token: string,
+  access_expires_at: Date
+}>(`select revoked_at, revoked_reason, rotation, refresh_token, access_token,
+           access_expires_at from oauth_token where provider = 'mdv'`)
+check('the revocation is lifted', seedRevived.rows[0]!.revoked_at === null
+      && seedRevived.rows[0]!.revoked_reason === null)
+check('the new chain starts at rotation 0', seedRevived.rows[0]!.rotation === 0)
+check('the new token is the one stored', seedRevived.rows[0]!.refresh_token === 'fresh-token-x')
+// A leftover access token from the dead chain would be presented once and 401.
+check('the dead access token is discarded', seedRevived.rows[0]!.access_token === '')
+check('and the row is expired, so the first call refreshes',
+      seedRevived.rows[0]!.access_expires_at.getTime() < Date.now())
+const reseedTrail = await c.query<{ detail: string | null }>(
+  `select detail from oauth_event where provider = 'mdv' order by id`)
+check('the re-seed is recorded WITHOUT the token value',
+      reseedTrail.rows.some(r => (r.detail ?? '').includes('reseeded'))
+      && !reseedTrail.rows.some(r => (r.detail ?? '').includes('fresh-token-x')))
+
+// A live grant is still untouchable, even by a different value — this is the
+// guard that stops a stale variable from destroying a working connection.
+check('a LIVE grant is not replaced even by a different token',
+      await seedRefreshToken(c, { clientId: CLIENT, refreshToken: 'another-token' }) === 'kept_existing')
+const seededRow = await c.query<{ access_expires_at: Date, rotation: number, refresh_token: string }>(
+  `select access_expires_at, rotation, refresh_token from oauth_token where provider = 'mdv'`)
 check('the seeded row is already expired, so the first call refreshes',
       seededRow.rows[0]!.access_expires_at.getTime() < Date.now())
 check('and it starts at rotation 0', seededRow.rows[0]!.rotation === 0)
+check('the live token survived the ignored variable',
+      seededRow.rows[0]!.refresh_token === 'fresh-token-x')
 
 /* -------------------------------------------------- 3 · Basic, encoded properly */
 
