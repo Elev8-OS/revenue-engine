@@ -175,10 +175,18 @@ async function boot(): Promise<void> {
           refreshToken: process.env.MDV_SEED_REFRESH_TOKEN,
         })
         console.log(`mdv grant: ${outcome}`)
-        if (outcome === 'seeded') {
+        // Both branches that STORED the value leave it spent, and a spent
+        // credential sitting in the deployment config is worth nothing and
+        // risks everything.
+        if (outcome === 'seeded' || outcome === 'reseeded') {
           console.log('mdv grant: the seed value is now spent — clear '
             + 'MDV_SEED_REFRESH_TOKEN from the deployment config; it is a live '
             + 'credential and it is no longer read')
+        }
+        if (outcome === 'kept_revoked') {
+          console.log('mdv grant: REVOKED and unrecoverable as configured — the '
+            + 'variable still holds the token that died with it. A newly issued '
+            + 'refresh token in MDV_SEED_REFRESH_TOKEN is picked up on the next boot.')
         }
       }
     } finally { c.release() }
