@@ -20,9 +20,8 @@ import { getServiceToken, sessionState, authFromEnv, Elev8AuthError } from './so
 import { Elev8Client, makeLogin, unwrap, Elev8Error } from './sources/elev8/client.js'
 import { describe, recordShape, latestShape, knownShapes, pickField } from './sources/elev8/shape.js'
 import { bandFromRooms, bandFromSleeps, readBedTypes, readRooms } from './sources/elev8/rooms.js'
-import { idForm, formProfile, pickIdPaths, classify, readChannels, linkChannel }
-  from './sources/elev8/channels.js'
-import { keyOf, marketOf, labelOf, marketFromCountryName, importListings }
+import { classify, linkOtaChannels, type OtaLinkCounts } from './sources/elev8/channels.js'
+import { keyOf, marketOf, labelOf, marketFromCountryName, isRentable, importListings }
   from './sources/elev8/listings.js'
 import { importElev8 } from './sources/elev8/import.js'
 import { link } from './entity/resolve.js'
@@ -45,8 +44,6 @@ let seenApiKey = ''
 let listings: unknown[] = []
 let bedTypes: unknown[] = []
 let roomsByListing: Record<string, unknown[]> = {}
-let channels: unknown[] = []
-let channelListings: Record<string, unknown[]> = {}
 let listingStatusQueue: number[] = []
 let getCalls = 0
 
@@ -76,9 +73,6 @@ const srv = createServer(async (req, res) => {
   if (p === '/api/v1/bed-type') return json({ status: 'SUCCESS', data: bedTypes })
   const room = /^\/api\/v1\/listing\/([^/]+)\/room$/.exec(p)
   if (room) return json({ status: 'SUCCESS', data: roomsByListing[decodeURIComponent(room[1]!)] ?? [] })
-  if (p === '/api/v1/channex/channel') return json({ status: 'SUCCESS', data: channels })
-  const cl = /^\/api\/v1\/channex\/channel\/([^/]+)\/listings$/.exec(p)
-  if (cl) return json({ status: 'SUCCESS', data: channelListings[decodeURIComponent(cl[1]!)] ?? [] })
   res.writeHead(404); res.end('{}')
 })
 await new Promise<void>(r => srv.listen(port, r))
@@ -294,163 +288,154 @@ check('bed types without a capacity field are reported, not guessed',
 roomsByListing['L4'] = [{ id: 'r1', bed_configurations: [{ bed_type_id: 'bt-double', quantity: 1 }] }]
 const r4 = await readRooms(c, keyClient(), 'L4', noCap)
 check('the band survives without capacities', r4.band === '1BR' && r4.sleeps === null)
+/* ------------------------------------------------- 7 · classifying a channel */
 
-/* ------------------------------------------------------- 7 · the id forms */
-
-check('a dashed UUID is uuid', idForm('2FC503C2-7706-4646-8ECE-41DF32ADCD96') === 'uuid')
-check('32-hex is uuid', idForm('2fc503c277064646'.padEnd(32, 'a')) === 'uuid')
-check('an Airbnb-style number is numeric', idForm('595153') === 'numeric')
-check('an integer is numeric', idForm(12554884) === 'numeric')
-check('a slug is other', idForm('the-r-villa') === 'other')
-check('empty is nothing at all', idForm('') === null && idForm(null) === null)
-
-const chRows = [
-  { listing_id: '2fc503c2770646468ece41df32adcd96', channel_listing_id: '595153' },
-  { listing_id: '3fc503c2770646468ece41df32adcd97', channel_listing_id: '595154' },
-]
-const prof = formProfile(chRows)
-check('the form profile separates the two id spaces',
-      prof.get('listing_id')?.uuid === 2 && prof.get('channel_listing_id')?.numeric === 2)
-const picked = pickIdPaths(chRows)
-check('the Elev8 id is the UUID-shaped one and the OTA id the numeric one',
-      picked.ok && picked.elev8Path === 'listing_id' && picked.otaPath === 'channel_listing_id',
-      picked.ok ? picked.evidence : picked.reason)
-
-// THE failure that would be invisible: two numeric candidates, no way to tell
-// which is the OTA's. Refusing is the only correct answer.
-const ambiguous = pickIdPaths([
-  { listing_id: '2fc503c2770646468ece41df32adcd96', channel_listing_id: '595153', room_id: '99' },
-])
-check('two numeric id candidates REFUSE rather than pick',
-      !ambiguous.ok && ambiguous.reason.includes('ambiguous'),
-      ambiguous.ok ? '' : ambiguous.reason)
-// Discovered by a typo in this very fixture, and worth keeping: a field that is
-// half UUID and half something else is a field we do not understand, and the
-// refusal must name what it saw so the next person looks instead of guessing.
-const halfBad = pickIdPaths([
-  { listing_id: '2fc503c2770646468ece41df32adcd96', channel_listing_id: '595153' },
-  { listing_id: 'not-an-id', channel_listing_id: '595154' },
-])
-check('a half-recognisable id field refuses and names the forms it saw',
-      !halfBad.ok && halfBad.reason.includes('listing_id(u1/n0/o1)'),
-      halfBad.ok ? '' : halfBad.reason)
-
-const noUuid = pickIdPaths([{ channel_listing_id: '595153' }])
-check('no UUID-shaped path refuses too', !noUuid.ok)
-check('an empty channel refuses with a reason of its own',
-      !pickIdPaths([]).ok)
-
+// All that survives of the old channel machinery. `pickIdPaths`, `idForm` and
+// `formProfile` are gone: they decided which response field held the OTA id by
+// measuring whether values looked like UUIDs or numbers, and the recorded shape
+// showed the field is called `ota_listing_id` and sits next to `channel_name`.
+// Careful inference, replaced by reading the field name.
 check('Airbnb is classified', classify('Airbnb (Official)') === 'mdv_airbnb')
 check('Booking.com is classified', classify('Booking.com') === 'mdv_booking')
+check('a lowercase name still matches', classify('booking.com') === 'mdv_booking')
 check('Vrbo is NOT guessed into the nearest match', classify('Vrbo') === null)
+check('an empty name matches nothing', classify('') === null)
 
 /* --------------------------------------------------- 8 · listings and market */
 
-check('a dashed id normalises to a key', keyOf({ listing_id: '2FC503C2-7706-4646-8ECE-41DF32ADCD96' })?.length === 32)
-check('an empty listing_id is not a key', keyOf({ listing_id: '' }) === null)
-// The bug this suite found: Elev8 NAMES countries, MDV codes them, and the
-// code matcher returns null for every name — which does not fail, it quietly
+check('our own key comes from id', keyOf({ id: '2FC503C2-7706-4646-8ECE-41DF32ADCD96' })?.length === 32)
+check('a non-hex id is not a key', keyOf({ id: 'nope' }) === null)
+
+// THE bug this suite exists to prevent from returning. The first version tested
+// `pms_listing_id ?? id`, and `id` is filled on 82 of 82 rows, so nothing was
+// ever rejected — a storage cupboard and an office went into a revenue cohort.
+check('a row WITH a pms_listing_id is rentable',
+      isRentable({ id: 'a', pms_listing_id: 'pms-1' }))
+check('a row with NO pms_listing_id is not rentable, even though it has an id',
+      !isRentable({ id: 'a' }))
+check('and an empty pms_listing_id does not count as one',
+      !isRentable({ id: 'a', pms_listing_id: '   ' }))
+
+// The bug the country cases found: Elev8 NAMES countries, MDV codes them, and
+// the code matcher returns null for every name — which does not fail, it quietly
 // produces a portfolio with no markets.
 check('a country NAME resolves', marketFromCountryName('Indonesia') === 'bali')
 check('a localised name resolves too', marketFromCountryName('Schweiz') === 'ch')
 check('a two-letter value is still read as a code', marketFromCountryName('at') === 'at')
 check('a country outside our three markets is correctly null',
       marketFromCountryName('Germany') === null)
-check('country wins over coordinates', marketOf({ country: 'Switzerland', latitude: -8.6, longitude: 115.1 }) === 'ch')
+check('country wins over coordinates',
+      marketOf({ country: 'Switzerland', latitude: -8.6, longitude: 115.1 }) === 'ch')
 check('coordinates are used where country is silent',
       marketOf({ latitude: '-8.649334', longitude: '115.123980' }) === 'bali')
-check('neither yields null rather than a guess', marketOf({ listing_name: 'x' }) === null)
+check('neither yields null rather than a guess', marketOf({ title: 'x' }) === null)
 check('the label falls back to internal_name', labelOf({ internal_name: 'APT-1' }) === 'APT-1')
 
 await reset()
 listings = [
-  { listing_id: '2fc503c2770646468ece41df32adcd96', listing_name: 'Villa One',
-    country: 'Indonesia', maximum_capacity: 4 },
-  { listing_id: '3fc503c2770646468ece41df32adcd97', listing_name: 'Chalet Two',
+  { id: '2fc503c2770646468ece41df32adcd96', title: 'Villa One', pms_listing_id: 'pms-1',
+    pms_room_id: 'room-1', country: 'Indonesia', maximum_capacity: 4,
+    ota_channels: [{ channel_name: 'Airbnb', ota_listing_id: '595153' },
+                   { channel_name: 'Booking.com', ota_listing_id: '12554884' }] },
+  { id: '3fc503c2770646468ece41df32adcd97', title: 'Chalet Two', pms_listing_id: 'pms-2',
     latitude: '46.8', longitude: '8.2' },
-  // A row with no listing_id: present in Elev8, not a rentable object.
-  { id: '', internal_name: 'Apartment Storage', listing_name: '1 - 3 Plunge Pool' },
-  { listing_id: '4fc503c2770646468ece41df32adcd98', listing_name: 'Nowhere' },
+  // No pms_listing_id: present in Elev8, not a letting. This is the storage
+  // cupboard, and it must be counted rather than imported OR recorded as a gap.
+  { id: '5fc503c2770646468ece41df32adcd99', internal_name: 'Apartment Storage',
+    title: '1 - 3 Plunge Pool', country: 'Indonesia' },
+  { id: '4fc503c2770646468ece41df32adcd98', title: 'Nowhere', pms_listing_id: 'pms-4' },
 ]
 const li = await importListings(c, keyClient())
-check('only rows with a listing_id become objects', li.created === 2, JSON.stringify(li))
+check('only rows with a pms_listing_id become objects', li.created === 2, JSON.stringify(li))
 check('the storage cupboard is counted, not imported', li.notRentable === 1)
 check('and it is NOT on the not-assessable list',
       (await c.query(`select count(*)::int n from unresolved_alias where label like '%Plunge%'`))
         .rows[0]!.n === 0)
 check('a row with no market IS recorded as unresolved', li.noMarket === 1
       && (await c.query(`select count(*)::int n from unresolved_alias`)).rows[0]!.n === 1)
+
 const ents = await c.query<{ label: string, market: string, sleeps: number | null, band: string | null }>(
   `select label, market::text, sleeps, band from entity order by label`)
 check('capacity lands as sleeps', ents.rows.find(r => r.label === 'Villa One')?.sleeps === 4)
 // The weaker basis must not win by arriving first.
 check('but capacity alone sets NO band', ents.rows.every(r => r.band === null),
       JSON.stringify(ents.rows))
+
+/* -------------------------------------------- 9 · the PMS and OTA aliases */
+
+// pms_room_id is aliased under 'channex' because that is whose namespace it is,
+// and because resolve() already tries each half of a PriceLabs `a___b` composite
+// against existing aliases. Recording it here is what will make the PriceLabs
+// join resolve later, through code that already exists.
+const pmsAliases = await c.query<{ kind: string, external_id: string, matched_by: string }>(
+  `select kind::text, external_id, matched_by from entity_alias
+    where source = 'channex' order by kind`)
+check('the PMS property id is aliased under channex',
+      pmsAliases.rows.some(r => r.kind === 'property' && r.external_id === 'pms-1'))
+check('and so is the PMS room id',
+      pmsAliases.rows.some(r => r.kind === 'room' && r.external_id === 'room-1'))
+check('recorded as coming from an Elev8 field, not from matching',
+      pmsAliases.rows.every(r => r.matched_by === 'elev8_pms_field'),
+      JSON.stringify(pmsAliases.rows))
+
+check('the Airbnb and Booking ids both linked', li.ota.linked === 2, JSON.stringify(li.ota))
+const otaRow = await c.query<{ entity_id: string, matched_by: string, source: string }>(
+  `select entity_id::text, matched_by, source::text from entity_alias
+    where source in ('mdv_airbnb','mdv_booking')`)
+// The whole improvement: a key the channel manager maintains, not a name that is
+// probably the same name.
+check("recorded as 'elev8_ota_channels', not as a name match",
+      otaRow.rows.length === 2 && otaRow.rows.every(r => r.matched_by === 'elev8_ota_channels'),
+      JSON.stringify(otaRow.rows))
+check('both OTA ids point at the SAME entity — one apartment, not three',
+      new Set(otaRow.rows.map(r => r.entity_id)).size === 1)
+
 const again = await importListings(c, keyClient())
 check('a second pass creates nothing and knows it', again.created === 0 && again.alreadyKnown === 2)
+check('and links nothing twice', again.ota.linked === 0 && again.ota.alreadyLinked === 2,
+      JSON.stringify(again.ota))
 
-/* ------------------------------------------------------- 9 · the OTA link */
-
-await reset()
-listings = [{ listing_id: '2fc503c2770646468ece41df32adcd96', listing_name: 'Villa One',
-              country: 'Indonesia', maximum_capacity: 4 }]
-await importListings(c, keyClient())
-channels = [{ id: 'ch-air', title: 'Airbnb' }, { id: 'ch-book', title: 'Booking.com' },
-            { id: 'ch-vrbo', title: 'Vrbo' }]
-channelListings['ch-air'] = [
-  { listing_id: '2fc503c2770646468ece41df32adcd96', channel_listing_id: '595153' },
-  { listing_id: '9fc503c2770646468ece41df32adcd99', channel_listing_id: '595154' },
-]
-channelListings['ch-book'] = [
-  { listing_id: '2fc503c2770646468ece41df32adcd96', channel_listing_id: '12554884' },
-]
-const found = await readChannels(c, keyClient())
-check('three channels are seen, two classified',
-      found.length === 3 && found.filter(x => x.source).length === 2)
-const air = await linkChannel(c, keyClient(), { ...found[0]!, source: 'mdv_airbnb' })
-check('the Airbnb id links to the entity behind the Elev8 listing', air.linked === 1,
-      JSON.stringify(air))
-check('an OTA listing whose Elev8 listing is not imported is recorded, not dropped',
-      air.noEntity === 1)
-const aliasRow = await c.query<{ matched_by: string }>(
-  `select matched_by from entity_alias where source = 'mdv_airbnb' and external_id = '595153'`)
-// The whole improvement over what came before: a key the channel manager
-// maintains, not a name that is probably the same name.
-check("and it is recorded as 'elev8_channel_map', not as a name match",
-      aliasRow.rows[0]?.matched_by === 'elev8_channel_map', JSON.stringify(aliasRow.rows))
-const bk = await linkChannel(c, keyClient(), { ...found[1]!, source: 'mdv_booking' })
-check('the Booking id links to the SAME entity — one apartment, not three',
-      bk.linked === 1)
-const oneEntity = await c.query<{ n: number }>(
-  `select count(distinct entity_id)::int n from entity_alias
-    where source in ('elev8','mdv_airbnb','mdv_booking')`)
-check('three aliases, one entity', oneEntity.rows[0]!.n === 1)
-const twice = await linkChannel(c, keyClient(), { ...found[0]!, source: 'mdv_airbnb' })
-check('a second pass links nothing and says it already knew', twice.linked === 0
-      && twice.alreadyLinked === 1)
+// A channel we do not map must be reported, never assigned to the nearest match.
+const counts: OtaLinkCounts = { linked: 0, alreadyLinked: 0, unknownChannel: [], noOtaId: 0 }
+const anyEntity = ents.rows.length
+  ? (await c.query<{ id: string }>(`select id from entity limit 1`)).rows[0]!.id : ''
+await linkOtaChannels(c, anyEntity, [
+  { channel_name: 'Vrbo', ota_listing_id: '999' },
+  { channel_name: 'Airbnb', ota_listing_id: '' },
+  { channel_name: '', ota_listing_id: '888' },
+], counts)
+check('an unmapped channel is named, not guessed',
+      counts.unknownChannel.includes('Vrbo') && counts.linked === 0,
+      JSON.stringify(counts))
+check('a channel with no OTA id is counted, not reported per row', counts.noOtaId === 1)
+check('an unnamed channel is named as unnamed', counts.unknownChannel.includes('(unnamed)'))
+check('null channels are simply absent, not an error',
+      (await (async () => { const z: OtaLinkCounts =
+        { linked: 0, alreadyLinked: 0, unknownChannel: [], noOtaId: 0 }
+        await linkOtaChannels(c, anyEntity, null, z); return z })()).linked === 0)
 
 /* ----------------------------------------------------- 10 · the whole pass */
 
 await reset()
-listings = [{ listing_id: '2fc503c2770646468ece41df32adcd96', listing_name: 'Villa One',
-              country: 'Indonesia', maximum_capacity: 6 },
-            { listing_id: '3fc503c2770646468ece41df32adcd97', listing_name: 'Chalet Two',
-              country: 'Switzerland', maximum_capacity: 4 }]
+listings = [
+  { id: '2fc503c2770646468ece41df32adcd96', title: 'Villa One', pms_listing_id: 'p1',
+    country: 'Indonesia', maximum_capacity: 6,
+    ota_channels: [{ channel_name: 'Airbnb', ota_listing_id: '595153' }] },
+  { id: '3fc503c2770646468ece41df32adcd97', title: 'Chalet Two', pms_listing_id: 'p2',
+    country: 'Switzerland', maximum_capacity: 4 },
+]
 bedTypes = [{ id: 'bt-double', name: 'Double', capacity: 2 }]
 roomsByListing['2fc503c2770646468ece41df32adcd96'] = [
   { id: 'r1', bed_configurations: [{ bed_type_id: 'bt-double', quantity: 1 }] },
   { id: 'r2', bed_configurations: [{ bed_type_id: 'bt-double', quantity: 1 }] },
 ]
-// The second listing has no rooms — so the pass must fall back for it alone.
+// The second listing has no rooms — so the pass must fall back for it alone, and
+// the aggregated shape must still see the first listing's rooms.
 roomsByListing['3fc503c2770646468ece41df32adcd97'] = []
-channels = [{ id: 'ch-air', title: 'Airbnb' }]
-channelListings['ch-air'] = [
-  { listing_id: '2fc503c2770646468ece41df32adcd96', channel_listing_id: '595153' },
-]
 const full = await importElev8(c, keyClient())
 check('the pass imports, bands and links in one go',
-      full.listings.created === 2 && full.rooms.banded === 1 && full.channels.links[0]?.linked === 1,
-      JSON.stringify({ l: full.listings, r: full.rooms, c: full.channels.links }))
+      full.listings.created === 2 && full.rooms.banded === 1 && full.listings.ota.linked === 1,
+      JSON.stringify({ l: full.listings, r: full.rooms }))
 check('the listing with rooms is banded on bedrooms',
       (await c.query<{ band: string, band_basis: string }>(
         `select band, band_basis from entity where label = 'Villa One'`)).rows[0]?.band_basis === 'bedrooms')
@@ -461,12 +446,22 @@ check('the listing without rooms falls back to capacity, and says so',
       fb?.band === 'sleeps 3-4' && fb.band_basis === 'occupancy', JSON.stringify(fb))
 check('the fallback is counted', full.rooms.fellBackToOccupancy === 1)
 check('no stage silently failed', full.stageErrors.length === 0, full.stageErrors.join(' | '))
-check('the unusable channels are named rather than dropped',
-      full.channels.seen === 1 && full.channels.ignored.length === 0)
 check('the bed-type finding is carried in the report',
       full.bedTypes.includes('capacity'), full.bedTypes)
-// Only the first listing's shape is stored: 55 identical shapes are 54 rows
-// somebody has to read past.
+
+// THE recording defect. Ordered by external id, the listing with NO rooms comes
+// first, so the old per-listing recording stored a shape from a sample of one
+// empty list — "0 samples, 0 paths" — while bands from later listings proved
+// rooms existed. The aggregate must see them.
+const roomShape = await latestShape(c, 'elev8', 'GET /api/v1/listing/:id/room')
+check('the room shape is aggregated over the whole portfolio, not one listing',
+      roomShape?.sampleCount === 2, JSON.stringify(roomShape?.sampleCount))
+check('and it therefore sees the bed configuration at all',
+      Boolean(roomShape?.shape.some(e => e.path === 'bed_configurations[].bed_type_id')),
+      roomShape?.shape.map(e => e.path).join(' | '))
+check('the note says how many listings it covers and how many were empty',
+      Boolean(roomShape?.note?.includes('2 listing')) && Boolean(roomShape?.note?.includes('1 had no rooms')),
+      roomShape?.note ?? '')
 const shapes = await knownShapes(c, 'elev8')
 check('one shape row per endpoint, not one per listing',
       shapes.filter(s => s.endpoint.includes('/room')).length === 1,
@@ -474,9 +469,8 @@ check('one shape row per endpoint, not one per listing',
 
 // A stage failing must not discard the stages that worked.
 await reset()
-listings = [{ listing_id: '2fc503c2770646468ece41df32adcd96', listing_name: 'Villa One',
-              country: 'Indonesia' }]
-channels = []
+listings = [{ id: '2fc503c2770646468ece41df32adcd96', title: 'Villa One',
+              pms_listing_id: 'p1', country: 'Indonesia' }]
 bedTypes = []
 roomsByListing = {}
 const partial = await importElev8(c, keyClient())

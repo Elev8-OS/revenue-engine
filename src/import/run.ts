@@ -166,11 +166,12 @@ export function reportCounts(r: AnyReport | null): {
     return {
       created: r.listings.created,
       known: r.listings.alreadyKnown,
-      // A listing with no market and an OTA id with no entity are both rows we
-      // saw and could not place. Counting them together is the honest total,
-      // because both surface as "not assessable".
-      unresolved: r.listings.noMarket
-        + r.channels.links.reduce((n, l) => n + l.noEntity, 0),
+      // Rows we saw and could not place. Only the market failure counts now: an
+      // OTA channel without an id is not an unplaceable object, it is a channel
+      // connection with nothing published behind it, and it belongs to a listing
+      // that WAS placed. Counting it here would inflate "not assessable" with
+      // rows that are fine.
+      unresolved: r.listings.noMarket,
     }
   }
   return {

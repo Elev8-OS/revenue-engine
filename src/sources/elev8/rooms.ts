@@ -122,20 +122,20 @@ export async function readBedTypes(
  */
 export async function readRooms(
   db: PoolClient, api: Elev8Client, listingId: string, beds: BedCapacities,
-  { record = false }: { record?: boolean } = {},
+  { collect }: { collect?: unknown[] } = {},
 ): Promise<RoomsReading> {
   const res = await api.get<Record<string, unknown>[]>(
     db, `/api/v1/listing/${encodeURIComponent(listingId)}/room`)
   const rooms = Array.isArray(res.data) ? res.data : []
   const notes: string[] = [`envelope: ${res.envelope}`]
 
-  // The shape is worth storing for the FIRST listing only. Fifty-five identical
-  // shapes tell us nothing the first one did not, and the fill counts across a
-  // whole portfolio come from the aggregate pass, not from one listing.
-  const shape: ShapeEntry[] = record
-    ? await recordShape(db, 'elev8', 'GET /api/v1/listing/:id/room', rooms,
-                        `envelope: ${res.envelope}`)
-    : describe(rooms)
+  // Rooms are appended to the caller's collection rather than recorded here, so
+  // the stored shape is derived from the whole portfolio. Recording per listing
+  // produced a shape from a sample of one, and the first listing had no rooms —
+  // which reads identically to "the API never returns rooms" and is not the
+  // same thing at all.
+  if (collect) collect.push(...rooms)
+  const shape: ShapeEntry[] = describe(rooms)
 
   if (!rooms.length) {
     notes.push('room list is empty — the feature is unused for this listing, '
