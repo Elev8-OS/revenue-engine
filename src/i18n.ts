@@ -123,6 +123,9 @@ export interface Strings {
   sourceNotes: Record<'elev8' | 'pricelabs' | 'channex' | 'mdv', string>
   redirectUriLabel: string
   tenantLabel: string
+  grantNone: string
+  grantLive: (rotation: number) => string
+  grantRevoked: string
   authoriseNow: string
   authBlockedNoAllowlist: string
   signIn: string
@@ -265,6 +268,9 @@ export const en: Strings = {
   },
   redirectUriLabel: 'Redirect URI for the app registration:',
   tenantLabel: 'Tenant',
+  grantNone: 'no grant stored yet',
+  grantLive: r => `grant live, ${r} rotation${r === 1 ? '' : 's'} so far`,
+  grantRevoked: 'grant revoked — a newly issued token is needed; re-seeding the old one cannot work',
   authoriseNow: 'authorise now',
   authBlockedNoAllowlist: 'authorisation is blocked while no sign-in is configured',
   signIn: 'Sign-in',
@@ -405,6 +411,9 @@ export const id: Strings = {
   },
   redirectUriLabel: 'Redirect URI untuk pendaftaran aplikasi:',
   tenantLabel: 'Tenant',
+  grantNone: 'belum ada izin yang tersimpan',
+  grantLive: r => `izin aktif, sudah ${r} kali rotasi`,
+  grantRevoked: 'izin dicabut — diperlukan token yang baru diterbitkan; menanam ulang token lama tidak akan berhasil',
   authoriseNow: 'otorisasi sekarang',
   authBlockedNoAllowlist: 'otorisasi terkunci selama belum ada cara masuk yang dikonfigurasi',
   signIn: 'Cara masuk',

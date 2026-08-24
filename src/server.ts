@@ -29,6 +29,7 @@ import { seedDemo, clearDemo, hasDemo } from './demo.js'
 import { begin as mdvBegin, complete as mdvComplete, sweepFlows, DEFAULT_SCOPES }
   from './sources/mdv/oauth.js'
 import { storeInitialToken } from './sources/mdv/auth.js'
+import { seedRefreshToken } from './sources/mdv/client.js'
 import { pickLang, stringsFor, otherLang, langCookie, langCookieMaxAge, type Lang }
   from './i18n.js'
 import * as q from './dashboard/query.js'
@@ -155,6 +156,23 @@ async function boot(): Promise<void> {
       const have = await hasDemo(c)
       if (want && !have) console.log(`demo data seeded: ${await seedDemo(c)} entities`)
       if (!want && have) console.log(`demo data removed: ${await clearDemo(c)} entities`)
+
+      // A refresh token handed over out-of-band, stored ONCE. The guard lives in
+      // seedRefreshToken: after the first refresh the stored token has rotated
+      // while the variable still holds the original, and presenting that is what
+      // MDV treats as theft. So this is safe to leave running on every boot.
+      if (process.env.MDV_CLIENT_ID) {
+        const outcome = await seedRefreshToken(c, {
+          clientId: process.env.MDV_CLIENT_ID,
+          refreshToken: process.env.MDV_SEED_REFRESH_TOKEN,
+        })
+        console.log(`mdv grant: ${outcome}`)
+        if (outcome === 'seeded') {
+          console.log('mdv grant: the seed value is now spent — clear '
+            + 'MDV_SEED_REFRESH_TOKEN from the deployment config; it is a live '
+            + 'credential and it is no longer read')
+        }
+      }
     } finally { c.release() }
   } catch (err) {
     db.error = (err as Error).message
@@ -450,6 +468,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   if (path === '/status') {
     const srcs = sourceStates()
+    // Reads the grant state, never the token. "Rotation 7" says everything a
+    // human needs and is useless to anybody who steals it.
+    const grant = await withClient(async db => (await db.query<{
+      rotation: number, revoked_at: Date | null
+    }>(`select rotation, revoked_at from oauth_token where provider = 'mdv'`)).rows[0])
+    const grantText = !grant ? `<span class="no">${esc(t.grantNone)}</span>`
+      : grant.revoked_at ? `<span class="no">${esc(t.grantRevoked)}</span>`
+      : `<span class="ok">${esc(t.grantLive(grant.rotation))}</span>`
     html(res, `<!doctype html><html lang="${t.htmlLang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Revenue Engine — ${esc(t.readinessHeading)}</title>
@@ -481,7 +507,7 @@ ${srcs.map(x => `<tr><td><b>${x.name}</b></td><td>${x.ready
 </tbody></table></div>
 <div class="card"><b>Microsoft 365</b> — ${esc(t.redirectUriLabel)}
 <code>${esc(entra.redirectUri)}</code> · ${esc(t.tenantLabel)} <code>${esc(entra.tenantId)}</code></div>
-<div class="card"><b>MyDataValue</b> — ${esc(t.redirectUriLabel)}
+<div class="card"><b>MyDataValue</b> — ${grantText}<br>${esc(t.redirectUriLabel)}
 <code>${esc(mdvRedirectUri)}</code>${gateEnabled
   ? ` · <a href="/auth/mdv?lang=${lang}">${esc(t.authoriseNow)}</a>`
   : ` · ${esc(t.authBlockedNoAllowlist)}`}</div>
