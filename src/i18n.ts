@@ -42,6 +42,19 @@ export interface Strings {
   activeInPortfolio: string
   notAssessable: string
   signalMissing: string
+  /**
+   * Why a room cannot be assessed at all, as opposed to a check that did not
+   * reach it. Without a band there is no cohort, and without a cohort there is
+   * nothing to compare against — so this is a structural fact about the room,
+   * true no matter which checks run.
+   */
+  reasonNoBand: string
+  /**
+   * A credential being set is not the same as a source being read. Conflating
+   * the two made a readiness page report four green sources while exactly one
+   * of them had an adapter, which is worse than reporting none.
+   */
+  notRead: string
 
   /* --- the table */
   colProperty: string
@@ -197,6 +210,8 @@ export const en: Strings = {
   activeInPortfolio: 'active in the portfolio',
   notAssessable: 'Not assessable',
   signalMissing: 'signal missing',
+  reasonNoBand: 'no room count and no capacity — nothing to compare it against',
+  notRead: 'connected, not read yet',
 
   colProperty: 'Property',
   colAtStake: 'At stake',
@@ -278,11 +293,15 @@ export const en: Strings = {
   connected: 'connected',
   missing: 'missing',
   sourceNotes: {
-    // Corrected after reading the Partner API: it has seven endpoints and none
-    // of them carry cleaning minutes, OTA ids or a room count.
-    elev8: 'coordinates and country per listing; and the way to hand a recommendation to the team as a to-do',
+    // Rewritten twice. First it claimed cleaning minutes and capacity, which the
+    // Partner API does not carry. Then it described the Partner API — seven
+    // endpoints — while the adapter had moved to the Internal API, which carries
+    // the rooms and the channel mapping the cohort actually depends on.
+    elev8: 'rooms and beds per listing — the cohort band; and the channel mapping that links an OTA listing to ours',
     pricelabs: 'market panel, pickup grid, change log',
-    channex: 'the OTA mapping and room occupancy — the cohort depends on it; plus review text, ota_commission, taxes',
+    // Kept because the key is typed, but Elev8 proxies Channex in full, so this
+    // row is no longer shown on the readiness page.
+    channex: 'reached through Elev8, which proxies it in full — no separate key needed',
     mdv: 'direct HTTP API; the refresh token lives in the database because it rotates',
   },
   redirectUriLabel: 'Redirect URI for the app registration:',
@@ -307,10 +326,10 @@ export const en: Strings = {
   signInOff: 'off',
 
   importHeading: 'Import objects',
-  importLead: 'Reads the Booking properties and Airbnb listings from MyDataValue into the portfolio. Safe to run again: an object that is already known costs nothing, so only what is new or still unplaceable is fetched.',
+  importLead: 'Reads objects into the portfolio. Elev8 brings the listings with their rooms and the channel mapping to the OTAs; MyDataValue brings the Booking and Airbnb objects. Safe to run again: an object that is already known costs nothing, so only what is new or still unplaceable is fetched.',
   importStart: 'Start import',
   importNever: 'No import has run yet.',
-  importRunningSince: when => `Running since ${when}. This page does not refresh itself.`,
+  importRunningSince: when => `Running since ${when}. This page refreshes itself every few seconds until it finishes.`,
   importFinishedAt: when => `Finished ${when}.`,
   importCounts: (created, known, unresolved) =>
     `${created} new object${created === 1 ? '' : 's'}, ${known} already known, `
@@ -360,6 +379,8 @@ export const id: Strings = {
   activeInPortfolio: 'aktif dalam portofolio',
   notAssessable: 'Tidak dapat dinilai',
   signalMissing: 'sinyal tidak tersedia',
+  reasonNoBand: 'tidak ada jumlah kamar dan tidak ada kapasitas — tidak ada pembanding',
+  notRead: 'terhubung, belum dibaca',
 
   colProperty: 'Properti',
   colAtStake: 'Dipertaruhkan',
@@ -441,9 +462,9 @@ export const id: Strings = {
   connected: 'tersambung',
   missing: 'belum ada',
   sourceNotes: {
-    elev8: 'koordinat dan negara per listing; dan cara menyerahkan rekomendasi ke tim sebagai to-do',
+    elev8: 'kamar dan tempat tidur per listing — band kohort; dan pemetaan kanal yang menghubungkan listing OTA dengan milik kita',
     pricelabs: 'panel pasar, kisi pickup, log perubahan',
-    channex: 'pemetaan OTA dan okupansi kamar — kohort bergantung padanya; plus teks ulasan, ota_commission, pajak',
+    channex: 'diakses melalui Elev8, yang mem-proxy-nya sepenuhnya — tidak perlu kunci terpisah',
     mdv: 'API HTTP langsung; refresh token disimpan di basis data karena token itu berotasi',
   },
   redirectUriLabel: 'Redirect URI untuk pendaftaran aplikasi:',
@@ -468,10 +489,10 @@ export const id: Strings = {
   signInOff: 'mati',
 
   importHeading: 'Impor objek',
-  importLead: 'Membaca properti Booking dan listing Airbnb dari MyDataValue ke dalam portofolio. Aman dijalankan ulang: objek yang sudah dikenal tidak memakan biaya, jadi hanya yang baru atau yang masih belum bisa ditempatkan yang diambil.',
+  importLead: 'Membaca objek ke dalam portofolio. Elev8 membawa listing beserta kamarnya dan pemetaan kanal ke OTA; MyDataValue membawa objek Booking dan Airbnb. Aman dijalankan ulang: objek yang sudah dikenal tidak memakan biaya, jadi hanya yang baru atau yang masih belum bisa ditempatkan yang diambil.',
   importStart: 'Mulai impor',
   importNever: 'Belum ada impor yang dijalankan.',
-  importRunningSince: when => `Berjalan sejak ${when}. Halaman ini tidak menyegarkan dirinya sendiri.`,
+  importRunningSince: when => `Berjalan sejak ${when}. Halaman ini menyegarkan dirinya sendiri setiap beberapa detik sampai selesai.`,
   importFinishedAt: when => `Selesai ${when}.`,
   importCounts: (created, known, unresolved) =>
     `${created} objek baru, ${known} sudah dikenal, ${unresolved} tidak dapat ditempatkan.`,
