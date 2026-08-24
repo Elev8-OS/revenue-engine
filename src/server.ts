@@ -34,6 +34,8 @@ import { startImport, latestRun, releaseAbandoned, reportCounts, ImportBusyError
   from './import/run.js'
 import { pickLang, stringsFor, otherLang, langCookie, langCookieMaxAge, type Lang }
   from './i18n.js'
+import { publicOrigin } from './public-origin.js'
+import { authFromEnv, sessionState as elev8Session } from './sources/elev8/auth.js'
 import * as q from './dashboard/query.js'
 import { renderDashboard, renderLogin } from './dashboard/render.js'
 
@@ -62,7 +64,8 @@ const allowedEmails = (process.env.ALLOWED_EMAILS ?? '')
 const allowedGroups = (process.env.ALLOWED_GROUPS ?? '')
   .split(',').map(s => s.trim()).filter(Boolean)
 
-const baseUrl = process.env.PUBLIC_BASE_URL ?? ''
+const base = publicOrigin(process.env.PUBLIC_BASE_URL)
+const baseUrl = base.origin
 const cookieSecure = baseUrl.startsWith('https://')
 
 const entra = {
@@ -211,6 +214,10 @@ async function boot(): Promise<void> {
     allowedGroups.length ? `${allowedGroups.length} allowlisted group(s)` : null,
     allowedEmails.length ? `${allowedEmails.length} allowlisted address(es)` : null,
   ].filter(Boolean)
+  // Loud, because the failure it prevents is one that misleads: the provider
+  // names an address nobody configured, and registering THAT address makes the
+  // mistake permanent.
+  if (base.note) console.error(`configuration: ${base.note}`)
   console.log(`auth gate: ${gateEnabled
     ? [ssoEnabled ? `Entra SSO (tenant ${entra.tenantId})` : null,
        magicEnabled ? `magic link via ${mailer.mode}` : null].filter(Boolean).join(' + ')
@@ -502,6 +509,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     const grant = await withClient(async db => (await db.query<{
       rotation: number, revoked_at: Date | null
     }>(`select rotation, revoked_at from oauth_token where provider = 'mdv'`)).rows[0])
+    const elev8State = await withClient(c => elev8Session(c))
     const grantText = !grant ? `<span class="no">${esc(t.grantNone)}</span>`
       : grant.revoked_at ? `<span class="no">${esc(t.grantRevoked)}</span>`
       : `<span class="ok">${esc(t.grantLive(grant.rotation))}</span>`
@@ -535,7 +543,13 @@ ${srcs.map(x => `<tr><td><b>${x.name}</b></td><td>${x.ready
   <td style="color:var(--mut)">${esc(t.sourceNotes[x.key])}</td></tr>`).join('')}
 </tbody></table></div>
 <div class="card"><b>Microsoft 365</b> — ${esc(t.redirectUriLabel)}
-<code>${esc(entra.redirectUri)}</code> · ${esc(t.tenantLabel)} <code>${esc(entra.tenantId)}</code></div>
+<code>${esc(entra.redirectUri)}</code> · ${esc(t.tenantLabel)} <code>${esc(entra.tenantId)}</code>
+${base.note
+  // Shown here rather than in a banner because this is the card that carries the
+  // address the value gets confused with. Untranslated: it names a variable and
+  // quotes a value, and both are the same in every language.
+  ? `<br><span class="no">${esc(base.note)}</span>`
+  : ''}</div>
 <div class="card"><b>MyDataValue</b> — ${grantText}<br>${esc(t.redirectUriLabel)}
 <code>${esc(mdvRedirectUri)}</code>${gateEnabled
   ? ` · <a href="/auth/mdv?lang=${lang}">${esc(grant && !grant.revoked_at
@@ -547,6 +561,36 @@ ${gateEnabled && grant && !grant.revoked_at
   // where the link is actually shown, or the caution refers to nothing.
   ? `<br><span style="color:var(--mut);font-size:.85rem">${t.grantReplaceCaution}</span>`
   : ''}</div>
+<div class="card"><b>Elev8</b> — ${(() => {
+  // Which credential is LIVE, and what happened to it. Added because two
+  // imports failed with `Unauthenticated` and there was no way to tell from
+  // outside whether the service was presenting an API key or a login — which
+  // need opposite fixes. A state nobody can read is a state nobody can repair.
+  //
+  // Deliberately untranslated: it names variables and reports a mode, and both
+  // read the same in every language. No token, no password, no address.
+  const resolved = authFromEnv()
+  if (!resolved.auth) return `<span class="no">${esc(resolved.reason)}</span>`
+  if (resolved.auth.mode === 'apikey') {
+    return `<span class="no">using <code>ELEV8_API_TOKEN</code></span> — measured NOT to `
+      + `open <code>/api/v1</code>; set <code>ELEV8_LOGIN_EMAIL</code> + `
+      + `<code>ELEV8_LOGIN_PASSWORD</code>`
+  }
+  // Four states, and the order matters. A FAILED login writes a row too — it
+  // exists to carry the error — so `present` is false with an error set, and
+  // testing for the row instead of for `present` would report a login that has
+  // never succeeded as "signed in, valid until ?". Which it did, until this was
+  // read back.
+  const st = elev8State
+  if (st?.lastError) {
+    return `<span class="no">login failing</span> (${st.failures}×): ${esc(st.lastError)}`
+  }
+  if (!st?.present) {
+    return `<span class="ok">using <code>ELEV8_LOGIN_EMAIL</code></span> — not signed in yet`
+  }
+  return `<span class="ok">using <code>ELEV8_LOGIN_EMAIL</code></span> — signed in, `
+    + `valid until ${esc(st.expiresAt?.toISOString().replace('T', ' ').slice(0, 16) ?? '?')} UTC`
+})()}</div>
 <div class="card"><b>${esc(t.importHeading)}</b> — <a href="/import?lang=${lang}">${esc(t.importStart)}</a></div>
 <div class="card"><b>${esc(t.signIn)}</b> — ${gateEnabled
   ? `<span class="ok">${esc(t.signInActive)}</span>: ${[
@@ -603,6 +647,13 @@ ${gateEnabled && grant && !grant.revoked_at
         })()
     html(res, `<!doctype html><html lang="${t.htmlLang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+${run && !run.finishedAt
+  // Only while something is actually running. There is no notification when an
+  // import finishes, so without this the page is a state nobody is told about —
+  // and reloading by hand to find out is not a design, it is a chore. A finished
+  // page must NOT keep reloading: it would fight anybody reading the result.
+  ? '<meta http-equiv="refresh" content="5">'
+  : ''}
 <title>Revenue Engine — ${esc(t.importHeading)}</title>
 <style>:root{color-scheme:light dark;--paper:#F1F3F1;--ink:#171C1B;--mut:#5D6B69;--line:#D2DAD6;--surface:#FBFCFA;--teal:#0D615E;--rust:#97392B;--brass:#8A6A1C}
 @media(prefers-color-scheme:dark){:root{--paper:#0F1312;--ink:#E7ECE9;--mut:#94A3A0;--line:#28302E;--surface:#161B1A;--teal:#58C4BC;--rust:#E28A7C;--brass:#DFB44E}}
