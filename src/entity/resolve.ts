@@ -53,6 +53,43 @@ export function normaliseElev8Id(raw: string | null | undefined): string | null 
   return /^[0-9a-f]{32}$/.test(hex) ? hex : null
 }
 
+/**
+ * A pure lookup: has this external id been seen before, and if so, as what.
+ *
+ * Separate from `resolve` because the two callers want opposite things from a
+ * miss. Code CONSUMING data must attach to an existing entity, so a miss is a
+ * failure worth recording. An IMPORTER creates entities, so a miss is the normal
+ * case for every new object — and recording it there would fill
+ * unresolved_alias with rows that were imported successfully a moment later,
+ * which then surface on the dashboard as "not assessable".
+ */
+export async function lookupAlias(
+  client: PoolClient, input: Pick<ResolveInput, 'source' | 'kind' | 'externalId'>,
+): Promise<{ entityId: string, matchedBy: string } | null> {
+  const { rows } = await client.query<{ entity_id: string, matched_by: string }>(
+    `select entity_id, matched_by from entity_alias
+      where source = $1 and kind = $2 and external_id = $3`,
+    [input.source, input.kind, input.externalId],
+  )
+  const hit = rows[0]
+  return hit ? { entityId: hit.entity_id, matchedBy: hit.matched_by } : null
+}
+
+/**
+ * Drops a previously recorded failure once the row has been placed. Without
+ * this, an object that could not be resolved last week stays on the
+ * "not assessable" list forever, even after it was imported.
+ */
+export async function clearUnresolved(
+  client: PoolClient, input: Pick<ResolveInput, 'source' | 'kind' | 'externalId'>,
+): Promise<void> {
+  await client.query(
+    `delete from unresolved_alias
+      where source = $1 and kind = $2 and external_id = $3`,
+    [input.source, input.kind, input.externalId],
+  )
+}
+
 export async function resolve(
   client: PoolClient, input: ResolveInput,
 ): Promise<Resolution> {
@@ -121,7 +158,12 @@ export async function link(
   )
 }
 
-async function recordUnresolved(
+/**
+ * Exported because importers need it too: a row we cannot place must be recorded
+ * rather than skipped, or it disappears silently instead of surfacing as
+ * "not assessable".
+ */
+export async function recordUnresolved(
   client: PoolClient, input: ResolveInput, reason: string,
 ): Promise<void> {
   await client.query(
