@@ -138,6 +138,25 @@ function evidenceBlock(d: DashboardData, s: Strings): string {
  * custom properties, so it is correct in both colour schemes without a second
  * definition of anything.
  */
+/**
+ * Where a price falls in its neighbourhood's distribution.
+ *
+ * Named by the boundary it crossed, never by a percentage of the median: "12%
+ * below the median" sounds precise and says nothing about whether that is
+ * unusual. "Below the bottom quarter of 155 listings" is the sentence a pricing
+ * decision is actually made on.
+ */
+export function pricePosition(
+  price: number, p25: number | null, p50: number | null, p75: number | null, p90: number | null,
+): keyof Strings['pricePos'] | null {
+  if (p25 !== null && price < p25) return 'belowP25'
+  if (p90 !== null && price > p90) return 'aboveP90'
+  if (p50 !== null && price < p50) return 'p25p50'
+  if (p75 !== null && price < p75) return 'p50p75'
+  if (p75 !== null) return 'p75p90'
+  return null
+}
+
 function potential(r: Row, sig: q.Signals | undefined, s: Strings): string {
   const ours = sig?.occupancy ?? null
   const theirs = sig?.marketOccupancy ?? null
@@ -218,9 +237,88 @@ function potential(r: Row, sig: q.Signals | undefined, s: Strings): string {
     y += hasBand ? 30 : 14
   }
 
-  return `<section class="panel"><h3>${e(s.potentialHeading)}</h3>
-    <svg class="pot" viewBox="0 0 ${W} ${y + 6}" role="img"
-      aria-label="${e(s.potentialHeading)}">${parts.join('')}</svg></section>`
+  const chart = `<svg class="pot" viewBox="0 0 ${W} ${y + 6}" role="img"
+      aria-label="${e(s.potentialHeading)}">${parts.join('')}</svg>`
+  return `<section class="panel"><h3>${e(s.potentialHeading)}</h3>${chart}</section>`
+    + pricePositionBlock(sig, r, s)
+}
+
+/**
+ * The micro layer, drawn: our price inside the neighbourhood's own spread.
+ *
+ * This is the block that answers "and what does that do to the price". Two
+ * markers on one scale — what is live and what PriceLabs recommends — against
+ * the quartiles of the same bedroom category in the same neighbourhood. The
+ * distance between the two markers IS the effect of the recommendation, and the
+ * band behind them is what makes that distance mean something: moving CHF 45 to
+ * CHF 47 is nothing on its own and is still nothing when the neighbourhood's
+ * bottom quarter starts at 60.
+ *
+ * The scale is stretched to hold whichever is further out, our price or the
+ * band, so a listing priced far below its neighbourhood is drawn far below it
+ * rather than clamped onto the edge and made to look adjacent.
+ */
+function pricePositionBlock(sig: q.Signals | undefined, r: Row, s: Strings): string {
+  if (!sig) return ''
+  const { nbhdP25: p25, nbhdP50: p50, nbhdP75: p75, nbhdP90: p90 } = sig
+  const live = sig.priceLive
+  const rec = sig.priceRecommended
+  if (p50 === null || (live === null && rec === null)) return ''
+
+  const W = 640, PAD = 96, TRACK = W - PAD - 16
+  const values = [p25, p50, p75, p90, live, rec].filter((v): v is number => v !== null)
+  const lo = Math.min(...values) * 0.92
+  const hi = Math.max(...values) * 1.06
+  const span = hi - lo || 1
+  const x = (v: number) => PAD + ((v - lo) / span) * TRACK
+  const parts: string[] = []
+  const H = 18
+
+  parts.push(`<rect x="${PAD}" y="10" width="${TRACK}" height="${H}" rx="4" fill="var(--sunk)"/>`)
+  // The interquartile range: where half the neighbourhood actually sits.
+  if (p25 !== null && p75 !== null) {
+    parts.push(`<rect x="${x(p25).toFixed(1)}" y="10" width="${(x(p75) - x(p25)).toFixed(1)}"`
+      + ` height="${H}" rx="4" fill="var(--mut)" opacity=".3"/>`)
+  }
+  for (const [v, label] of [[p25, 'P25'], [p50, 'P50'], [p75, 'P75'], [p90, 'P90']] as const) {
+    if (v === null) continue
+    parts.push(`<line x1="${x(v).toFixed(1)}" y1="8" x2="${x(v).toFixed(1)}" y2="${10 + H + 2}"`
+      + ` stroke="var(--mut)" stroke-width="${label === 'P50' ? 2 : 1}"/>`)
+    parts.push(`<text x="${x(v).toFixed(1)}" y="${10 + H + 14}" class="cap"`
+      + ` text-anchor="middle">${label}</text>`)
+  }
+  // Live is hollow, the recommendation is filled: the reader should be able to
+  // tell what is true today from what is being proposed without a legend.
+  if (live !== null) {
+    parts.push(`<circle cx="${x(live).toFixed(1)}" cy="${10 + H / 2}" r="6" fill="var(--paper)"`
+      + ` stroke="var(--ink)" stroke-width="2"/>`)
+  }
+  if (rec !== null) {
+    parts.push(`<circle cx="${x(rec).toFixed(1)}" cy="${10 + H / 2}" r="5" fill="var(--ink)"/>`)
+  }
+  // The band, not the panel's own title again. The heading is directly above it,
+  // and a row label that repeats it wastes the one column that could say which
+  // cohort the quartiles belong to.
+  parts.push(`<text x="0" y="${10 + H / 2 + 4}" class="lbl">${e(r.band ?? '—')}</text>`)
+
+  const cash = (v: number) => e(money(v, sig.currency ?? r.currency, s.numberLocale))
+  const marks = [
+    live === null ? null : `${cash(live)} ${e(s.pricePosLive)}`,
+    rec === null ? null : `${cash(rec)} ${e(s.pricePosRecommended)}`,
+  ].filter(Boolean).join(' · ')
+  const where = live !== null ? pricePosition(live, p25, p50, p75, p90) : null
+  const basis = sig.nbhdListings !== null && r.band
+    ? e(s.pricePosBasis(Math.round(sig.nbhdListings), r.band))
+    : e(s.pricePosNoBasis)
+
+  return `<section class="panel"><h3>${e(s.pricePosHeading)}</h3>
+    <svg class="pot" viewBox="0 0 ${W} ${10 + H + 20}" role="img"
+      aria-label="${e(s.pricePosHeading)}">${parts.join('')}</svg>
+    <p class="mut" style="margin:.4rem 0 0;font-size:.86rem">${marks}${
+      where ? ` — <b>${e(s.pricePos[where])}</b>` : ''} <span class="mut">· ${basis}</span></p>
+  </section>
+  <section class="panel"><h3>${e(s.macroHeading)}</h3>
+    <p class="mut" style="margin:0;font-size:.86rem">${e(s.macroBlocked)}</p></section>`
 }
 
 function vsMarket(sig: q.Signals | undefined, s: Strings): string {

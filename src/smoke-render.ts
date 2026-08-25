@@ -12,7 +12,7 @@
  *   3. HALF A TRANSLATION. Every legend term has to exist in both languages, or
  *      one office reads a glossary and the other reads English.
  */
-import { renderDashboard, type DashboardData } from './dashboard/render.js'
+import { renderDashboard, pricePosition, type DashboardData } from './dashboard/render.js'
 import type { Row, Signals } from './dashboard/query.js'
 import { en, id, LANGS, stringsFor } from './i18n.js'
 
@@ -31,7 +31,8 @@ const row = (over: Partial<Row> = {}): Row => ({
 const sig = (over: Partial<Signals> = {}): Signals => ({
   occupancy: 26, marketOccupancy: 48, mpi: 1.31, adr: null, marketAdr: null, revenue: 900,
   priceRecommended: 165, priceLive: 180, nights: 30, currency: 'CHF',
-  observedAt: null, asOf: '2026-08-25', ...over,
+  observedAt: null, asOf: '2026-08-25',
+  nbhdP25: 60, nbhdP50: 80, nbhdP75: 98, nbhdP90: 136, nbhdListings: 155, ...over,
 })
 const data = (over: Partial<DashboardData> = {}): DashboardData => ({
   lang: 'en', basis: 'revenue', openId: null, rows: [row()],
@@ -108,6 +109,47 @@ for (const lang of LANGS) {
   const page = renderDashboard(data({ lang }))
   check(`${lang}: the glossary heading is translated`, page.includes(s.legendHeading))
 }
+
+
+/* ------------------------------------------------------ 4 · the micro layer */
+
+// The block that answers "and what does that do to the price": our live price
+// and the recommendation on one scale, against the quartiles of the same
+// bedroom category in the same neighbourhood.
+const micro = renderDashboard(data({ openId: ID }))
+check('the price-position block is drawn', micro.includes('>P25<') && micro.includes('>P50<'))
+check('both markers are there: what is live and what is proposed',
+      micro.includes('live') && micro.includes('recommended'))
+// The fixture is a room at CHF 180 live in a neighbourhood whose 1BR band tops
+// out at 136 — which is what an MPI of 1.31 looks like from the other side.
+check('the verdict names the boundary that was crossed, not a percentage',
+      micro.includes('above the top tenth'), '')
+check('and it says how many listings the band rests on',
+      micro.includes('155 listings'))
+
+check('below the bottom quarter', pricePosition(45, 60, 80, 98, 136) === 'belowP25')
+check('lower half', pricePosition(70, 60, 80, 98, 136) === 'p25p50')
+check('upper half', pricePosition(90, 60, 80, 98, 136) === 'p50p75')
+check('top quarter', pricePosition(120, 60, 80, 98, 136) === 'p75p90')
+check('above the top tenth', pricePosition(200, 60, 80, 98, 136) === 'aboveP90')
+check('exactly on a boundary counts upward, so P25 is not "below P25"',
+      pricePosition(60, 60, 80, 98, 136) === 'p25p50')
+check('with no band at all there is no verdict to give',
+      pricePosition(60, null, null, null, null) === null)
+
+const noBand = renderDashboard(data({ openId: ID,
+  signals: new Map([[ID, sig({ nbhdP25: null, nbhdP50: null, nbhdP75: null, nbhdP90: null,
+                               nbhdListings: null })]]) }))
+check('a room with no neighbourhood band draws no price-position block at all',
+      !noBand.includes('>P50<'), '')
+
+/* ------------------------------------------------------ 5 · the macro layer */
+
+// Absent, and SAID to be absent. A blank space would read as "nothing to see";
+// the sentence says why there is nothing and what would change it.
+check('the macro block states that it is not connected',
+      micro.includes('Not connected') && micro.includes('guest-origin mix'))
+check('and it names what blocks it', micro.includes('MyDataValue'))
 
 console.log(fails ? `\n${fails} FAILED` : '\nall green')
 process.exit(fails ? 1 : 0)

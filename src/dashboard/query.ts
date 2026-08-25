@@ -275,6 +275,17 @@ export interface Signals {
   observedAt: Date | null
   /** The day WE looked, which is the honest age of the row. */
   asOf: string | null
+  /**
+   * The micro layer: the price distribution of this listing's OWN neighbourhood,
+   * for its own bedroom category. A price is not high or low on its own — it is
+   * high or low against a spread, and this is the spread.
+   */
+  nbhdP25: number | null
+  nbhdP50: number | null
+  nbhdP75: number | null
+  nbhdP90: number | null
+  /** How many listings the band rests on. Two and 155 are different claims. */
+  nbhdListings: number | null
 }
 
 export async function signals(client: PoolClient): Promise<Map<string, Signals>> {
@@ -282,7 +293,9 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
     entity_id: string, occupancy: string | null, market_occupancy: string | null,
     mpi: string | null, adr: string | null, market_adr: string | null, revenue: string | null,
     price_recommended: string | null, price_live: string | null, nights: number,
-    currency: string | null, observed_at: Date | null, as_of: string | null
+    currency: string | null, observed_at: Date | null, as_of: string | null,
+    p25: string | null, p50: string | null, p75: string | null, p90: string | null,
+    listings: string | null
   }>(`
     -- Per entity, the most recent pass. Not a global max: a listing PriceLabs
     -- refused today must show yesterday's number as yesterday's, not vanish.
@@ -301,6 +314,21 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
              max(s.as_of_date)::text as as_of
         from snapshot s
         join win_asof w on w.entity_id = s.entity_id and s.as_of_date = w.as_of
+       group by s.entity_id
+    ),
+    nb_asof as (
+      select entity_id, max(as_of_date) as as_of
+        from snapshot where metric = 'nbhd_price_p50' group by entity_id
+    ),
+    nb as (
+      select s.entity_id,
+             max(s.value) filter (where s.metric = 'nbhd_price_p25')   as p25,
+             max(s.value) filter (where s.metric = 'nbhd_price_p50')   as p50,
+             max(s.value) filter (where s.metric = 'nbhd_price_p75')   as p75,
+             max(s.value) filter (where s.metric = 'nbhd_price_p90')   as p90,
+             max(s.value) filter (where s.metric = 'nbhd_listings')    as listings
+        from snapshot s
+        join nb_asof n on n.entity_id = s.entity_id and s.as_of_date = n.as_of
        group by s.entity_id
     ),
     px_asof as (
@@ -329,10 +357,12 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
            w.adr::text, w.market_adr::text, w.revenue::text,
            c.price_recommended::text, c.price_live::text,
            coalesce(c.nights, 0) as nights, c.currency, c.observed_at,
-           w.as_of
+           w.as_of,
+           nb.p25::text, nb.p50::text, nb.p75::text, nb.p90::text, nb.listings::text
       from entity e
       left join win w on w.entity_id = e.id
       left join cal c on c.entity_id = e.id
+      left join nb on nb.entity_id = e.id
      where e.active`)
 
   const num = (v: string | null) => v === null ? null : Number(v)
@@ -341,5 +371,7 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
     mpi: num(r.mpi), adr: num(r.adr), marketAdr: num(r.market_adr), revenue: num(r.revenue),
     priceRecommended: num(r.price_recommended), priceLive: num(r.price_live),
     nights: r.nights, currency: r.currency, observedAt: r.observed_at, asOf: r.as_of,
+    nbhdP25: num(r.p25), nbhdP50: num(r.p50), nbhdP75: num(r.p75), nbhdP90: num(r.p90),
+    nbhdListings: num(r.listings),
   }]))
 }

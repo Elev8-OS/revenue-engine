@@ -8,9 +8,13 @@
  *   2. PRICES, because it is the one stage whose data cannot be recovered later.
  *      Tomorrow's call will not tell us what today's forecast was.
  *   3. METRICS, the listing-against-market grid a finding argues from.
- *   4. RESERVATIONS, realised money — and the one stage documented to be refused
+ *   4. NEIGHBOURHOOD, the price distribution around each listing — the micro
+ *      layer. Placed after metrics because it is by far the most expensive read
+ *      in the account, so a pass that dies here has already stored the two
+ *      stages a finding needs.
+ *   5. RESERVATIONS, realised money — and the one stage documented to be refused
  *      to a valid key.
- *   5. MARKET, last, because it samples the coordinates stage 1 wrote.
+ *   6. MARKET, last, because it samples the coordinates stage 1 wrote.
  *
  * A failure in a later stage never discards an earlier one. A pass that archived
  * ninety nights of prices for sixty listings and then found the reservations
@@ -24,6 +28,7 @@ import { importPriceLabsPrices, type PricesReport } from './prices.js'
 import { importPriceLabsMetrics, type MetricsReport } from './metrics.js'
 import { importPriceLabsReservations, type ReservationsReport } from './reservations.js'
 import { importPriceLabsMarket, type EstimatorReport } from './estimator.js'
+import { importPriceLabsNeighbourhood, type NeighbourhoodReport } from './neighbourhood.js'
 
 export interface PriceLabsImportReport {
   /**
@@ -38,6 +43,8 @@ export interface PriceLabsImportReport {
   listings: PriceLabsListingsReport
   prices: PricesReport | null
   metrics: MetricsReport | null
+  /** The micro layer: the price distribution of each listing's own neighbourhood. */
+  neighbourhood: NeighbourhoodReport | null
   reservations: ReservationsReport | null
   market: EstimatorReport | null
   /** Named so a partial pass is legible rather than looking like a success. */
@@ -64,7 +71,7 @@ export async function importPriceLabs(
 
   const report: PriceLabsImportReport = {
     kind: 'pricelabs', asOf, listings,
-    prices: null, metrics: null, reservations: null, market: null,
+    prices: null, metrics: null, neighbourhood: null, reservations: null, market: null,
     stageErrors, skipped,
   }
 
@@ -86,6 +93,15 @@ export async function importPriceLabs(
     report.metrics = await importPriceLabsMetrics(db, api, resolved, asOf)
   } catch (err) {
     stageErrors.push(`metrics: ${(err as Error).message}`)
+  }
+
+  try {
+    // After metrics because it is by far the most expensive read in the account
+    // — roughly 207'000 characters a listing — and a pass that dies here has
+    // already stored the calendar and the grid.
+    report.neighbourhood = await importPriceLabsNeighbourhood(db, api, resolved, asOf)
+  } catch (err) {
+    stageErrors.push(`neighbourhood: ${(err as Error).message}`)
   }
 
   try {

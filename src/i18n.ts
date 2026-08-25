@@ -88,6 +88,17 @@ export interface Strings {
   legendHeading: string
   legendLead: string
   legend: Array<{ term: string, text: string }>
+  /** The micro layer: where our price sits in its own neighbourhood. */
+  pricePosHeading: string
+  pricePosLive: string
+  pricePosRecommended: string
+  pricePosBasis: (listings: number, band: string) => string
+  pricePosNoBasis: string
+  /** Where the live price falls in the neighbourhood distribution. */
+  pricePos: Record<'belowP25' | 'p25p50' | 'p50p75' | 'p75p90' | 'aboveP90', string>
+  /** The macro layer, and why it is not here. */
+  macroHeading: string
+  macroBlocked: string
   findingCount: (n: number, severity: string) => string
   noneOpen: string
   notRated: string
@@ -292,6 +303,25 @@ export const en: Strings = {
     { term: 'Contract', text: 'Guaranteed rent or commission — whose money is at stake, and '
       + 'therefore whether a finding can be a recommendation at all.' },
   ],
+  pricePosHeading: 'Price position',
+  pricePosLive: 'live',
+  pricePosRecommended: 'recommended',
+  pricePosBasis: (listings, band) =>
+    `${band} band in this neighbourhood, ${listings} listing${listings === 1 ? '' : 's'}`,
+  pricePosNoBasis: 'no neighbourhood band for this room',
+  pricePos: {
+    belowP25: 'below the bottom quarter of the neighbourhood',
+    p25p50: 'in the lower half, below the median',
+    p50p75: 'in the upper half, above the median',
+    p75p90: 'in the top quarter',
+    aboveP90: 'above the top tenth of the neighbourhood',
+  },
+  macroHeading: 'Macro',
+  macroBlocked: 'Not connected. Arrivals, exchange rates and season only become a signal for '
+    + 'THIS room once the guest-origin mix is known per object — and that lives in '
+    + 'MyDataValue, whose grant is revoked. Until then nothing macro is shown here, '
+    + 'because a market-wide number applied to one room without its origin mix is a '
+    + 'decoration, not evidence.',
   findingCount: (n, s) => `${n}× ${s}`,
   noneOpen: 'none open',
   notRated: 'not assessed',
@@ -511,6 +541,25 @@ export const id: Strings = {
     { term: 'Kontrak', text: 'Sewa terjamin atau komisi — uang siapa yang dipertaruhkan, dan '
       + 'karenanya apakah sebuah temuan bisa menjadi rekomendasi sama sekali.' },
   ],
+  pricePosHeading: 'Posisi harga',
+  pricePosLive: 'aktif',
+  pricePosRecommended: 'disarankan',
+  pricePosBasis: (listings, band) =>
+    `band ${band} di lingkungan ini, ${listings} listing`,
+  pricePosNoBasis: 'tidak ada band lingkungan untuk kamar ini',
+  pricePos: {
+    belowP25: 'di bawah kuartal terbawah lingkungan',
+    p25p50: 'di paruh bawah, di bawah median',
+    p50p75: 'di paruh atas, di atas median',
+    p75p90: 'di kuartal teratas',
+    aboveP90: 'di atas sepersepuluh teratas lingkungan',
+  },
+  macroHeading: 'Makro',
+  macroBlocked: 'Belum terhubung. Kedatangan, kurs dan musim baru menjadi sinyal untuk kamar '
+    + 'INI bila komposisi asal tamu diketahui per objek — dan itu ada di MyDataValue, yang '
+    + 'izinnya dicabut. Sampai saat itu tidak ada angka makro di sini, karena angka '
+    + 'sepasar yang ditempel pada satu kamar tanpa komposisi asalnya adalah hiasan, '
+    + 'bukan bukti.',
   findingCount: (n, s) => `${n}× ${s}`,
   noneOpen: 'tidak ada',
   notRated: 'belum dinilai',
