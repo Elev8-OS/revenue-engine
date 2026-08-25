@@ -9,7 +9,7 @@
 import { createServer } from 'node:http'
 import { Pool } from 'pg'
 import { startImport, latestRun, releaseAbandoned, ImportBusyError,
-  isElev8Report, reportCounts } from './import/run.js'
+  isElev8Report, isPriceLabsReport, reportCounts } from './import/run.js'
 import { seedRefreshToken } from './sources/mdv/client.js'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL! })
@@ -79,12 +79,15 @@ await settle()
 const done = await latestRun(c)
 check('the run finishes and records its report', done?.finishedAt !== null && !done?.error,
       done?.error ?? '')
-// The narrowing is itself the assertion: two importers now share one column,
-// and a reader that guessed by key would read an Elev8 report as an MDV one.
+// The narrowing is itself the assertion: three importers now share one column,
+// and a reader that guessed by key would read an Elev8 report as an MDV one —
+// or, once PriceLabs arrived and brought its own `listings` object, a PriceLabs
+// report as an Elev8 one.
 const stored = done?.report ?? null
-check('the stored report is recognisably the MDV shape', !isElev8Report(stored))
-check('the report survives verbatim',
-      !isElev8Report(stored) && stored?.bookingCreated === 1, JSON.stringify(stored))
+check('the stored report is recognisably the MDV shape',
+      !isElev8Report(stored) && !isPriceLabsReport(stored))
+const asMdv = !isElev8Report(stored) && !isPriceLabsReport(stored) ? stored : null
+check('the report survives verbatim', asMdv?.bookingCreated === 1, JSON.stringify(stored))
 check('the page counts come out of either shape the same way',
       reportCounts(stored).created === 1)
 const ent = await c.query<{ label: string, market: string }>(

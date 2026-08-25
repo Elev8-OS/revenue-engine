@@ -16,3 +16,11 @@ npx tsx src/smoke-sso.ts
 npx tsx src/smoke-mdv-client.ts
 npx tsx src/smoke-mdv-objects.ts
 npx tsx src/smoke-import.ts
+# Added because they were not in this list. Eleven suites existed and eight ran,
+# which meant three of them were only ever green on the machine that wrote them.
+npx tsx src/smoke-elev8.ts
+npx tsx src/smoke-origin.ts
+npx tsx src/smoke-retire.ts
+# Last on purpose: it truncates the object tables to build its own fixture, so
+# anything expecting the earlier suites' rows must run before it.
+npx tsx src/smoke-pricelabs.ts

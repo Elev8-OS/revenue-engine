@@ -133,7 +133,7 @@ export interface Strings {
   colWhatFor: string
   connected: string
   missing: string
-  sourceNotes: Record<'elev8' | 'pricelabs' | 'channex' | 'mdv', string>
+  sourceNotes: Record<'elev8' | 'pricelabs' | 'pricelabsMarket' | 'channex' | 'mdv', string>
   redirectUriLabel: string
   tenantLabel: string
   grantNone: string
@@ -298,7 +298,8 @@ export const en: Strings = {
     // endpoints — while the adapter had moved to the Internal API, which carries
     // the rooms and the channel mapping the cohort actually depends on.
     elev8: 'rooms and beds per listing — the cohort band; and the channel mapping that links an OTA listing to ours',
-    pricelabs: 'market panel, pickup grid, change log',
+    pricelabs: 'the forward price calendar archived nightly, the performance grid against each listing\u2019s own market, and realised bookings with the OTA commission on them',
+    pricelabsMarket: 'the cohort benchmark: what a listing of this size earns in this market, asked by coordinate and bedroom count \u2014 a separate key from the one above',
     // Kept because the key is typed, but Elev8 proxies Channex in full, so this
     // row is no longer shown on the readiness page.
     channex: 'reached through Elev8, which proxies it in full — no separate key needed',
@@ -463,7 +464,8 @@ export const id: Strings = {
   missing: 'belum ada',
   sourceNotes: {
     elev8: 'kamar dan tempat tidur per listing — band kohort; dan pemetaan kanal yang menghubungkan listing OTA dengan milik kita',
-    pricelabs: 'panel pasar, kisi pickup, log perubahan',
+    pricelabs: 'kalender harga ke depan yang diarsipkan setiap malam, kisi performa terhadap pasar masing-masing listing, dan pemesanan terealisasi beserta komisi OTA-nya',
+    pricelabsMarket: 'tolok ukur kohort: berapa pendapatan listing seukuran ini di pasar ini, ditanya lewat koordinat dan jumlah kamar tidur \u2014 kunci terpisah dari yang di atas',
     channex: 'diakses melalui Elev8, yang mem-proxy-nya sepenuhnya — tidak perlu kunci terpisah',
     mdv: 'API HTTP langsung; refresh token disimpan di basis data karena token itu berotasi',
   },

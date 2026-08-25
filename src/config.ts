@@ -27,7 +27,32 @@ const schema = z.object({
   ELEV8_LOGIN_EMAIL: z.string().optional(),
   ELEV8_LOGIN_PASSWORD: z.string().optional(),
 
+  /**
+   * PriceLabs comes with TWO keys, and the specification says so in as many
+   * words: "Your Revenue Estimator API key. This is different from the Customer
+   * API key."
+   *
+   *   PRICELABS_API_KEY            the Customer API. Our own listings: the price
+   *                                calendar, the performance grid against the
+   *                                listing's own market, and realised
+   *                                reservations with the OTA commission on them.
+   *   PRICELABS_ESTIMATOR_API_KEY  the Revenue Estimator. Addressed by
+   *                                coordinate and bedroom count rather than by
+   *                                listing, which makes it the only source that
+   *                                answers a COHORT question — and therefore the
+   *                                only one a "below the market" claim can rest
+   *                                on. Optional: without it that stage is
+   *                                reported as not run, never as failed.
+   *
+   * The currency is a variable because the Estimator requires one and the answer
+   * is an account decision, not a fact about a listing. Measured on this
+   * account: PriceLabs reports CHF even for the Bali villas, which is why the
+   * default matches rather than deriving a currency per market.
+   */
   PRICELABS_API_KEY: z.string().optional(),
+  PRICELABS_API_BASE: z.string().url().optional(),
+  PRICELABS_ESTIMATOR_API_KEY: z.string().optional(),
+  PRICELABS_ESTIMATOR_CURRENCY: z.string().default('CHF'),
   /**
    * Kept declared, deliberately unused. Elev8 proxies Channex in full — the
    * same occupancy fields, the same channel mappings — so a direct connection
@@ -87,6 +112,10 @@ export function availableSources(c: Config) {
     elev8: Boolean(c.ELEV8_API_BASE
       && (c.ELEV8_API_TOKEN || (c.ELEV8_LOGIN_EMAIL && c.ELEV8_LOGIN_PASSWORD))),
     pricelabs: Boolean(c.PRICELABS_API_KEY),
+    // Separate from `pricelabs` on purpose: the Customer API can be fully live
+    // while the cohort benchmark is missing, and one green row for both would
+    // say the market side was covered when nothing had asked for it.
+    pricelabsMarket: Boolean(c.PRICELABS_ESTIMATOR_API_KEY),
     channex: Boolean(c.CHANNEX_API_KEY),
     // Ready means a client is configured. Whether a live grant exists is a
     // database question, not an environment one — see oauth_token.

@@ -17,13 +17,20 @@ import { importObjects, type ImportReport } from '../sources/mdv/objects.js'
 import { Elev8Client } from '../sources/elev8/client.js'
 import { authFromEnv } from '../sources/elev8/auth.js'
 import { importElev8, type Elev8ImportReport } from '../sources/elev8/import.js'
+import { PriceLabsClient } from '../sources/pricelabs/client.js'
+import { importPriceLabs, type PriceLabsImportReport } from '../sources/pricelabs/import.js'
 
 /**
- * Two importers, two report shapes, one column. Discriminated by `source`
- * rather than by which keys are present: a tag narrows reliably, and a reader
- * six months from now should not have to infer which importer wrote a row.
+ * Three importers, three report shapes, one column.
+ *
+ * The intent was always to discriminate by a tag rather than by which keys
+ * happen to be present — and for two shapes the shortcut held, because only
+ * Elev8 had a `listings` object. PriceLabs brought a second one, which is
+ * exactly the failure the original comment was written to prevent. So the new
+ * shape carries `kind`, and the older guard now tests a key that is genuinely
+ * unique to what it identifies.
  */
-export type AnyReport = ImportReport | Elev8ImportReport
+export type AnyReport = ImportReport | Elev8ImportReport | PriceLabsImportReport
 
 export interface RunRow {
   id: string
@@ -35,9 +42,25 @@ export interface RunRow {
   error: string | null
 }
 
-/** Narrows a stored report without trusting the caller to know the source. */
+/**
+ * Narrows a stored report without trusting the caller to know the source.
+ *
+ * `bedTypes`, not `listings`. The PriceLabs report also carries a `listings`
+ * object, so the old test would have read every PriceLabs run as an Elev8 run
+ * and put the wrong three numbers on the import page with nothing to show that
+ * it had. A discriminator has to be unique to the shape it identifies, and the
+ * bed-type note is: no other source has one.
+ */
 export const isElev8Report = (r: AnyReport | null): r is Elev8ImportReport =>
-  Boolean(r) && 'listings' in (r as Elev8ImportReport)
+  Boolean(r) && 'bedTypes' in (r as Elev8ImportReport)
+
+/**
+ * Tagged rather than inferred. Every report written from here on says what it
+ * is; the two older shapes predate the tag, which is harmless because neither
+ * of them is this one.
+ */
+export const isPriceLabsReport = (r: AnyReport | null): r is PriceLabsImportReport =>
+  Boolean(r) && (r as PriceLabsImportReport).kind === 'pricelabs'
 
 export class ImportBusyError extends Error {
   constructor() { super('an import is already running') }
@@ -93,6 +116,7 @@ async function run(pool: Pool, runId: string, source: string): Promise<void> {
   try {
     const report = source === 'elev8'
       ? await runElev8(client)
+      : source === 'pricelabs' ? await runPriceLabs(client)
       : source === 'mdv' ? await runMdv(client)
       : (() => { throw new Error(`no importer for source ${source}`) })()
     await client.query(
@@ -133,6 +157,29 @@ async function runElev8(client: PoolClient): Promise<Elev8ImportReport> {
   return importElev8(client, api)
 }
 
+/**
+ * PriceLabs attaches to objects and never creates them, so this importer is
+ * useless before an Elev8 pass has run — which is a real ordering constraint and
+ * not an error. It is not enforced here: a pass over zero resolved listings
+ * reports exactly that, which is more informative than a refusal.
+ */
+async function runPriceLabs(client: PoolClient): Promise<PriceLabsImportReport> {
+  const apiKey = process.env.PRICELABS_API_KEY
+  if (!apiKey) throw new Error('PRICELABS_API_KEY is not set')
+  const base = process.env.PRICELABS_API_BASE ?? undefined
+  const api = new PriceLabsClient({ apiKey, base })
+  const estimatorKey = process.env.PRICELABS_ESTIMATOR_API_KEY
+  return importPriceLabs(client, api, {
+    estimator: estimatorKey
+      // Its own client, because it is its own credential. Sharing one would mean
+      // presenting the Customer API key to the Estimator and reading the 401 as
+      // an outage.
+      ? { api: new PriceLabsClient({ apiKey: estimatorKey, base }),
+          currency: (process.env.PRICELABS_ESTIMATOR_CURRENCY ?? 'CHF').toUpperCase() }
+      : undefined,
+  })
+}
+
 async function runMdv(client: PoolClient): Promise<ImportReport> {
   const clientId = process.env.MDV_CLIENT_ID
   const clientSecret = process.env.MDV_CLIENT_SECRET
@@ -162,6 +209,17 @@ export function reportCounts(r: AnyReport | null): {
   created: number, known: number, unresolved: number
 } {
   if (!r) return { created: 0, known: 0, unresolved: 0 }
+  if (isPriceLabsReport(r)) {
+    // `created` is zero and stays zero. PriceLabs is a consumer of objects, not
+    // a source of them: a listing that matches nothing we hold is a gap to
+    // report, not a 63rd apartment to invent. A non-zero number in this column
+    // for this source would mean something had gone wrong.
+    return {
+      created: 0,
+      known: r.listings.resolved,
+      unresolved: r.listings.unresolved,
+    }
+  }
   if (isElev8Report(r)) {
     return {
       created: r.listings.created,

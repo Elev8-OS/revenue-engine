@@ -113,10 +113,19 @@ function sourceStates() {
       missing: env.ELEV8_API_TOKEN || (env.ELEV8_LOGIN_EMAIL && env.ELEV8_LOGIN_PASSWORD)
         ? need('ELEV8_API_BASE')
         : [...need('ELEV8_API_BASE'), 'ELEV8_API_TOKEN or ELEV8_LOGIN_EMAIL+ELEV8_LOGIN_PASSWORD'] },
-    // reads:false is the honest state and it has to be visible. A green row for
-    // a source with no adapter told somebody their data was flowing when the key
-    // was read in exactly three places: the schema, this list, and nowhere else.
-    { name: 'PriceLabs', key: 'pricelabs' as const, reads: false, missing: need('PRICELABS_API_KEY') },
+    // reads:true as of the Customer API adapter. It was false for a long time and
+    // the row said so, because a green line for a source with no adapter told
+    // somebody their data was flowing when the key was read in exactly three
+    // places: the schema, this list, and nowhere else.
+    { name: 'PriceLabs', key: 'pricelabs' as const, reads: true,
+      missing: need('PRICELABS_API_KEY') },
+    // A SECOND ROW, not a footnote on the first. The Revenue Estimator is a
+    // different credential — the specification says so — and it is the only
+    // source that answers a cohort question. One combined row would report the
+    // market side as covered whenever the Customer API key was set, which is
+    // precisely the false green this list already learned about once.
+    { name: 'PriceLabs · market', key: 'pricelabsMarket' as const, reads: true,
+      missing: need('PRICELABS_ESTIMATOR_API_KEY') },
     // Channex is deliberately NOT listed any more. Elev8 proxies it in full —
     // the same room and occupancy fields, the same channel mappings, plus the
     // rooms Elev8 holds and Channex does not. A second row would ask for a
@@ -758,7 +767,11 @@ deactivated rather than deleted, so the numbers behind it survive.</p></div>` : 
   if (path === '/shapes') {
     const rows = await withClient(c => knownShapes(c))
     const want = url.searchParams.get('endpoint')
-    const detail = want ? await withClient(c => latestShape(c, 'elev8', want)) : null
+    // The source is part of the key, and hardcoding 'elev8' here meant every
+    // PriceLabs endpoint in the list above led to an empty detail view — a page
+    // that answers "no shape recorded" about a shape it just listed.
+    const from = url.searchParams.get('source') ?? 'elev8'
+    const detail = want ? await withClient(c => latestShape(c, from, want)) : null
     const pct = (f: number, n: number) => n ? `${Math.round((f / n) * 100)}%` : '—'
     html(res, `<!doctype html><html lang="${t.htmlLang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -782,13 +795,15 @@ a{color:inherit}</style></head>
 recorded — a shape is safe to keep, a sample of live data is not.
  · <a href="/status?lang=${lang}">${esc(t.readiness)}</a></p>
 ${!rows?.length ? '<div class="card">Nothing observed yet. Run an import.</div>' : `
-<div class="card"><table><thead><tr><th>Endpoint</th><th>Observed</th><th>Samples</th>
-<th>Paths</th></tr></thead><tbody>
-${rows.map(r => `<tr><td><a href="/shapes?endpoint=${encodeURIComponent(r.endpoint)}"><code>${esc(r.endpoint)}</code></a></td>
+<div class="card"><table><thead><tr><th>Source</th><th>Endpoint</th><th>Observed</th>
+<th>Samples</th><th>Paths</th></tr></thead><tbody>
+${rows.map(r => `<tr><td>${esc(r.source)}</td>
+<td><a href="/shapes?source=${encodeURIComponent(r.source)}&amp;endpoint=${
+  encodeURIComponent(r.endpoint)}"><code>${esc(r.endpoint)}</code></a></td>
 <td>${esc(r.observedAt.toISOString().replace('T', ' ').slice(0, 16))} UTC</td>
 <td>${r.sampleCount}</td><td>${r.paths}</td></tr>`).join('')}
 </tbody></table></div>`}
-${detail ? `<h2><code>${esc(want ?? '')}</code> — ${detail.sampleCount} sample(s)${
+${detail ? `<h2><code>${esc(from)}</code> · <code>${esc(want ?? '')}</code> — ${detail.sampleCount} sample(s)${
   detail.note ? `, ${esc(detail.note)}` : ''}</h2>
 <div class="card"><table><thead><tr><th>Path</th><th>Types</th><th>Filled</th><th></th>
 </tr></thead><tbody>
@@ -812,7 +827,8 @@ ${detail.shape.map(e => {
     const form = await formBody(req).catch(() => ({} as Record<string, string | undefined>))
     // Whitelisted, not passed through. `source` reaches an importer lookup and
     // an unknown value would only ever be a mistake or a probe.
-    const source = form.source === 'elev8' ? 'elev8' : 'mdv'
+    const source = form.source === 'elev8' ? 'elev8'
+      : form.source === 'pricelabs' ? 'pricelabs' : 'mdv'
     try {
       await startImport(pool, { startedBy: session.email || 'open', source })
     } catch (err) {
@@ -832,6 +848,10 @@ ${detail.shape.map(e => {
     const elev8Ready = Boolean(process.env.ELEV8_API_BASE
       && (process.env.ELEV8_API_TOKEN
           || (process.env.ELEV8_LOGIN_EMAIL && process.env.ELEV8_LOGIN_PASSWORD)))
+    // The Customer API key alone. The Estimator key is optional by design: its
+    // stage reports itself as not run, so gating the whole button on it would
+    // withhold the price archive over a missing market benchmark.
+    const priceLabsReady = Boolean(process.env.PRICELABS_API_KEY)
     const state = !run ? `<p>${esc(t.importNever)}</p>`
       : !run.finishedAt ? `<p>${esc(t.importRunningSince(when(run.startedAt)))}</p>`
       : run.error ? `<p class="no">${esc(t.importFailedWith(run.error))}</p>`
@@ -870,6 +890,7 @@ ${mdvReady ? '' : `<div class="card warn">${t.importNeedsMdv}</div>`}
 <form method="post" action="/import?lang=${lang}">
   ${esc(t.importStart)}:
   <button type="submit" name="source" value="elev8"${elev8Ready && (!run || run.finishedAt) ? '' : ' disabled'}>Elev8</button>
+  <button type="submit" name="source" value="pricelabs"${priceLabsReady && (!run || run.finishedAt) ? '' : ' disabled'}>PriceLabs</button>
   <button type="submit" name="source" value="mdv"${mdvReady && (!run || run.finishedAt) ? '' : ' disabled'}>MyDataValue</button>
 </form>
 <p style="color:var(--mut);font-size:.85rem;margin:.8rem 0 0">
