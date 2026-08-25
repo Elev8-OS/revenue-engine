@@ -9,7 +9,7 @@
 import { createServer } from 'node:http'
 import { Pool } from 'pg'
 import { startImport, latestRun, releaseAbandoned, ImportBusyError,
-  isElev8Report, isPriceLabsReport, reportCounts } from './import/run.js'
+  isElev8Report, isPriceLabsReport, isCheckReport, reportCounts } from './import/run.js'
 import { seedRefreshToken } from './sources/mdv/client.js'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL! })
@@ -85,8 +85,9 @@ check('the run finishes and records its report', done?.finishedAt !== null && !d
 // report as an Elev8 one.
 const stored = done?.report ?? null
 check('the stored report is recognisably the MDV shape',
-      !isElev8Report(stored) && !isPriceLabsReport(stored))
-const asMdv = !isElev8Report(stored) && !isPriceLabsReport(stored) ? stored : null
+      !isElev8Report(stored) && !isPriceLabsReport(stored) && !isCheckReport(stored))
+const asMdv = !isElev8Report(stored) && !isPriceLabsReport(stored) && !isCheckReport(stored)
+  ? stored : null
 check('the report survives verbatim', asMdv?.bookingCreated === 1, JSON.stringify(stored))
 check('the page counts come out of either shape the same way',
       reportCounts(stored).created === 1)

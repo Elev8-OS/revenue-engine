@@ -73,6 +73,9 @@ export interface Strings {
   recommendLabel: string
   occupancy30: string
   nightsArchived: (n: number) => string
+  checksStart: string
+  checksRun: string
+  checksNote: string
   findingCount: (n: number, severity: string) => string
   noneOpen: string
   notRated: string
@@ -234,6 +237,10 @@ export const en: Strings = {
   recommendLabel: 'recommended',
   occupancy30: 'occupancy, next 30 nights',
   nightsArchived: n => `${n} night${n === 1 ? '' : 's'}`,
+  checksStart: 'Assess the portfolio',
+  checksRun: 'Run checks',
+  checksNote: 'Reads the archive and writes findings. Re-running replaces the previous set '
+    + 'rather than adding to it, and shares the import lock so it never reads a half-written pass.',
   findingCount: (n, s) => `${n}× ${s}`,
   noneOpen: 'none open',
   notRated: 'not assessed',
@@ -409,6 +416,10 @@ export const id: Strings = {
   recommendLabel: 'disarankan',
   occupancy30: 'okupansi, 30 malam berikutnya',
   nightsArchived: n => `${n} malam`,
+  checksStart: 'Nilai portofolio',
+  checksRun: 'Jalankan pemeriksaan',
+  checksNote: 'Membaca arsip dan menulis temuan. Menjalankan ulang menggantikan set sebelumnya, '
+    + 'bukan menambahkannya, dan berbagi kunci impor agar tidak pernah membaca pass yang setengah tertulis.',
   findingCount: (n, s) => `${n}× ${s}`,
   noneOpen: 'tidak ada',
   notRated: 'belum dinilai',

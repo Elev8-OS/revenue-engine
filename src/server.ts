@@ -828,7 +828,8 @@ ${detail.shape.map(e => {
     // Whitelisted, not passed through. `source` reaches an importer lookup and
     // an unknown value would only ever be a mistake or a probe.
     const source = form.source === 'elev8' ? 'elev8'
-      : form.source === 'pricelabs' ? 'pricelabs' : 'mdv'
+      : form.source === 'pricelabs' ? 'pricelabs'
+      : form.source === 'checks' ? 'checks' : 'mdv'
     try {
       await startImport(pool, { startedBy: session.email || 'open', source })
     } catch (err) {
@@ -891,6 +892,11 @@ ${mdvReady ? '' : `<div class="card warn">${t.importNeedsMdv}</div>`}
   ${esc(t.importStart)}:
   <button type="submit" name="source" value="elev8"${elev8Ready && (!run || run.finishedAt) ? '' : ' disabled'}>Elev8</button>
   <button type="submit" name="source" value="pricelabs"${priceLabsReady && (!run || run.finishedAt) ? '' : ' disabled'}>PriceLabs</button>
+</form>
+<form method="post" action="/import?lang=${lang}" style="margin-top:.9rem">
+  ${esc(t.checksStart)}:
+  <button type="submit" name="source" value="checks"${!run || run.finishedAt ? '' : ' disabled'}>${esc(t.checksRun)}</button>
+  <div class="sub" style="color:var(--mut);font-size:.85rem;margin-top:.4rem">${esc(t.checksNote)}</div>
   <button type="submit" name="source" value="mdv"${mdvReady && (!run || run.finishedAt) ? '' : ' disabled'}>MyDataValue</button>
 </form>
 <p style="color:var(--mut);font-size:.85rem;margin:.8rem 0 0">

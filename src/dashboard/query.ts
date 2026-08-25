@@ -249,6 +249,12 @@ export interface Signals {
   mpi: number | null
   adr: number | null
   marketAdr: number | null
+  /**
+   * Revenue on the books for the same window. Not rendered — it is what tells a
+   * booked calendar from a blocked one, and a room reading 100% occupied with
+   * nothing earned is closed, not full.
+   */
+  revenue: number | null
   /** Median over the archived calendar, not an average: one blocked night with
    *  a placeholder price would drag a mean and cannot move a median. */
   priceRecommended: number | null
@@ -265,7 +271,7 @@ export interface Signals {
 export async function signals(client: PoolClient): Promise<Map<string, Signals>> {
   const { rows } = await client.query<{
     entity_id: string, occupancy: string | null, market_occupancy: string | null,
-    mpi: string | null, adr: string | null, market_adr: string | null,
+    mpi: string | null, adr: string | null, market_adr: string | null, revenue: string | null,
     price_recommended: string | null, price_live: string | null, nights: number,
     currency: string | null, observed_at: Date | null, as_of: string | null
   }>(`
@@ -282,6 +288,7 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
              max(s.value) filter (where s.metric = 'mpi_next_30d')              as mpi,
              max(s.value) filter (where s.metric = 'adr_next_30d')              as adr,
              max(s.value) filter (where s.metric = 'market_adr_next_30d')       as market_adr,
+             max(s.value) filter (where s.metric = 'revenue_next_30d')           as revenue,
              max(s.as_of_date)::text as as_of
         from snapshot s
         join win_asof w on w.entity_id = s.entity_id and s.as_of_date = w.as_of
@@ -310,7 +317,7 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
     )
     select e.id::text as entity_id,
            w.occupancy::text, w.market_occupancy::text, w.mpi::text,
-           w.adr::text, w.market_adr::text,
+           w.adr::text, w.market_adr::text, w.revenue::text,
            c.price_recommended::text, c.price_live::text,
            coalesce(c.nights, 0) as nights, c.currency, c.observed_at,
            w.as_of
@@ -322,7 +329,7 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
   const num = (v: string | null) => v === null ? null : Number(v)
   return new Map(rows.map(r => [r.entity_id, {
     occupancy: num(r.occupancy), marketOccupancy: num(r.market_occupancy),
-    mpi: num(r.mpi), adr: num(r.adr), marketAdr: num(r.market_adr),
+    mpi: num(r.mpi), adr: num(r.adr), marketAdr: num(r.market_adr), revenue: num(r.revenue),
     priceRecommended: num(r.price_recommended), priceLive: num(r.price_live),
     nights: r.nights, currency: r.currency, observedAt: r.observed_at, asOf: r.as_of,
   }]))

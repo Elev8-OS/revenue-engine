@@ -24,3 +24,4 @@ npx tsx src/smoke-retire.ts
 # Last on purpose: it truncates the object tables to build its own fixture, so
 # anything expecting the earlier suites' rows must run before it.
 npx tsx src/smoke-pricelabs.ts
+npx tsx src/smoke-checks.ts

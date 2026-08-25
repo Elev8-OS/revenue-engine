@@ -19,6 +19,7 @@ import { authFromEnv } from '../sources/elev8/auth.js'
 import { importElev8, type Elev8ImportReport } from '../sources/elev8/import.js'
 import { PriceLabsClient } from '../sources/pricelabs/client.js'
 import { importPriceLabs, type PriceLabsImportReport } from '../sources/pricelabs/import.js'
+import { runChecks, type CheckReport } from '../checks/run.js'
 
 /**
  * Three importers, three report shapes, one column.
@@ -30,7 +31,7 @@ import { importPriceLabs, type PriceLabsImportReport } from '../sources/pricelab
  * shape carries `kind`, and the older guard now tests a key that is genuinely
  * unique to what it identifies.
  */
-export type AnyReport = ImportReport | Elev8ImportReport | PriceLabsImportReport
+export type AnyReport = ImportReport | Elev8ImportReport | PriceLabsImportReport | CheckReport
 
 export interface RunRow {
   id: string
@@ -61,6 +62,18 @@ export const isElev8Report = (r: AnyReport | null): r is Elev8ImportReport =>
  */
 export const isPriceLabsReport = (r: AnyReport | null): r is PriceLabsImportReport =>
   Boolean(r) && (r as PriceLabsImportReport).kind === 'pricelabs'
+
+/**
+ * A check run is not an import, and it rides here on purpose.
+ *
+ * `import_run` already gives the three things a check run needs and nothing
+ * else: a background start from a page, an outcome readable afterwards, and
+ * one-at-a-time enforced by the database. That last one is the real reason — a
+ * check reading a portfolio that an import is halfway through writing would
+ * produce findings from the seam between two states.
+ */
+export const isCheckReport = (r: AnyReport | null): r is CheckReport =>
+  Boolean(r) && (r as CheckReport).kind === 'checks'
 
 export class ImportBusyError extends Error {
   constructor() { super('an import is already running') }
@@ -117,6 +130,7 @@ async function run(pool: Pool, runId: string, source: string): Promise<void> {
     const report = source === 'elev8'
       ? await runElev8(client)
       : source === 'pricelabs' ? await runPriceLabs(client)
+      : source === 'checks' ? await runChecks(client)
       : source === 'mdv' ? await runMdv(client)
       : (() => { throw new Error(`no importer for source ${source}`) })()
     await client.query(
@@ -209,6 +223,12 @@ export function reportCounts(r: AnyReport | null): {
   created: number, known: number, unresolved: number
 } {
   if (!r) return { created: 0, known: 0, unresolved: 0 }
+  if (isCheckReport(r)) {
+    // The same three slots, read as a check run reads them: findings written,
+    // rooms that came out healthy, rooms nothing could reach. `created` is the
+    // right column for findings — they are what this run brings into existence.
+    return { created: r.findings, known: r.healthy, unresolved: r.notAssessable }
+  }
   if (isPriceLabsReport(r)) {
     // `created` is zero and stays zero. PriceLabs is a consumer of objects, not
     // a source of them: a listing that matches nothing we hold is a gap to
