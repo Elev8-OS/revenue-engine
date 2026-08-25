@@ -38,6 +38,7 @@ import { publicOrigin } from './public-origin.js'
 import { authFromEnv, sessionState as elev8Session } from './sources/elev8/auth.js'
 import { retire, verdictFor, candidates as retireCandidates } from './entity/retire.js'
 import { knownShapes, latestShape } from './sources/elev8/shape.js'
+import { head, THEME_CSS } from './ui/theme.js'
 import * as q from './dashboard/query.js'
 import { renderDashboard, renderLogin } from './dashboard/render.js'
 
@@ -285,15 +286,7 @@ const esc = (s: string) =>
 
 /** Small standalone page for the authorisation outcomes. */
 const notice = (lang: Lang, title: string, body: string) => `<!doctype html>
-<html lang="${lang}"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title>
-<style>:root{color-scheme:light dark;--paper:#F1F3F1;--ink:#171C1B;--mut:#5D6B69;--line:#D2DAD6;--surface:#FBFCFA;--teal:#0D615E}
-@media(prefers-color-scheme:dark){:root{--paper:#0F1312;--ink:#E7ECE9;--mut:#94A3A0;--line:#28302E;--surface:#161B1A;--teal:#58C4BC}}
-body{margin:0;background:var(--paper);color:var(--ink);display:grid;place-items:center;min-height:100vh;
-padding:1.5rem;font:15px/1.6 ui-sans-serif,system-ui,sans-serif}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:5px;padding:1.8rem;max-width:34rem}
-h1{font-size:1.15rem;margin:0 0 .5rem}p{color:var(--mut);margin:0}
-code{font:500 .85em ui-monospace,monospace;color:var(--teal)}a{color:inherit}</style></head>
+<html lang="${lang}"><head>${head(`${esc(title)}`)}</head>
 <body><div class="card"><h1>${esc(title)}</h1><p>${body}</p></div></body></html>`
 
 async function withClient<T>(fn: (c: PoolClient) => Promise<T>): Promise<T | undefined> {
@@ -327,6 +320,27 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (path === '/healthz') {
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ status: 'ok', database: db.reachable }))
+    return
+  }
+
+  /**
+   * The stylesheet, served before the sign-in gate on purpose.
+   *
+   * The login page needs it, and the login page is by definition reached without
+   * a session. It carries no data — it is a palette and a set of class names —
+   * so serving it to anybody who asks costs nothing and gates nothing.
+   *
+   * Cached for five minutes rather than for a year. There is no content hash in
+   * the URL, so a long cache would mean a restyle that reaches nobody until they
+   * clear their browser; five minutes is short enough that a deploy is visible
+   * and long enough that a click-through of six pages fetches it once.
+   */
+  if (path === '/theme.css') {
+    res.writeHead(200, {
+      'content-type': 'text/css; charset=utf-8',
+      'cache-control': 'public, max-age=300',
+    })
+    res.end(THEME_CSS)
     return
   }
 
@@ -527,21 +541,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     const grantText = !grant ? `<span class="no">${esc(t.grantNone)}</span>`
       : grant.revoked_at ? `<span class="no">${esc(t.grantRevoked)}</span>`
       : `<span class="ok">${esc(t.grantLive(grant.rotation))}</span>`
-    html(res, `<!doctype html><html lang="${t.htmlLang}"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Revenue Engine — ${esc(t.readinessHeading)}</title>
-<style>:root{color-scheme:light dark;--paper:#F1F3F1;--ink:#171C1B;--mut:#5D6B69;--line:#D2DAD6;--surface:#FBFCFA;--teal:#0D615E;--rust:#97392B;--brass:#8A6A1C}
-@media(prefers-color-scheme:dark){:root{--paper:#0F1312;--ink:#E7ECE9;--mut:#94A3A0;--line:#28302E;--surface:#161B1A;--teal:#58C4BC;--rust:#E28A7C;--brass:#DFB44E}}
-body{margin:0;background:var(--paper);color:var(--ink);padding:2.5rem 1.25rem;font:15px/1.6 ui-sans-serif,system-ui,sans-serif}
-main{max-width:56rem;margin:0 auto}h1{font-size:1.4rem;margin:0 0 .3rem}
-p.s{color:var(--mut);margin:0 0 1.5rem;font-size:.9rem}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:1rem 1.1rem;margin-bottom:.8rem}
-table{width:100%;border-collapse:collapse;font-size:.9rem}
-th{text-align:left;font-size:.64rem;text-transform:uppercase;letter-spacing:.1em;color:var(--mut);padding:0 .5rem .4rem 0;border-bottom:1px solid var(--line)}
-td{padding:.5rem .5rem .5rem 0;border-bottom:1px solid var(--line);vertical-align:top}
-tr:last-child td{border-bottom:none}code{font:500 .82em ui-monospace,monospace;color:var(--teal)}
-.ok{color:var(--teal);font-weight:600}.no{color:var(--rust);font-weight:600}
-.part{color:var(--brass);font-weight:600}a{color:inherit}</style></head>
+    html(res, `<!doctype html><html lang="${t.htmlLang}"><head>${head(`Revenue Engine — ${esc(t.readinessHeading)}`)}</head>
 <body><main><h1>${esc(t.readinessHeading)}</h1>
 <p class="s">${t.readinessLead} · <a href="/?lang=${lang}">${esc(t.toDashboard)}</a>
  · <a href="/status?lang=${otherLang(lang)}" hreflang="${otherLang(lang)}">${esc(t.otherLangName)}</a></p>
@@ -679,22 +679,7 @@ ${gateEnabled && grant && !grant.revoked_at
     const removable = (all ?? []).map(c => ({ c, v: verdictFor(c) }))
       .filter(x => x.v.action !== 'keep')
     const safe = (rows ?? []).filter(r => !r.roomIds && !r.otaLinks)
-    html(res, `<!doctype html><html lang="${t.htmlLang}"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Revenue Engine — Objects with no PMS id</title>
-<style>:root{color-scheme:light dark;--paper:#F1F3F1;--ink:#171C1B;--mut:#5D6B69;--line:#D2DAD6;--surface:#FBFCFA;--teal:#0D615E;--rust:#97392B;--brass:#8A6A1C}
-@media(prefers-color-scheme:dark){:root{--paper:#0F1312;--ink:#E7ECE9;--mut:#94A3A0;--line:#28302E;--surface:#161B1A;--teal:#58C4BC;--rust:#E28A7C;--brass:#DFB44E}}
-body{margin:0;background:var(--paper);color:var(--ink);padding:2.5rem 1.25rem;font:15px/1.6 ui-sans-serif,system-ui,sans-serif}
-main{max-width:58rem;margin:0 auto}h1{font-size:1.4rem;margin:0 0 .3rem}
-p{margin:0 0 1rem}p.s{color:var(--mut);margin:0 0 1.5rem;font-size:.9rem}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:1rem 1.1rem;margin-bottom:.8rem;overflow-x:auto}
-table{width:100%;border-collapse:collapse;font-size:.9rem}
-th{text-align:left;font-size:.64rem;text-transform:uppercase;letter-spacing:.1em;color:var(--mut);padding:0 .6rem .4rem 0;border-bottom:1px solid var(--line)}
-td{padding:.4rem .6rem .4rem 0;border-bottom:1px solid var(--line);vertical-align:top}
-tr:last-child td{border-bottom:none}
-code{font:500 .84em ui-monospace,monospace;color:var(--teal)}
-.keep{color:var(--teal);font-weight:600}.drop{color:var(--rust);font-weight:600}
-a{color:inherit}</style></head>
+    html(res, `<!doctype html><html lang="${t.htmlLang}"><head>${head(`Revenue Engine — Objects with no PMS id`)}</head>
 <body><main><h1>Objects with no PMS id</h1>
 <p class="s">Nothing on this page changes any data.
  · <a href="/status?lang=${lang}">${esc(t.readiness)}</a></p>
@@ -773,23 +758,7 @@ deactivated rather than deleted, so the numbers behind it survive.</p></div>` : 
     const from = url.searchParams.get('source') ?? 'elev8'
     const detail = want ? await withClient(c => latestShape(c, from, want)) : null
     const pct = (f: number, n: number) => n ? `${Math.round((f / n) * 100)}%` : '—'
-    html(res, `<!doctype html><html lang="${t.htmlLang}"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Revenue Engine — API response shapes</title>
-<style>:root{color-scheme:light dark;--paper:#F1F3F1;--ink:#171C1B;--mut:#5D6B69;--line:#D2DAD6;--surface:#FBFCFA;--teal:#0D615E;--rust:#97392B;--brass:#8A6A1C}
-@media(prefers-color-scheme:dark){:root{--paper:#0F1312;--ink:#E7ECE9;--mut:#94A3A0;--line:#28302E;--surface:#161B1A;--teal:#58C4BC;--rust:#E28A7C;--brass:#DFB44E}}
-body{margin:0;background:var(--paper);color:var(--ink);padding:2.5rem 1.25rem;font:15px/1.6 ui-sans-serif,system-ui,sans-serif}
-main{max-width:60rem;margin:0 auto}h1{font-size:1.4rem;margin:0 0 .3rem}
-h2{font-size:1rem;margin:1.8rem 0 .6rem}
-p.s{color:var(--mut);margin:0 0 1.5rem;font-size:.9rem}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:1rem 1.1rem;margin-bottom:.8rem;overflow-x:auto}
-table{width:100%;border-collapse:collapse;font-size:.88rem}
-th{text-align:left;font-size:.64rem;text-transform:uppercase;letter-spacing:.1em;color:var(--mut);padding:0 .6rem .4rem 0;border-bottom:1px solid var(--line)}
-td{padding:.35rem .6rem .35rem 0;border-bottom:1px solid var(--line);vertical-align:top}
-tr:last-child td{border-bottom:none}
-code{font:500 .84em ui-monospace,monospace;color:var(--teal)}
-.full{color:var(--teal);font-weight:600}.some{color:var(--brass);font-weight:600}.none{color:var(--rust);font-weight:600}
-a{color:inherit}</style></head>
+    html(res, `<!doctype html><html lang="${t.htmlLang}"><head>${head(`Revenue Engine — API response shapes`)}</head>
 <body><main><h1>API response shapes</h1>
 <p class="s">Paths, JSON types and how often each was non-empty. Values are never
 recorded — a shape is safe to keep, a sample of live data is not.
@@ -861,46 +830,24 @@ ${detail.shape.map(e => {
           return `<p><span class="ok">${esc(t.importFinishedAt(when(run.finishedAt)))}</span><br>`
             + `${esc(t.importCounts(n.created, n.known, n.unresolved))}</p>`
         })()
-    html(res, `<!doctype html><html lang="${t.htmlLang}"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-${run && !run.finishedAt
-  // Only while something is actually running. There is no notification when an
-  // import finishes, so without this the page is a state nobody is told about —
-  // and reloading by hand to find out is not a design, it is a chore. A finished
-  // page must NOT keep reloading: it would fight anybody reading the result.
-  ? '<meta http-equiv="refresh" content="5">'
-  : ''}
-<title>Revenue Engine — ${esc(t.importHeading)}</title>
-<style>:root{color-scheme:light dark;--paper:#F1F3F1;--ink:#171C1B;--mut:#5D6B69;--line:#D2DAD6;--surface:#FBFCFA;--teal:#0D615E;--rust:#97392B;--brass:#8A6A1C}
-@media(prefers-color-scheme:dark){:root{--paper:#0F1312;--ink:#E7ECE9;--mut:#94A3A0;--line:#28302E;--surface:#161B1A;--teal:#58C4BC;--rust:#E28A7C;--brass:#DFB44E}}
-body{margin:0;background:var(--paper);color:var(--ink);padding:2.5rem 1.25rem;font:15px/1.6 ui-sans-serif,system-ui,sans-serif}
-main{max-width:44rem;margin:0 auto}h1{font-size:1.4rem;margin:0 0 .3rem}
-p{margin:0 0 1rem}p.s{color:var(--mut);font-size:.9rem;margin-bottom:1.5rem}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:1rem 1.1rem;margin-bottom:.8rem}
-.warn{border-left:3px solid var(--brass)}
-button{font:inherit;font-weight:600;padding:.55rem 1rem;border-radius:3px;border:1px solid var(--ink);
-background:var(--ink);color:var(--paper);cursor:pointer}
-button[disabled]{opacity:.45;cursor:not-allowed}
-code{font:500 .82em ui-monospace,monospace;color:var(--teal)}
-.ok{color:var(--teal);font-weight:600}.no{color:var(--rust);font-weight:600}a{color:inherit}</style></head>
+    html(res, `<!doctype html><html lang="${t.htmlLang}"><head>${head(`Revenue Engine — ${esc(t.importHeading)}`, { refresh: run && !run.finishedAt ? 5 : undefined })}</head>
 <body><main><h1>${esc(t.importHeading)}</h1>
 <p class="s"><a href="/status?lang=${lang}">${esc(t.importBack)}</a> · <a href="/import?lang=${lang}">${esc(t.importRefresh)}</a></p>
 ${demoOn ? `<div class="card warn">${t.importDemoStillOn}</div>` : ''}
 ${mdvReady ? '' : `<div class="card warn">${t.importNeedsMdv}</div>`}
 <div class="card"><p>${esc(t.importLead)}</p>${state}
-<form method="post" action="/import?lang=${lang}">
-  ${esc(t.importStart)}:
+<form class="actions" method="post" action="/import?lang=${lang}">
+  <span class="label">${esc(t.importStart)}</span>
   <button type="submit" name="source" value="elev8"${elev8Ready && (!run || run.finishedAt) ? '' : ' disabled'}>Elev8</button>
   <button type="submit" name="source" value="pricelabs"${priceLabsReady && (!run || run.finishedAt) ? '' : ' disabled'}>PriceLabs</button>
-</form>
-<form method="post" action="/import?lang=${lang}" style="margin-top:.9rem">
-  ${esc(t.checksStart)}:
-  <button type="submit" name="source" value="checks"${!run || run.finishedAt ? '' : ' disabled'}>${esc(t.checksRun)}</button>
-  <div class="sub" style="color:var(--mut);font-size:.85rem;margin-top:.4rem">${esc(t.checksNote)}</div>
   <button type="submit" name="source" value="mdv"${mdvReady && (!run || run.finishedAt) ? '' : ' disabled'}>MyDataValue</button>
 </form>
-<p style="color:var(--mut);font-size:.85rem;margin:.8rem 0 0">
-  ${run ? esc(`${t.importHeading}: ${run.source}`) : ''}</p></div>
+<form class="actions" method="post" action="/import?lang=${lang}">
+  <span class="label">${esc(t.checksStart)}</span>
+  <button type="submit" name="source" value="checks"${!run || run.finishedAt ? '' : ' disabled'}>${esc(t.checksRun)}</button>
+</form>
+<p class="sub">${esc(t.checksNote)}</p>
+<p class="sub">${run ? esc(t.lastRun(run.source)) : ''}</p></div>
 </main></body></html>`)
     return
   }

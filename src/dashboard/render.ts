@@ -10,6 +10,7 @@
 import type * as q from './query.js'
 import type { Basis, Row } from './query.js'
 import { type Lang, type Strings, stringsFor, otherLang } from '../i18n.js'
+import { head } from '../ui/theme.js'
 
 const e = (s: unknown) =>
   String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -112,7 +113,6 @@ function vsMarket(sig: q.Signals | undefined, s: Strings): string {
   const pct = (v: number | null) => v === null ? '—' : `${Math.round(v)}%`
   const lead = sig.occupancy !== null && sig.marketOccupancy !== null
     ? sig.occupancy - sig.marketOccupancy : null
-  const cls = lead === null ? 'mut' : lead >= 0 ? 'ok' : 'no'
   const second = [
     // The index only where the provider gave one, and to two decimals because
     // 1.04 and 1.4 are different claims.
@@ -126,8 +126,14 @@ function vsMarket(sig: q.Signals | undefined, s: Strings): string {
         ? `${e(s.recommendLabel)} ${money(sig.priceRecommended, sig.currency, s.numberLocale)}`
         : null,
   ].filter(Boolean).join(' · ')
-  return `<span class="${cls}">${pct(sig.occupancy)}</span>`
-    + `<span class="mut"> / ${pct(sig.marketOccupancy)}</span>`
+  // Ours, theirs, and the difference as a chip — the Suite's own delta pattern.
+  // The pair stays in ink: colouring the number itself made six of six rows red
+  // and turned a portfolio with three findings into a wall of alarm.
+  const chip = lead === null ? ''
+    : `<span class="chip ${lead >= 0 ? 'up' : 'down'}">${lead >= 0 ? '+' : '−'}`
+      + `${Math.abs(Math.round(lead))} pp</span>`
+  return `<span class="pair">${pct(sig.occupancy)}</span>`
+    + `<span class="mut"> / ${pct(sig.marketOccupancy)}</span>${chip}`
     + `<div class="sub">${second || e(s.occupancy30)}</div>`
 }
 
@@ -183,64 +189,7 @@ export function renderDashboard(d: DashboardData): string {
   ].join('')
 
   return `<!doctype html>
-<html lang="${e(s.htmlLang)}"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${e(s.appTitle)}</title>
-<style>
-  :root { color-scheme: light dark;
-    --paper:#F1F3F1; --ink:#171C1B; --mut:#5D6B69; --line:#D2DAD6; --sunk:#E7EBE8;
-    --brass:#8A6A1C; --teal:#0D615E; --rust:#97392B; --surface:#FBFCFA; }
-  @media (prefers-color-scheme: dark) { :root {
-    --paper:#0F1312; --ink:#E7ECE9; --mut:#94A3A0; --line:#28302E; --sunk:#1B2120;
-    --brass:#DFB44E; --teal:#58C4BC; --rust:#E28A7C; --surface:#161B1A; } }
-  *{box-sizing:border-box} body{margin:0;background:var(--paper);color:var(--ink);
-    padding:2.5rem 1.25rem 6rem;font:15px/1.6 ui-sans-serif,system-ui,sans-serif}
-  main{max-width:74rem;margin:0 auto}
-  h1{font-size:1.5rem;margin:0 0 .2rem;letter-spacing:-.01em}
-  h3{font-size:.95rem;margin:0 0 .5rem}
-  h4{font-size:.82rem;margin:.8rem 0 .3rem;font-weight:600}
-  .sub{color:var(--mut);font-size:.8rem;margin-top:.15rem}
-  .mut{color:var(--mut)}
-  a{color:inherit}
-  .top{display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-end;justify-content:space-between;margin-bottom:1.5rem}
-  .controls{display:flex;gap:.5rem;align-items:center}
-  .lens a{display:inline-block;padding:.3rem .7rem;border:1px solid var(--line);
-    border-radius:3px;text-decoration:none;font-size:.85rem;background:var(--surface)}
-  .lens a.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}
-  .lang{font-size:.78rem;color:var(--mut)}
-  .lang a{text-decoration:none;border-bottom:1px dotted var(--line)}
-  .banner{border:1px solid var(--line);border-radius:4px;padding:.8rem 1rem;margin-bottom:.7rem;font-size:.88rem}
-  .banner.warn{border-left:3px solid var(--rust);background:color-mix(in srgb,var(--rust) 8%,var(--surface))}
-  .banner.demo{border-left:3px solid var(--brass);background:color-mix(in srgb,var(--brass) 8%,var(--surface))}
-  .stats{display:grid;gap:.7rem;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));margin:1.2rem 0}
-  .stat{background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:.8rem 1rem}
-  .stat .k{font-size:.66rem;text-transform:uppercase;letter-spacing:.09em;color:var(--mut)}
-  .stat .v{font-size:1.5rem;font-weight:600;font-variant-numeric:tabular-nums;margin-top:.2rem}
-  table{width:100%;border-collapse:collapse;font-size:.9rem;background:var(--surface);
-    border:1px solid var(--line);border-radius:4px;overflow:hidden}
-  th{text-align:left;font-size:.64rem;text-transform:uppercase;letter-spacing:.1em;color:var(--mut);
-    padding:.6rem .8rem;border-bottom:1px solid var(--line);background:var(--sunk)}
-  td{padding:.7rem .8rem;border-bottom:1px solid var(--line);vertical-align:top}
-  tr:last-child td{border-bottom:none}
-  tr.open td{background:var(--sunk)}
-  td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
-  .rowlink{text-decoration:none;font-weight:600}
-  .rowlink:hover{text-decoration:underline}
-  .tag{display:inline-block;border:1px solid var(--line);border-radius:2px;padding:.05rem .35rem;
-    font-size:.66rem;color:var(--mut);margin-left:.3rem}
-  .tag.hold{border-color:var(--brass);color:var(--brass)}
-  tr.detail td{background:var(--paper);padding:1rem}
-  .head{font-weight:600;margin:0 0 .8rem}
-  .panel{border:1px solid var(--line);border-radius:4px;padding:.9rem 1rem;margin-bottom:.7rem;background:var(--surface)}
-  ul.gate{list-style:none;margin:0 0 .6rem;padding:0;display:flex;flex-wrap:wrap;gap:1rem;font-size:.86rem}
-  .dot{display:inline-block;width:.5rem;height:.5rem;border-radius:50%;margin-right:.35rem}
-  .dot.good{background:var(--ink)} .dot.bad{background:var(--rust)}
-  .dot.unk{background:var(--line)}
-  ul.ev{margin:0;padding-left:1.1rem;font-size:.86rem;display:flex;flex-direction:column;gap:.3rem}
-  code{font:500 .82em ui-monospace,monospace;color:var(--teal)}
-  footer{margin-top:1.5rem;color:var(--mut);font-size:.82rem;display:flex;flex-wrap:wrap;gap:.9rem}
-  .empty{padding:2.5rem 1rem;text-align:center;color:var(--mut)}
-</style></head>
+<html lang="${e(s.htmlLang)}"><head>${head(`${e(s.appTitle)}`)}</head>
 <body><main>
   <div class="top">
     <div><h1>${e(s.heading)}</h1>
@@ -332,30 +281,7 @@ export function renderLogin(v: LoginView): string {
       ].filter(Boolean).join('\n')
 
   return `<!doctype html>
-<html lang="${e(s.htmlLang)}"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${e(s.loginTitle)}</title>
-<style>
-  :root{color-scheme:light dark;--paper:#F1F3F1;--ink:#171C1B;--mut:#5D6B69;--line:#D2DAD6;--surface:#FBFCFA;--teal:#0D615E;--rust:#97392B}
-  @media (prefers-color-scheme: dark){:root{--paper:#0F1312;--ink:#E7ECE9;--mut:#94A3A0;--line:#28302E;--surface:#161B1A;--teal:#58C4BC;--rust:#E28A7C}}
-  body{margin:0;background:var(--paper);color:var(--ink);display:grid;place-items:center;
-    min-height:100vh;font:15px/1.6 ui-sans-serif,system-ui,sans-serif;padding:1.5rem}
-  .card{background:var(--surface);border:1px solid var(--line);border-radius:5px;
-    padding:1.8rem;max-width:26rem;width:100%}
-  h1{font-size:1.2rem;margin:0 0 .4rem}
-  p{color:var(--mut);font-size:.9rem;margin:0 0 1.1rem}
-  p.alt{margin:1.3rem 0 .7rem;font-size:.82rem}
-  p.err{color:var(--rust)}
-  input,button{font:inherit;width:100%;padding:.55rem .7rem;border-radius:3px;border:1px solid var(--line)}
-  input{background:var(--paper);color:var(--ink);margin-bottom:.6rem}
-  button{background:var(--ink);color:var(--paper);border-color:var(--ink);cursor:pointer;font-weight:600}
-  .btn{display:flex;align-items:center;justify-content:center;gap:.6rem;text-decoration:none;
-    padding:.62rem .7rem;border:1px solid var(--line);border-radius:3px;
-    background:var(--paper);color:var(--ink);font-weight:600;font-size:.92rem}
-  code{font:500 .85em ui-monospace,monospace;color:var(--teal)}
-  .lang{margin-top:1.2rem;font-size:.78rem;color:var(--mut)}
-  .lang a{color:inherit;text-decoration:none;border-bottom:1px dotted var(--line)}
-</style></head>
+<html lang="${e(s.htmlLang)}"><head>${head(`${e(s.loginTitle)}`)}</head>
 <body><div class="card">
   <h1>Revenue Engine</h1>
   ${v.error ? `<p class="err">${v.error}</p>` : ''}

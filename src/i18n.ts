@@ -76,6 +76,7 @@ export interface Strings {
   checksStart: string
   checksRun: string
   checksNote: string
+  lastRun: (source: string) => string
   findingCount: (n: number, severity: string) => string
   noneOpen: string
   notRated: string
@@ -241,6 +242,7 @@ export const en: Strings = {
   checksRun: 'Run checks',
   checksNote: 'Reads the archive and writes findings. Re-running replaces the previous set '
     + 'rather than adding to it, and shares the import lock so it never reads a half-written pass.',
+  lastRun: source => `Last run: ${source}`,
   findingCount: (n, s) => `${n}× ${s}`,
   noneOpen: 'none open',
   notRated: 'not assessed',
@@ -420,6 +422,7 @@ export const id: Strings = {
   checksRun: 'Jalankan pemeriksaan',
   checksNote: 'Membaca arsip dan menulis temuan. Menjalankan ulang menggantikan set sebelumnya, '
     + 'bukan menambahkannya, dan berbagi kunci impor agar tidak pernah membaca pass yang setengah tertulis.',
+  lastRun: source => `Jalan terakhir: ${source}`,
   findingCount: (n, s) => `${n}× ${s}`,
   noneOpen: 'tidak ada',
   notRated: 'belum dinilai',
