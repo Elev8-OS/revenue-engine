@@ -909,6 +909,7 @@ ${mdvReady ? '' : `<div class="card warn">${t.importNeedsMdv}</div>`}
       return {
         lang, basis, openId: open ? openId : null, rows,
         counts: await q.counts(c),
+        signals: await q.signals(c),
         notAssessable: await q.notAssessable(c, lang),
         freshness: await q.freshness(c),
         gate: open?.worstFindingId ? await q.gate(c, open.worstFindingId, lang) : [],

@@ -35,6 +35,7 @@ import { bedroomsFromBand, monthStart, cohortsToSample, importPriceLabsMarket }
   from './sources/pricelabs/estimator.js'
 import { importPriceLabs } from './sources/pricelabs/import.js'
 import { link, resolve } from './entity/resolve.js'
+import { signals } from './dashboard/query.js'
 import { isPriceLabsReport, isElev8Report, reportCounts } from './import/run.js'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL! })
@@ -353,10 +354,54 @@ async function main() {
         refused.attempted === 1 && Boolean(refused.blocked?.startsWith('insufficient_role')),
         JSON.stringify(refused.blocked))
 
+  /* ------------------------- 8b · the measurements reach the dashboard */
+
+  // The complaint this answers: two imports ran, 22'047 rows landed, and the
+  // dashboard looked exactly as it had before. It was not wrong — every column
+  // that carries meaning reads from `finding`, and no check exists — but a page
+  // that cannot tell a successful import from no import at all is a page that
+  // cannot report either.
+  const sig = await signals(c)
+  const mine = sig.get(room14)
+  check('a room with an import shows its own occupancy', mine?.occupancy === 63.3,
+        JSON.stringify(mine))
+  check('and the market beside it, from the same call',
+        mine?.marketOccupancy === 30.4)
+  check('and the price index that explains the gap', mine?.mpi === 2.08)
+  check('the archived calendar is a median, not an average',
+        mine?.priceRecommended === 41.5, String(mine?.priceRecommended))
+  check('the night count is shown, because a median over two nights is not one over ninety',
+        mine?.nights === 2)
+  check('the currency comes from the provider', mine?.currency === 'CHF')
+  check('the day WE looked is what dates the row', mine?.asOf === ASOF)
+  // Solo Flat answered LISTING_TOGGLE_OFF for PRICES and answered normally for
+  // metrics, which is the interesting case: partial data must render partially.
+  // The occupancy pair is shown because it was measured; the calendar reads as
+  // absent rather than as a median of nothing, and the night count says zero so
+  // nobody mistakes the empty half for a cheap listing.
+  const theirs = sig.get(solo)
+  check('a half-answered listing keeps the half that was answered',
+        theirs?.occupancy === 63.3 && theirs?.marketOccupancy === 30.4,
+        JSON.stringify(theirs))
+  check('and its missing calendar is absent, not nought',
+        theirs?.priceRecommended === null && theirs?.priceLive === null
+        && theirs?.nights === 0, JSON.stringify(theirs))
+  check('an entity PriceLabs never mentioned has no row of numbers at all',
+        (() => { const g = sig.get(room5); return g?.occupancy === null && g?.nights === 0 })(),
+        JSON.stringify(sig.get(room5)))
+
   /* ------------------------------------------------- 9 · realised bookings */
 
   check('a channel is mapped by substring', channelOf('Booking.com').channel === 'booking')
   check('and by another spelling', channelOf('BookingCom').channel === 'booking')
+  // Measured on the live account, and it had already gone wrong once: this is
+  // what PriceLabs sends for Booking.com here, and substring matching on
+  // 'booking' filed the portfolio's largest OTA as 'other'.
+  check('bcom is Booking.com, which the first live pass proved', channelOf('bcom').channel === 'booking')
+  check('and it counts as recognised, so it leaves the unmapped list',
+        channelOf('bcom').known === true)
+  check('agoda stays other, because the enum has no room for it',
+        channelOf('agoda').channel === 'other' && channelOf('agoda').known === false)
   check('airbnb too', channelOf('Airbnb').channel === 'airbnb')
   check('an unknown channel becomes other AND says it was not recognised',
         channelOf('Agoda').channel === 'other' && channelOf('Agoda').known === false)

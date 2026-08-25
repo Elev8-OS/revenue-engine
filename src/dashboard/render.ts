@@ -7,6 +7,7 @@
  * Every visible string comes from the language table rather than from here, so
  * an untranslated screen is a compile error rather than a surprise in Bali.
  */
+import type * as q from './query.js'
 import type { Basis, Row } from './query.js'
 import { type Lang, type Strings, stringsFor, otherLang } from '../i18n.js'
 
@@ -28,6 +29,8 @@ export interface DashboardData {
   counts: { entities: number, open: number, critical: number, high: number }
   notAssessable: Array<{ label: string, reason: string }>
   freshness: Array<{ source: string, dataset: string, age_minutes: number }>
+  /** Measurements per entity, keyed by entity id. Empty until an import runs. */
+  signals: Map<string, q.Signals>
   gate: Array<{ stage: string, verdict: string, note: string | null }>
   evidence: Array<{ side: string, family: string, metric: string, claim: string, observed_at: string | null }>
   demo: boolean
@@ -89,6 +92,58 @@ function evidenceBlock(d: DashboardData, s: Strings): string {
   </section>`
 }
 
+/**
+ * Ours against the market, over the next thirty nights.
+ *
+ * Colour says which side of the market we are on and nothing more. It is
+ * deliberately NOT a severity: a listing above the market on occupancy is not
+ * "good" — it may be underpriced into a full calendar, which is the failure this
+ * whole system exists to catch. Green here means "ahead on this one number",
+ * and the number is named beside it.
+ *
+ * Every cell renders from what is present. A missing half prints an em dash
+ * rather than a zero, because a market we did not measure is not a market at
+ * nought per cent.
+ */
+function vsMarket(sig: q.Signals | undefined, s: Strings): string {
+  if (!sig || (sig.occupancy === null && sig.mpi === null && sig.priceRecommended === null)) {
+    return `<span class="mut">${e(s.notMeasured)}</span>`
+  }
+  const pct = (v: number | null) => v === null ? '—' : `${Math.round(v)}%`
+  const lead = sig.occupancy !== null && sig.marketOccupancy !== null
+    ? sig.occupancy - sig.marketOccupancy : null
+  const cls = lead === null ? 'mut' : lead >= 0 ? 'ok' : 'no'
+  const second = [
+    // The index only where the provider gave one, and to two decimals because
+    // 1.04 and 1.4 are different claims.
+    sig.mpi === null ? null : `${e(s.mpiLabel)} ${sig.mpi.toFixed(2)}`,
+    // Recommendation against what is live. Shown only when both exist: an arrow
+    // from a number to nothing reads as a price change to zero.
+    sig.priceRecommended !== null && sig.priceLive !== null
+      ? `${money(sig.priceLive, sig.currency, s.numberLocale)} → `
+        + `${money(sig.priceRecommended, sig.currency, s.numberLocale)}`
+      : sig.priceRecommended !== null
+        ? `${e(s.recommendLabel)} ${money(sig.priceRecommended, sig.currency, s.numberLocale)}`
+        : null,
+  ].filter(Boolean).join(' · ')
+  return `<span class="${cls}">${pct(sig.occupancy)}</span>`
+    + `<span class="mut"> / ${pct(sig.marketOccupancy)}</span>`
+    + `<div class="sub">${second || e(s.occupancy30)}</div>`
+}
+
+/**
+ * How much calendar we actually hold, and how old it is.
+ *
+ * The night count is here rather than implied because a median over three
+ * archived nights and a median over ninety are not the same statement, and the
+ * cell beside it shows one of them without saying which.
+ */
+function archived(sig: q.Signals | undefined, s: Strings): string {
+  if (!sig || !sig.nights) return `<span class="mut">—</span>`
+  const when = sig.asOf ?? '—'
+  return `${e(s.nightsArchived(sig.nights))}<div class="sub">${e(when)}</div>`
+}
+
 export function renderDashboard(d: DashboardData): string {
   const s = stringsFor(d.lang)
   const cash = (v: number | null, cur: string | null) => money(v, cur, s.numberLocale)
@@ -117,8 +172,8 @@ export function renderDashboard(d: DashboardData): string {
       <td>${domain
         ? `${e(domain)}<div class="sub">${e(s.gateLabel(s.stage[r.firstFailing!] ?? r.firstFailing!))}</div>`
         : `<span class="mut">${e(s.notRated)}</span>`}</td>
-      <td class="num mut">—</td>
-      <td class="num mut">—</td>
+      <td>${vsMarket(d.signals.get(r.entityId), s)}</td>
+      <td>${archived(d.signals.get(r.entityId), s)}</td>
     </tr>${detail}`
   }).join('')
 
@@ -216,7 +271,7 @@ export function renderDashboard(d: DashboardData): string {
     }</div>` : ''}
   ${d.rows.length ? `<table>
     <thead><tr><th>${e(s.colProperty)}</th><th>${e(s.colAtStake)}</th><th>${e(s.colFindings)}</th>
-      <th>${e(s.colWorstDomain)}</th><th>${e(s.colAdrVsSet)}</th><th>${e(s.colSync)}</th></tr></thead>
+      <th>${e(s.colWorstDomain)}</th><th>${e(s.colVsMarket)}</th><th>${e(s.colArchived)}</th></tr></thead>
     <tbody>${rows}</tbody></table>`
     : `<div class="empty"><p><b>${e(s.noPropertiesYet)}</b></p>
        <p>${e(s.noPropertiesWhy)} <a href="/status?lang=${d.lang}">${e(s.readiness)}</a>.</p></div>`}

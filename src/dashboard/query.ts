@@ -219,3 +219,111 @@ export async function withoutPmsId(client: PoolClient): Promise<NoPmsRow[]> {
       order by "otaLinks" desc, "roomIds" desc, e.label`)
   return rows
 }
+
+/**
+ * What we have MEASURED about a room, as opposed to what we have concluded.
+ *
+ * This exists because of a specific, fair complaint: two imports ran, 22'047
+ * rows landed in the archive, and the dashboard showed nothing. It was not
+ * wrong — every column that carries meaning reads from `finding`, and no check
+ * exists yet to write one. But a page that looks identical before and after a
+ * successful import is a page that cannot be trusted to report either.
+ *
+ * So the two columns the layout already reserved get filled with measurements,
+ * and they are labelled as measurements. `occupancy 63% against a market at
+ * 30%` is not a finding: it carries no cause, no money, no recommendation, and
+ * it does not know whether the gap is a price problem or a visibility one — that
+ * is what the check and its gates are for, and the funnel they need is still
+ * behind the MDV grant. What it IS, is true and sourced, which is the whole bar
+ * this project holds itself to.
+ *
+ * Both halves come from PriceLabs' own comparison for that listing's
+ * neighbourhood, so the two numbers in a cell are always the same kind of thing
+ * measured the same way.
+ */
+export interface Signals {
+  /** Ours and theirs over the next 30 nights, as percentages. */
+  occupancy: number | null
+  marketOccupancy: number | null
+  /** Market pricing index: above 1 means we ask more than the market. */
+  mpi: number | null
+  adr: number | null
+  marketAdr: number | null
+  /** Median over the archived calendar, not an average: one blocked night with
+   *  a placeholder price would drag a mean and cannot move a median. */
+  priceRecommended: number | null
+  priceLive: number | null
+  /** Nights actually archived. A cell over three nights is not a cell over 90. */
+  nights: number
+  currency: string | null
+  /** When the provider last recomputed it, where it says. */
+  observedAt: Date | null
+  /** The day WE looked, which is the honest age of the row. */
+  asOf: string | null
+}
+
+export async function signals(client: PoolClient): Promise<Map<string, Signals>> {
+  const { rows } = await client.query<{
+    entity_id: string, occupancy: string | null, market_occupancy: string | null,
+    mpi: string | null, adr: string | null, market_adr: string | null,
+    price_recommended: string | null, price_live: string | null, nights: number,
+    currency: string | null, observed_at: Date | null, as_of: string | null
+  }>(`
+    -- Per entity, the most recent pass. Not a global max: a listing PriceLabs
+    -- refused today must show yesterday's number as yesterday's, not vanish.
+    with win_asof as (
+      select entity_id, max(as_of_date) as as_of
+        from snapshot where metric = 'occupancy_next_30d' group by entity_id
+    ),
+    win as (
+      select s.entity_id,
+             max(s.value) filter (where s.metric = 'occupancy_next_30d')        as occupancy,
+             max(s.value) filter (where s.metric = 'market_occupancy_next_30d') as market_occupancy,
+             max(s.value) filter (where s.metric = 'mpi_next_30d')              as mpi,
+             max(s.value) filter (where s.metric = 'adr_next_30d')              as adr,
+             max(s.value) filter (where s.metric = 'market_adr_next_30d')       as market_adr,
+             max(s.as_of_date)::text as as_of
+        from snapshot s
+        join win_asof w on w.entity_id = s.entity_id and s.as_of_date = w.as_of
+       group by s.entity_id
+    ),
+    px_asof as (
+      select entity_id, max(as_of_date) as as_of
+        from snapshot where metric = 'price_recommended' group by entity_id
+    ),
+    cal as (
+      select s.entity_id,
+             percentile_cont(0.5) within group (order by s.value)
+               filter (where s.metric = 'price_recommended') as price_recommended,
+             percentile_cont(0.5) within group (order by s.value)
+               filter (where s.metric = 'price_current')     as price_live,
+             count(*) filter (where s.metric = 'price_recommended')::int as nights,
+             max(s.currency)   as currency,
+             max(s.observed_at) as observed_at
+        from snapshot s
+        join px_asof p on p.entity_id = s.entity_id and s.as_of_date = p.as_of
+        -- The month ahead of the observation, so the window is the same length
+        -- for a row read today and a row read last week.
+       where s.metric in ('price_recommended', 'price_current')
+         and s.stay_date >= p.as_of and s.stay_date < p.as_of + 30
+       group by s.entity_id
+    )
+    select e.id::text as entity_id,
+           w.occupancy::text, w.market_occupancy::text, w.mpi::text,
+           w.adr::text, w.market_adr::text,
+           c.price_recommended::text, c.price_live::text,
+           coalesce(c.nights, 0) as nights, c.currency, c.observed_at,
+           w.as_of
+      from entity e
+      left join win w on w.entity_id = e.id
+      left join cal c on c.entity_id = e.id
+     where e.active`)
+
+  const num = (v: string | null) => v === null ? null : Number(v)
+  return new Map(rows.map(r => [r.entity_id, {
+    occupancy: num(r.occupancy), marketOccupancy: num(r.market_occupancy),
+    mpi: num(r.mpi), adr: num(r.adr), marketAdr: num(r.market_adr),
+    priceRecommended: num(r.price_recommended), priceLive: num(r.price_live),
+    nights: r.nights, currency: r.currency, observedAt: r.observed_at, asOf: r.as_of,
+  }]))
+}

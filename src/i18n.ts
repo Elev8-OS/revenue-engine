@@ -61,8 +61,18 @@ export interface Strings {
   colAtStake: string
   colFindings: string
   colWorstDomain: string
-  colAdrVsSet: string
-  colSync: string
+  /**
+   * Renamed from `colAdrVsSet` and `colSync`, which were placeholders for a
+   * comparison that did not exist yet and rendered an em dash for months. They
+   * now carry measurements, and the keys say what.
+   */
+  colVsMarket: string
+  colArchived: string
+  notMeasured: string
+  mpiLabel: string
+  recommendLabel: string
+  occupancy30: string
+  nightsArchived: (n: number) => string
   findingCount: (n: number, severity: string) => string
   noneOpen: string
   notRated: string
@@ -217,8 +227,13 @@ export const en: Strings = {
   colAtStake: 'At stake',
   colFindings: 'Findings',
   colWorstDomain: 'Worst domain',
-  colAdrVsSet: 'ADR vs set',
-  colSync: 'Sync',
+  colVsMarket: 'vs market · 30 d',
+  colArchived: 'Archived',
+  notMeasured: 'not measured',
+  mpiLabel: 'MPI',
+  recommendLabel: 'recommended',
+  occupancy30: 'occupancy, next 30 nights',
+  nightsArchived: n => `${n} night${n === 1 ? '' : 's'}`,
   findingCount: (n, s) => `${n}× ${s}`,
   noneOpen: 'none open',
   notRated: 'not assessed',
@@ -387,8 +402,13 @@ export const id: Strings = {
   colAtStake: 'Dipertaruhkan',
   colFindings: 'Temuan',
   colWorstDomain: 'Domain terburuk',
-  colAdrVsSet: 'ADR vs set',
-  colSync: 'Sinkron',
+  colVsMarket: 'vs pasar · 30 hr',
+  colArchived: 'Terarsip',
+  notMeasured: 'belum diukur',
+  mpiLabel: 'MPI',
+  recommendLabel: 'disarankan',
+  occupancy30: 'okupansi, 30 malam berikutnya',
+  nightsArchived: n => `${n} malam`,
   findingCount: (n, s) => `${n}× ${s}`,
   noneOpen: 'tidak ada',
   notRated: 'belum dinilai',

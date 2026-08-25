@@ -84,11 +84,21 @@ export function channelOf(raw: string | undefined): {
 } {
   const s = (raw ?? '').trim().toLowerCase()
   if (!s) return { channel: 'other', known: false }
-  if (s.includes('booking')) return { channel: 'booking', known: true }
-  if (s.includes('airbnb')) return { channel: 'airbnb', known: true }
+  // 'bcom' is what THIS account actually sends for Booking.com — found by the
+  // first live pass, which reported it among the unmapped names. Substring
+  // matching on 'booking' had filed 'bcom' as 'other', so the largest OTA in the
+  // portfolio was invisible in every per-channel figure. The report is what
+  // caught it; an exact table would have swallowed it silently.
+  if (s.includes('booking') || s === 'bcom' || s.startsWith('bcom')) {
+    return { channel: 'booking', known: true }
+  }
+  if (s.includes('airbnb') || s === 'abnb') return { channel: 'airbnb', known: true }
   if (s.includes('direct') || s.includes('website') || s.includes('manual')) {
     return { channel: 'direct', known: true }
   }
+  // 'agoda' and 'others' reach here and are correctly 'other': the enum has four
+  // members and Agoda is not one of them. They stay in `unmappedChannels` so the
+  // gap is visible rather than being mistaken for a mapping.
   return { channel: 'other', known: false }
 }
 
