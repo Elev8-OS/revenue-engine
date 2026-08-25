@@ -44,8 +44,19 @@ export interface NeighbourhoodReport {
   ok: number
   failed: number
   blocked: string | null
-  /** Which of the two documented shapes the account actually returns. */
-  shapeSeen: 'table_rows' | 'chart_series' | 'neither' | null
+  /** Which encoding the account actually returns. Reported, never assumed. */
+  shapeSeen: PanelShape | null
+  /**
+   * The panel's own top-level keys with their JSON types and array lengths.
+   *
+   * A diagnostic, and it is here because the first live run reported
+   * `shapeSeen: 'neither'` with four perfectly readable percentile labels — so
+   * the labels were fine and the guard around them was not, and there was no way
+   * to tell WHICH guard from outside the process. This puts the answer in the
+   * report, which lands in the log, which is readable without a browser and
+   * without a database.
+   */
+  panelKeys: Array<{ key: string, type: string, length?: number }>
   rowsWritten: number
   /** Listings for which our own bedroom category was present in the table. */
   ownCategory: number
@@ -127,40 +138,103 @@ function readTableRows(node: unknown): CategoryBand[] | null {
 }
 
 /**
- * The chart form: parallel arrays. `X_values` are the categories, `Labels` name
- * the series, `Y_values` holds one array per label — or a single array when
- * there is one series.
+ * Every encoding of the chart form this account could plausibly send, each one
+ * identified rather than merged.
+ *
+ * The first live pass reported `Labels` holding four clean percentile names —
+ * "25th Percentile Price( CHF)" and friends — and still produced nothing,
+ * because `Y_values` did not line up with `Labels` the way the first version
+ * assumed. That assumption was the bug: parallel arrays have an ORIENTATION, and
+ * with categories on one axis and percentiles on the other there are two ways to
+ * nest them and no way to tell from the length alone.
+ *
+ * So orientation is DERIVED, not assumed:
+ *
+ *   keyed       Y_values is an object; its keys are the labels. Unambiguous —
+ *               the label travels with its own data.
+ *   label_major rows.length == Labels.length and row length == X_values.length
+ *   x_major     rows.length == X_values.length and row length == Labels.length
+ *   ambiguous   BOTH fit, i.e. the grid is square. Refused: a coin toss between
+ *               two readings of a price table is the worst possible outcome
+ *               here, and one of them silently transposes the percentiles.
  */
-function readChartSeries(node: unknown): CategoryBand[] | null {
+type PanelShape = 'table_rows' | 'chart_keyed' | 'chart_label_major' | 'chart_x_major'
+  | 'ambiguous' | 'neither'
+
+interface ChartRead {
+  shape: PanelShape
+  bands: CategoryBand[]
+  unreadable: string[]
+}
+
+const emptyBand = (label: string): CategoryBand =>
+  ({ bedrooms: bedroomsOfCategory(label), label, count: null, prices: new Map() })
+
+function readChartSeries(node: unknown): ChartRead {
   const o = node as Record<string, unknown> | null
-  if (!o || typeof o !== 'object') return null
-  const xs = o.X_values, ys = o.Y_values, labels = o.Labels
-  if (!Array.isArray(xs) || !Array.isArray(ys) || !Array.isArray(labels)) return null
+  if (!o || typeof o !== 'object') return { shape: 'neither', bands: [], unreadable: [] }
+  const labels = o.Labels
+  if (!Array.isArray(labels)) return { shape: 'neither', bands: [], unreadable: [] }
 
-  const series = (Array.isArray(ys[0]) ? ys : [ys]) as unknown[][]
-  if (series.length !== labels.length) return null
-
+  const unreadable = labels.map(String).filter(l => percentileOf(l) === null)
   const bands = new Map<string, CategoryBand>()
-  labels.forEach((rawLabel, s) => {
-    const p = percentileOf(String(rawLabel))
-    if (p === null) return
-    series[s]!.forEach((v, i) => {
-      const label = String(xs[i] ?? '')
-      const value = plain(v)
-      if (!label || value === null) return
-      let band = bands.get(label)
-      if (!band) {
-        band = { bedrooms: bedroomsOfCategory(label), label, count: null, prices: new Map() }
-        bands.set(label, band)
+  const put = (category: string, p: number, raw: unknown) => {
+    const value = plain(raw)
+    if (!category || value === null) return
+    let band = bands.get(category)
+    if (!band) { band = emptyBand(category); bands.set(category, band) }
+    band.prices.set(p, value)
+  }
+
+  const xs = Array.isArray(o.X_values) ? o.X_values : null
+  const ysRaw = o.Y_values
+
+  // Keyed by label: no orientation to get wrong.
+  if (ysRaw && typeof ysRaw === 'object' && !Array.isArray(ysRaw)) {
+    for (const [rawLabel, series] of Object.entries(ysRaw as Record<string, unknown>)) {
+      const p = percentileOf(rawLabel)
+      if (p === null) { unreadable.push(rawLabel); continue }
+      if (Array.isArray(series) && xs) {
+        series.forEach((v, i) => put(String(xs[i] ?? ''), p, v))
+      } else if (plain(series) !== null) {
+        // A single number per label: the panel describes one category only.
+        put(String(xs?.[0] ?? 'all'), p, series)
       }
-      band.prices.set(p, value)
+    }
+    return { shape: 'chart_keyed', bands: [...bands.values()], unreadable }
+  }
+
+  if (!xs || !Array.isArray(ysRaw)) return { shape: 'neither', bands: [], unreadable }
+  const rows = (Array.isArray(ysRaw[0]) ? ysRaw : [ysRaw]) as unknown[][]
+  const width = rows[0]?.length ?? 0
+  const labelMajor = rows.length === labels.length && width === xs.length
+  const xMajor = rows.length === xs.length && width === labels.length
+
+  if (labelMajor && xMajor) return { shape: 'ambiguous', bands: [], unreadable }
+
+  if (labelMajor) {
+    labels.forEach((rawLabel, li) => {
+      const p = percentileOf(String(rawLabel))
+      if (p === null) return
+      rows[li]!.forEach((v, xi) => put(String(xs[xi] ?? ''), p, v))
     })
-  })
-  return bands.size ? [...bands.values()] : null
+    return { shape: 'chart_label_major', bands: [...bands.values()], unreadable }
+  }
+  if (xMajor) {
+    xs.forEach((rawX, xi) => {
+      labels.forEach((rawLabel, li) => {
+        const p = percentileOf(String(rawLabel))
+        if (p === null) return
+        put(String(rawX ?? ''), p, rows[xi]![li])
+      })
+    })
+    return { shape: 'chart_x_major', bands: [...bands.values()], unreadable }
+  }
+  return { shape: 'neither', bands: [], unreadable }
 }
 
 export interface PanelRead {
-  shape: NeighbourhoodReport['shapeSeen']
+  shape: PanelShape
   bands: CategoryBand[]
   unreadableLabels: string[]
 }
@@ -169,12 +243,32 @@ export function readPanel(node: unknown): PanelRead {
   const rows = readTableRows(node)
   if (rows) return { shape: 'table_rows', bands: rows, unreadableLabels: [] }
   const chart = readChartSeries(node)
-  if (chart) return { shape: 'chart_series', bands: chart, unreadableLabels: [] }
+  if (chart.bands.length) {
+    return { shape: chart.shape, bands: chart.bands, unreadableLabels: chart.unreadable }
+  }
   const labels = (node as { Labels?: unknown })?.Labels
   return {
-    shape: 'neither', bands: [],
-    unreadableLabels: Array.isArray(labels) ? labels.map(String) : [],
+    shape: chart.shape, bands: [],
+    unreadableLabels: chart.unreadable.length ? chart.unreadable
+      : Array.isArray(labels) ? labels.map(String) : [],
   }
+}
+
+/**
+ * The panel's own keys, types and lengths — never its values.
+ *
+ * The same rule as `api_shape`: a shape is safe to keep and safe to put in a
+ * log, a sample of live data is neither.
+ */
+export function describePanel(node: unknown): NeighbourhoodReport['panelKeys'] {
+  if (!node || typeof node !== 'object') return [{ key: '(root)', type: typeof node }]
+  return Object.entries(node as Record<string, unknown>).map(([key, v]) => ({
+    key,
+    type: Array.isArray(v) ? (v.length && Array.isArray(v[0]) ? 'array[array]'
+      : v.length && v[0] !== null && typeof v[0] === 'object' ? 'array[object]' : 'array')
+      : v === null ? 'null' : typeof v,
+    ...(Array.isArray(v) ? { length: v.length } : {}),
+  }))
 }
 
 /** The panel key the reference names, with the digested alias beside it. */
@@ -184,8 +278,9 @@ export async function importPriceLabsNeighbourhood(
   db: PoolClient, api: PriceLabsClient, listings: ResolvedListing[], asOf: string,
 ): Promise<NeighbourhoodReport> {
   const report: NeighbourhoodReport = {
-    attempted: 0, ok: 0, failed: 0, blocked: null, shapeSeen: null, rowsWritten: 0,
-    ownCategory: 0, unmatchedCategories: [], unreadableLabels: [], firstError: null,
+    attempted: 0, ok: 0, failed: 0, blocked: null, shapeSeen: null, panelKeys: [],
+    rowsWritten: 0, ownCategory: 0, unmatchedCategories: [], unreadableLabels: [],
+    firstError: null,
   }
   const unmatched = new Set<string>()
   const unreadable = new Set<string>()
@@ -214,7 +309,12 @@ export async function importPriceLabsNeighbourhood(
       samples.push(panelNode ?? {})
 
       const read = readPanel(panelNode)
-      if (report.shapeSeen === null) report.shapeSeen = read.shape
+      if (report.shapeSeen === null) {
+        report.shapeSeen = read.shape
+        // Only from the first listing: the encoding is a property of the API, not
+        // of the room, and 43 copies of the same key list is not a diagnostic.
+        report.panelKeys = describePanel(panelNode)
+      }
       for (const l of read.unreadableLabels) unreadable.add(l)
       if (!read.bands.length) { report.failed++; continue }
       report.ok++

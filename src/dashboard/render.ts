@@ -160,7 +160,11 @@ export function pricePosition(
 function potential(r: Row, sig: q.Signals | undefined, s: Strings): string {
   const ours = sig?.occupancy ?? null
   const theirs = sig?.marketOccupancy ?? null
-  if (ours === null && r.atStake === null) return ''
+  // Nothing to draw is not nothing to say: the micro and macro blocks report
+  // their own state, and an early return here used to swallow both.
+  if (ours === null && r.atStake === null) {
+    return pricePositionBlock(sig, r, s) + macroBlock(s)
+  }
 
   const W = 640, PAD = 96, TRACK = W - PAD - 16
   const x = (pct: number) => PAD + (Math.max(0, Math.min(100, pct)) / 100) * TRACK
@@ -241,6 +245,7 @@ function potential(r: Row, sig: q.Signals | undefined, s: Strings): string {
       aria-label="${e(s.potentialHeading)}">${parts.join('')}</svg>`
   return `<section class="panel"><h3>${e(s.potentialHeading)}</h3>${chart}</section>`
     + pricePositionBlock(sig, r, s)
+    + macroBlock(s)
 }
 
 /**
@@ -263,7 +268,18 @@ function pricePositionBlock(sig: q.Signals | undefined, r: Row, s: Strings): str
   const { nbhdP25: p25, nbhdP50: p50, nbhdP75: p75, nbhdP90: p90 } = sig
   const live = sig.priceLive
   const rec = sig.priceRecommended
-  if (p50 === null || (live === null && rec === null)) return ''
+  /**
+   * Named absence, not silence. Two different things are missing here and they
+   * need different fixes: no neighbourhood panel yet (a PriceLabs stage that has
+   * not landed) and no price of our own (a listing PriceLabs is not pricing).
+   * The block used to render nothing for either, which read as "this room has no
+   * micro layer" rather than "this run did not get one".
+   */
+  if (p50 === null || (live === null && rec === null)) {
+    return `<section class="panel"><h3>${e(s.pricePosHeading)}</h3>
+      <p class="mut" style="margin:0;font-size:.86rem">${e(p50 === null
+        ? s.pricePosNoPanel : s.pricePosNoPrice)}</p></section>`
+  }
 
   const W = 640, PAD = 96, TRACK = W - PAD - 16
   const values = [p25, p50, p75, p90, live, rec].filter((v): v is number => v !== null)
@@ -316,8 +332,24 @@ function pricePositionBlock(sig: q.Signals | undefined, r: Row, s: Strings): str
       aria-label="${e(s.pricePosHeading)}">${parts.join('')}</svg>
     <p class="mut" style="margin:.4rem 0 0;font-size:.86rem">${marks}${
       where ? ` — <b>${e(s.pricePos[where])}</b>` : ''} <span class="mut">· ${basis}</span></p>
-  </section>
-  <section class="panel"><h3>${e(s.macroHeading)}</h3>
+  </section>`
+}
+
+/**
+ * The macro block, and it is unconditional on purpose.
+ *
+ * It was nested inside the price-position block, which returns nothing when
+ * there is no neighbourhood band — so on the live account, where the
+ * neighbourhood panel came back in an encoding the reader could not yet parse,
+ * BOTH blocks vanished and the macro layer was invisible. Which is precisely the
+ * failure it exists to prevent: an absent thing that says nothing about being
+ * absent looks like a thing that was never asked for.
+ *
+ * A layer that is missing has to be visible AS missing, and it must not be able
+ * to disappear because a different layer is missing too.
+ */
+function macroBlock(s: Strings): string {
+  return `<section class="panel"><h3>${e(s.macroHeading)}</h3>
     <p class="mut" style="margin:0;font-size:.86rem">${e(s.macroBlocked)}</p></section>`
 }
 

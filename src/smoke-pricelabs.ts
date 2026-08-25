@@ -34,6 +34,8 @@ import { channelOf, nightsOf, importPriceLabsReservations }
 import { bedroomsFromBand, monthStart, cohortsToSample, importPriceLabsMarket }
   from './sources/pricelabs/estimator.js'
 import { importPriceLabs } from './sources/pricelabs/import.js'
+import { readPanel, describePanel, percentileOf, bedroomsOfCategory, bedroomsOfBand }
+  from './sources/pricelabs/neighbourhood.js'
 import { link, resolve } from './entity/resolve.js'
 import { signals } from './dashboard/query.js'
 import { isPriceLabsReport, isElev8Report, reportCounts } from './import/run.js'
@@ -542,6 +544,94 @@ async function main() {
   check('a pass that placed nothing says so instead of running four empty stages',
         empty.prices === null && empty.skipped.some(s => s.includes('no PriceLabs listing')),
         JSON.stringify(empty.skipped))
+
+  /* ------------------ 11b · the neighbourhood panel, in every encoding it sends */
+
+  // The labels are verbatim from the live account. The first pass read them
+  // perfectly and still wrote nothing, because `Y_values` did not line up with
+  // `Labels` the way the first version assumed — parallel arrays have an
+  // ORIENTATION, and with categories on one axis and percentiles on the other
+  // there are two ways to nest them and no way to tell from a length alone.
+  const LABELS = ['25th Percentile Price( CHF)', '50th Percentile Price( CHF)',
+                  '75th Percentile Price( CHF)', '90th Percentile Price( CHF)']
+  const CATS = ['Studio', '1 BR']
+  // Also verbatim: what this neighbourhood actually holds.
+  const STUDIO = [98, 149, 200, 230]
+  const ONE_BR = [60, 80, 98, 136]
+
+  check('the live label form reads as a percentile',
+        percentileOf('25th Percentile Price( CHF)') === 25)
+  check('and so does the digested key form', percentileOf('50_percentile_price') === 50)
+  check('a median is the 50th', percentileOf('Median') === 50)
+  check('an unrelated label is refused, not positioned',
+        percentileOf('Total Available Listings') === null)
+  check('Studio is zero bedrooms, not one', bedroomsOfCategory('Studio') === 0)
+  check('and our own band maps to the same scale', bedroomsOfBand('1BR') === 1)
+
+  const quartiles = (b: ReturnType<typeof readPanel>['bands'][number] | undefined) =>
+    b ? [25, 50, 75, 90].map(p => b.prices.get(p) ?? null) : null
+  const oneBr = (r: ReturnType<typeof readPanel>) =>
+    quartiles(r.bands.find(b => b.bedrooms === 1))
+  const studio = (r: ReturnType<typeof readPanel>) =>
+    quartiles(r.bands.find(b => b.bedrooms === 0))
+
+  const labelMajor = readPanel({ Labels: LABELS, X_values: CATS,
+    Y_values: [0, 1, 2, 3].map(i => [STUDIO[i], ONE_BR[i]]) })
+  check('one row per percentile is read as label-major',
+        labelMajor.shape === 'chart_label_major', labelMajor.shape)
+  check('and the 1BR band comes out in the right order',
+        JSON.stringify(oneBr(labelMajor)) === JSON.stringify(ONE_BR),
+        JSON.stringify(oneBr(labelMajor)))
+  check('and the studio band is NOT folded into it',
+        JSON.stringify(studio(labelMajor)) === JSON.stringify(STUDIO))
+
+  const xMajor = readPanel({ Labels: LABELS, X_values: CATS, Y_values: [STUDIO, ONE_BR] })
+  check('one row per category is read as x-major', xMajor.shape === 'chart_x_major')
+  check('and gives the SAME numbers, not the transpose',
+        JSON.stringify(oneBr(xMajor)) === JSON.stringify(ONE_BR),
+        JSON.stringify(oneBr(xMajor)))
+
+  const keyed = readPanel({ Labels: LABELS, X_values: CATS,
+    Y_values: Object.fromEntries(LABELS.map((l, i) => [l, [STUDIO[i], ONE_BR[i]]])) })
+  check('an object keyed by label needs no orientation at all',
+        keyed.shape === 'chart_keyed'
+        && JSON.stringify(oneBr(keyed)) === JSON.stringify(ONE_BR))
+
+  const rows = readPanel({ table_data: [
+    { category: 'Studio', count: 2, '25_percentile_price': 98, '50_percentile_price': 149,
+      '75_percentile_price': 200, '90_percentile_price': 230 },
+    { category: '1 BR', count: 155, '25_percentile_price': 60, '50_percentile_price': 80,
+      '75_percentile_price': 98, '90_percentile_price': 136 },
+  ] })
+  check('the digested row form still reads', rows.shape === 'table_rows'
+        && JSON.stringify(oneBr(rows)) === JSON.stringify(ONE_BR))
+  check('and it carries the count, which the chart form cannot',
+        rows.bands.find(b => b.bedrooms === 1)?.count === 155)
+
+  // A square grid fits both readings, and one of them transposes the percentiles.
+  // A coin toss on a price table is the worst outcome available here.
+  const square = readPanel({ Labels: LABELS.slice(0, 2), X_values: CATS,
+    Y_values: [[1, 2], [3, 4]] })
+  check('a square grid is REFUSED rather than guessed', square.shape === 'ambiguous'
+        && square.bands.length === 0, square.shape)
+
+  const bare = readPanel({ Labels: LABELS })
+  check('labels with no series read as neither', bare.shape === 'neither')
+  check('and the labels are reported so the encoding can be identified',
+        bare.unreadableLabels.length === 4, JSON.stringify(bare.unreadableLabels))
+
+  const junk = readPanel({ Labels: ['Total Listings'], X_values: CATS, Y_values: [[1, 2]] })
+  check('a series whose label is not a percentile writes nothing and names it',
+        junk.bands.every(b => b.prices.size === 0) || junk.bands.length === 0)
+
+  const desc = describePanel({ Labels: LABELS, X_values: CATS, Y_values: [[1, 2]],
+                               'Listings Used': 155 })
+  check('the diagnostic reports types and lengths, never values',
+        desc.some(d => d.key === 'Y_values' && d.type === 'array[array]' && d.length === 1)
+        && desc.some(d => d.key === 'Listings Used' && d.type === 'number'),
+        JSON.stringify(desc))
+  check('and it says nothing about what the numbers were',
+        !JSON.stringify(desc).includes('155') || desc.every(d => !('value' in d)))
 
   /* ------------------------------------------------- 12 · transport failures */
 

@@ -94,6 +94,8 @@ export interface Strings {
   pricePosRecommended: string
   pricePosBasis: (listings: number, band: string) => string
   pricePosNoBasis: string
+  pricePosNoPanel: string
+  pricePosNoPrice: string
   /** Where the live price falls in the neighbourhood distribution. */
   pricePos: Record<'belowP25' | 'p25p50' | 'p50p75' | 'p75p90' | 'aboveP90', string>
   /** The macro layer, and why it is not here. */
@@ -309,6 +311,11 @@ export const en: Strings = {
   pricePosBasis: (listings, band) =>
     `${band} band in this neighbourhood, ${listings} listing${listings === 1 ? '' : 's'}`,
   pricePosNoBasis: 'no neighbourhood band for this room',
+  pricePosNoPanel: 'No neighbourhood band yet. PriceLabs returns the panel in an encoding '
+    + 'this reader does not yet accept — the labels it saw are in the import report and on '
+    + '/shapes, and nothing is written until they can be read as percentiles.',
+  pricePosNoPrice: 'No price of our own on this calendar, so there is nothing to place '
+    + 'inside the neighbourhood band.',
   pricePos: {
     belowP25: 'below the bottom quarter of the neighbourhood',
     p25p50: 'in the lower half, below the median',
@@ -547,6 +554,11 @@ export const id: Strings = {
   pricePosBasis: (listings, band) =>
     `band ${band} di lingkungan ini, ${listings} listing`,
   pricePosNoBasis: 'tidak ada band lingkungan untuk kamar ini',
+  pricePosNoPanel: 'Belum ada band lingkungan. PriceLabs mengirim panelnya dalam bentuk yang '
+    + 'pembaca ini belum terima — label yang terlihat ada di laporan impor dan di /shapes, '
+    + 'dan tidak ada yang ditulis sampai label itu bisa dibaca sebagai persentil.',
+  pricePosNoPrice: 'Tidak ada harga milik kita di kalender ini, jadi tidak ada yang bisa '
+    + 'ditempatkan di dalam band lingkungan.',
   pricePos: {
     belowP25: 'di bawah kuartal terbawah lingkungan',
     p25p50: 'di paruh bawah, di bawah median',
