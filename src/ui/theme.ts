@@ -236,6 +236,31 @@ ul.ev{margin:0;padding-left:1.1rem;font-size:.86rem;display:flex;
 .chip.down{color:var(--rust)}
 .chip.up{color:var(--ink)}
 
+/* Opening a row must land on the row. The anchor does the work; this keeps the
+   row off the very top edge so the header above it stays readable. */
+tr[id]{scroll-margin-top:1rem}
+
+svg.pot{width:100%;max-width:640px;height:auto;display:block;margin:.2rem 0}
+svg.pot .lbl{font:500 12px var(--font);fill:var(--mut)}
+svg.pot .val{font:600 12px var(--font);fill:var(--ink);font-variant-numeric:tabular-nums}
+svg.pot .cap{font:400 11px var(--font);fill:var(--mut)}
+
+/* The glossary. A details/summary element, so it costs no JavaScript, no extra
+   page and no round trip — it is open or closed in the browser and nowhere else. */
+.legend{margin-top:1.5rem;border:1px solid var(--line);border-radius:var(--r-card);
+  background:var(--surface);padding:.6rem 1.1rem}
+.legend summary{cursor:pointer;font-weight:600;font-size:.9rem;padding:.35rem 0}
+.legend summary::marker{color:var(--mut)}
+.legend p{margin:.4rem 0 .8rem;font-size:.85rem}
+.legend dl{margin:0 0 .6rem;display:grid;grid-template-columns:minmax(8rem,11rem) 1fr;
+  gap:.45rem 1.2rem;font-size:.86rem}
+.legend dt{font-weight:600}
+.legend dd{margin:0;color:var(--mut)}
+@media (max-width:44rem){
+  .legend dl{grid-template-columns:1fr;gap:.1rem .8rem}
+  .legend dd{margin:0 0 .5rem}
+}
+
 footer{margin-top:1.5rem;color:var(--mut);font-size:.82rem;
   display:flex;flex-wrap:wrap;gap:.9rem}
 .empty{padding:2.5rem 1rem;text-align:center;color:var(--mut)}

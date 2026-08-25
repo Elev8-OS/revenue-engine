@@ -25,3 +25,6 @@ npx tsx src/smoke-retire.ts
 # anything expecting the earlier suites' rows must run before it.
 npx tsx src/smoke-pricelabs.ts
 npx tsx src/smoke-checks.ts
+# No database: it renders markup and asserts what a reader would otherwise have
+# to notice by eye.
+npx tsx src/smoke-render.ts

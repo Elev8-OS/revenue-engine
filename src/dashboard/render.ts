@@ -47,11 +47,17 @@ function age(min: number, s: Strings): string {
 }
 
 /** Preserves where the reader was when they switch language. */
+/**
+ * The current page with one thing changed — and with the open row's anchor, so
+ * switching language or basis does not throw the reader back to the top. Same
+ * reasoning as the row links: every control here is a full navigation, and a
+ * navigation with no fragment resets the scroll.
+ */
 function selfUrl(d: DashboardData, over: { lang?: Lang } = {}): string {
   const p = new URLSearchParams({ basis: d.basis })
   if (d.openId) p.set('open', d.openId)
   p.set('lang', over.lang ?? d.lang)
-  return `/?${p.toString()}`
+  return `/?${p.toString()}${d.openId ? `#row-${d.openId}` : ''}`
 }
 
 function gateBlock(d: DashboardData, s: Strings): string {
@@ -106,6 +112,117 @@ function evidenceBlock(d: DashboardData, s: Strings): string {
  * rather than a zero, because a market we did not measure is not a market at
  * nought per cent.
  */
+/**
+ * The picture in an opened row: where we stand, and what the distance is worth.
+ *
+ * Drawn rather than tabulated because the whole claim is a COMPARISON, and a
+ * comparison of two percentages is the one thing a bar does better than a
+ * sentence. The gap is shaded, so the quantity being valued below is visibly the
+ * same quantity being measured above — which is the step a reader has to take on
+ * trust when the two live in different columns.
+ *
+ * Three rules it keeps:
+ *
+ *   1. NO BRAND AMBER. Everything else on the page reserves that colour for
+ *      actions. A potential bar is data, and a colour that means "brand" in one
+ *      place and "opportunity" in another means neither.
+ *   2. NOTHING IS DRAWN THAT WAS NOT MEASURED. A missing market half draws no
+ *      marker at all rather than a marker at zero, and a room with no finding
+ *      gets the occupancy bar and no money bar — because there is no money
+ *      figure, not because the figure is nought.
+ *   3. THE RANGE IS THE HONEST WIDTH. Where the check produced a band, the bar
+ *      is the band and the point estimate is a tick inside it. A single bar
+ *      would draw a precision the evidence does not carry.
+ *
+ * Inline SVG with no script and no external file: it inherits the page's own
+ * custom properties, so it is correct in both colour schemes without a second
+ * definition of anything.
+ */
+function potential(r: Row, sig: q.Signals | undefined, s: Strings): string {
+  const ours = sig?.occupancy ?? null
+  const theirs = sig?.marketOccupancy ?? null
+  if (ours === null && r.atStake === null) return ''
+
+  const W = 640, PAD = 96, TRACK = W - PAD - 16
+  const x = (pct: number) => PAD + (Math.max(0, Math.min(100, pct)) / 100) * TRACK
+  const parts: string[] = []
+  let y = 0
+
+  if (ours !== null) {
+    const behind = theirs !== null && theirs > ours
+    // The shaded gap, drawn first so the bars sit on top of it.
+    if (behind) {
+      parts.push(`<rect x="${x(ours).toFixed(1)}" y="14" width="${(x(theirs) - x(ours)).toFixed(1)}"`
+        + ` height="16" fill="var(--rust)" opacity=".16"/>`)
+    }
+    parts.push(`<text x="0" y="26" class="lbl">${e(s.potentialOurs)}</text>`)
+    parts.push(`<rect x="${PAD}" y="14" width="${TRACK}" height="16" rx="4" fill="var(--sunk)"/>`)
+    parts.push(`<rect x="${PAD}" y="14" width="${(x(ours) - PAD).toFixed(1)}" height="16" rx="4"`
+      + ` fill="var(--ink)"/>`)
+    parts.push(`<text x="${(x(ours) + 8).toFixed(1)}" y="26" class="val">${Math.round(ours)}%</text>`)
+    y = 44
+    if (theirs !== null) {
+      parts.push(`<text x="0" y="${y + 12}" class="lbl">${e(s.potentialMarket)}</text>`)
+      parts.push(`<rect x="${PAD}" y="${y}" width="${TRACK}" height="16" rx="4" fill="var(--sunk)"/>`)
+      parts.push(`<rect x="${PAD}" y="${y}" width="${(x(theirs) - PAD).toFixed(1)}" height="16"`
+        + ` rx="4" fill="var(--mut)"/>`)
+      parts.push(`<text x="${(x(theirs) + 8).toFixed(1)}" y="${y + 12}" class="val">`
+        + `${Math.round(theirs)}%</text>`)
+      y += 30
+    }
+    const gap = theirs === null ? null : theirs - ours
+    if (gap !== null) {
+      parts.push(`<text x="${PAD}" y="${y + 10}" class="cap">${
+        gap > 0 ? e(s.potentialGapPp(Math.round(gap))) : e(s.potentialAhead)}</text>`)
+      y += 22
+    }
+  }
+
+  /**
+   * The money as a BRACKET, not as a bar on a zero-based axis.
+   *
+   * The first version drew it as a magnitude: a track from nought to the top of
+   * the band, with the range shaded inside it. On real numbers that range is a
+   * sliver at the far right — CHF 1'089 to CHF 1'188 on a track that starts at
+   * zero is 92% empty — so the one thing the row exists to show, the WIDTH of
+   * the uncertainty, was the one thing invisible. A bracket has no origin to
+   * mislead with: it spans the band, the tick sits where the estimate falls
+   * inside it, and both ends are labelled with their own figure.
+   */
+  if (r.atStake !== null) {
+    const hasBand = r.bandLow !== null && r.bandHigh !== null && r.bandLow !== r.bandHigh
+    const lo = hasBand ? Math.min(r.bandLow!, r.bandHigh!) : r.atStake
+    const hi = hasBand ? Math.max(r.bandLow!, r.bandHigh!) : r.atStake
+    const span = 300
+    const left = PAD, right = PAD + span
+    y += 16
+    parts.push(`<text x="0" y="${y + 5}" class="lbl">${e(s.colAtStake)}</text>`)
+    if (hasBand) {
+      parts.push(`<line x1="${left}" y1="${y}" x2="${right}" y2="${y}" stroke="var(--line)"`
+        + ` stroke-width="3"/>`)
+      for (const cap of [left, right]) {
+        parts.push(`<line x1="${cap}" y1="${y - 6}" x2="${cap}" y2="${y + 6}"`
+          + ` stroke="var(--mut)" stroke-width="2"/>`)
+      }
+      const at = left + ((r.atStake - lo) / (hi - lo)) * span
+      parts.push(`<circle cx="${at.toFixed(1)}" cy="${y}" r="5" fill="var(--ink)"/>`)
+      parts.push(`<text x="${left}" y="${y + 22}" class="cap">${
+        e(money(lo, r.currency, s.numberLocale))}</text>`)
+      parts.push(`<text x="${right}" y="${y + 22}" class="cap" text-anchor="end">${
+        e(money(hi, r.currency, s.numberLocale))}</text>`)
+    } else {
+      parts.push(`<circle cx="${left + 6}" cy="${y}" r="5" fill="var(--ink)"/>`)
+    }
+    parts.push(`<text x="${right + 16}" y="${y + 5}" class="val">${
+      e(money(r.atStake, r.currency, s.numberLocale))}</text>`)
+    y += hasBand ? 30 : 14
+  }
+
+  return `<section class="panel"><h3>${e(s.potentialHeading)}</h3>
+    <svg class="pot" viewBox="0 0 ${W} ${y + 6}" role="img"
+      aria-label="${e(s.potentialHeading)}">${parts.join('')}</svg></section>`
+}
+
 function vsMarket(sig: q.Signals | undefined, s: Strings): string {
   if (!sig || (sig.occupancy === null && sig.mpi === null && sig.priceRecommended === null)) {
     return `<span class="mut">${e(s.notMeasured)}</span>`
@@ -158,15 +275,21 @@ export function renderDashboard(d: DashboardData): string {
     const isOpen = d.openId === r.entityId
     const p = new URLSearchParams({ basis: d.basis, lang: d.lang })
     if (!isOpen) p.set('open', r.entityId)
-    const href = `/?${p.toString()}`
+    const href = `/?${p.toString()}#row-${r.entityId}`
     const domain = r.firstFailing ? s.domain[r.firstFailing] : null
     const detail = isOpen ? `<tr class="detail"><td colspan="6">
         ${r.headline ? `<p class="head">${e(r.headline)}</p>`
                      : `<p class="mut">${e(s.noOpenFinding)}</p>`}
+        ${potential(r, d.signals.get(r.entityId), s)}
         ${gateBlock(d, s)}
         ${evidenceBlock(d, s)}
       </td></tr>` : ''
-    return `<tr class="${isOpen ? 'open' : ''}">
+    // The row carries an id and the link ends in that fragment, so opening a row
+    // lands ON the row instead of at the top of the page. Without it every click
+    // was a full navigation that reset the scroll, and the reader had to find
+    // their property again — which is a real cost on a portfolio this long, and
+    // the fix needs no JavaScript at all.
+    return `<tr id="row-${e(r.entityId)}" class="${isOpen ? 'open' : ''}">
       <td><a class="rowlink" href="${e(href)}">${isOpen ? '▾' : '▸'} ${e(r.label)}</a>
         <div class="sub">${e(r.market)}${r.band ? ` · ${e(r.band)}` : ''}
           ${r.contract ? `<span class="tag">${e(s.contract[r.contract] ?? r.contract)}</span>` : ''}
@@ -224,6 +347,12 @@ export function renderDashboard(d: DashboardData): string {
     <tbody>${rows}</tbody></table>`
     : `<div class="empty"><p><b>${e(s.noPropertiesYet)}</b></p>
        <p>${e(s.noPropertiesWhy)} <a href="/status?lang=${d.lang}">${e(s.readiness)}</a>.</p></div>`}
+  <details class="legend">
+    <summary>${e(s.legendHeading)}</summary>
+    <p class="mut">${e(s.legendLead)}</p>
+    <dl>${s.legend.map(x =>
+      `<dt>${e(x.term)}</dt><dd>${e(x.text)}</dd>`).join('')}</dl>
+  </details>
   <footer>
     <span>${s.largestNotSum}</span>
     ${d.freshness.length ? `<span>${e(s.freshness)}: ${d.freshness.map(f =>

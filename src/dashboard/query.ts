@@ -36,6 +36,13 @@ export interface Row {
   contract: string | null
   inHoldout: boolean
   atStake: number | null
+  /**
+   * The range the amount sits in, from the same finding as `atStake`.
+   * Both null where the check could only establish a point — a band drawn from
+   * one number would be a picture of a confidence we do not have.
+   */
+  bandLow: number | null
+  bandHigh: number | null
   currency: string | null
   findings: number
   worstSeverity: string | null
@@ -76,6 +83,8 @@ export async function portfolio(
            e.in_holdout               as "inHoldout",
            -- largest single opportunity, never a sum
            max(r.${amount})           as "atStake",
+           max(case when r.pos = 1 then r.band_low end)  as "bandLow",
+           max(case when r.pos = 1 then r.band_high end) as "bandHigh",
            max(r.currency)            as currency,
            count(r.id)::int           as findings,
            max(case when r.pos = 1 then r.severity end)      as "worstSeverity",

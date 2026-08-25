@@ -77,6 +77,17 @@ export interface Strings {
   checksRun: string
   checksNote: string
   lastRun: (source: string) => string
+  /** The picture in an opened row. */
+  potentialHeading: string
+  potentialOurs: string
+  potentialMarket: string
+  potentialGapPp: (pp: number) => string
+  potentialRange: string
+  potentialAhead: string
+  /** The glossary. Terms in the order a reader meets them on the page. */
+  legendHeading: string
+  legendLead: string
+  legend: Array<{ term: string, text: string }>
   findingCount: (n: number, severity: string) => string
   noneOpen: string
   notRated: string
@@ -243,6 +254,44 @@ export const en: Strings = {
   checksNote: 'Reads the archive and writes findings. Re-running replaces the previous set '
     + 'rather than adding to it, and shares the import lock so it never reads a half-written pass.',
   lastRun: source => `Last run: ${source}`,
+  potentialHeading: 'Potential',
+  potentialOurs: 'ours',
+  potentialMarket: 'market',
+  potentialGapPp: pp => `${pp} pp behind`,
+  potentialRange: 'range',
+  potentialAhead: 'ahead of the market on this window',
+  legendHeading: 'What the columns mean',
+  legendLead: 'Every term below is a measurement or a verdict. Nothing here is an estimate '
+    + 'unless it says so.',
+  legend: [
+    { term: 'At stake', text: 'The largest SINGLE opportunity on a room, never a sum of its '
+      + 'findings: two findings can cover the same nights, so a total would count them twice.' },
+    { term: 'Findings', text: 'What a check concluded, with a severity. Critical is reserved '
+      + 'for a claim with a confirmed cost behind it, so no check can reach it yet.' },
+    { term: 'Worst domain', text: 'Which lever a finding blames. It stays empty unless we can '
+      + 'show the room is reachable at all — while MyDataValue is disconnected, "invisible" '
+      + 'and "overpriced" measure the same thing.' },
+    { term: 'vs market · 30 d', text: 'Our occupancy over the next 30 nights against the market '
+      + 'for this listing\u2019s own neighbourhood, both from the same PriceLabs comparison. '
+      + 'The chip is the difference in percentage points.' },
+    { term: 'MPI', text: 'Market Pricing Index: our asking price divided by the market\u2019s. '
+      + '1.00 is level; 2.08 means we ask twice what the neighbourhood does.' },
+    { term: 'Archived', text: 'How many of the next 30 nights we hold a stored price for. A '
+      + 'median over three nights is not a median over ninety, so the count is shown beside it.' },
+    { term: 'Band', text: 'The cohort a room is compared inside — "2BR" from a bedroom count, '
+      + '"sleeps 3-4" where only capacity is known. The basis is stored beside the band because '
+      + 'the two are different yardsticks.' },
+    { term: 'Not assessable', text: 'Rooms a check ran on and could not reach, with the missing '
+      + 'signal named, plus rooms with no band at all. It is the number that stops a portfolio '
+      + 'with three findings from looking healthy.' },
+    { term: 'Confidence', text: 'How much of the causal chain was actually observed. Three of '
+      + 'the four gates are unknown while MyDataValue is disconnected, so it is multiplied down '
+      + 'rather than shown at face value.' },
+    { term: 'Holdout', text: 'A room deliberately excluded from writes, so the effect of the '
+      + 'recommendations stays measurable against something.' },
+    { term: 'Contract', text: 'Guaranteed rent or commission — whose money is at stake, and '
+      + 'therefore whether a finding can be a recommendation at all.' },
+  ],
   findingCount: (n, s) => `${n}× ${s}`,
   noneOpen: 'none open',
   notRated: 'not assessed',
@@ -423,6 +472,45 @@ export const id: Strings = {
   checksNote: 'Membaca arsip dan menulis temuan. Menjalankan ulang menggantikan set sebelumnya, '
     + 'bukan menambahkannya, dan berbagi kunci impor agar tidak pernah membaca pass yang setengah tertulis.',
   lastRun: source => `Jalan terakhir: ${source}`,
+  potentialHeading: 'Potensi',
+  potentialOurs: 'kita',
+  potentialMarket: 'pasar',
+  potentialGapPp: pp => `tertinggal ${pp} pp`,
+  potentialRange: 'rentang',
+  potentialAhead: 'di atas pasar pada jendela ini',
+  legendHeading: 'Arti kolom-kolomnya',
+  legendLead: 'Setiap istilah di bawah adalah hasil pengukuran atau sebuah putusan. Tidak ada '
+    + 'perkiraan di sini kecuali disebutkan.',
+  legend: [
+    { term: 'Nilai dipertaruhkan', text: 'Peluang TUNGGAL terbesar pada satu kamar, bukan '
+      + 'jumlah temuannya: dua temuan bisa mencakup malam yang sama, jadi totalnya akan '
+      + 'menghitung dua kali.' },
+    { term: 'Temuan', text: 'Kesimpulan sebuah pemeriksaan, dengan tingkat keparahan. Critical '
+      + 'disediakan untuk klaim dengan biaya terkonfirmasi, jadi belum bisa dicapai.' },
+    { term: 'Domain terburuk', text: 'Tuas mana yang disalahkan sebuah temuan. Tetap kosong '
+      + 'kecuali kita bisa menunjukkan kamar itu memang terjangkau — selama MyDataValue '
+      + 'terputus, "tidak terlihat" dan "terlalu mahal" terukur sama.' },
+    { term: 'vs pasar · 30 hr', text: 'Okupansi kita untuk 30 malam ke depan berbanding pasar '
+      + 'di lingkungan listing itu sendiri, keduanya dari perbandingan PriceLabs yang sama. '
+      + 'Chip-nya adalah selisih dalam poin persentase.' },
+    { term: 'MPI', text: 'Market Pricing Index: harga kita dibagi harga pasar. 1,00 berarti '
+      + 'setara; 2,08 berarti kita meminta dua kali lipat lingkungan sekitar.' },
+    { term: 'Terarsip', text: 'Berapa dari 30 malam ke depan yang harganya sudah kita simpan. '
+      + 'Median atas tiga malam bukan median atas sembilan puluh, jadi jumlahnya ditampilkan.' },
+    { term: 'Band', text: 'Kohort tempat sebuah kamar dibandingkan — "2BR" dari jumlah kamar '
+      + 'tidur, "sleeps 3-4" bila hanya kapasitas yang diketahui. Dasarnya disimpan di sebelah '
+      + 'band karena keduanya tolok ukur yang berbeda.' },
+    { term: 'Tidak bisa dinilai', text: 'Kamar yang diperiksa tetapi tidak terjangkau, dengan '
+      + 'sinyal yang hilang disebutkan, ditambah kamar tanpa band sama sekali. Angka inilah '
+      + 'yang mencegah portofolio dengan tiga temuan terlihat sehat.' },
+    { term: 'Confidence', text: 'Seberapa banyak rantai sebab yang benar-benar teramati. Tiga '
+      + 'dari empat gate tidak diketahui selama MyDataValue terputus, jadi angkanya dikalikan '
+      + 'turun, bukan ditampilkan apa adanya.' },
+    { term: 'Holdout', text: 'Kamar yang sengaja dikecualikan dari penulisan, agar efek '
+      + 'rekomendasi tetap bisa diukur terhadap sesuatu.' },
+    { term: 'Kontrak', text: 'Sewa terjamin atau komisi — uang siapa yang dipertaruhkan, dan '
+      + 'karenanya apakah sebuah temuan bisa menjadi rekomendasi sama sekali.' },
+  ],
   findingCount: (n, s) => `${n}× ${s}`,
   noneOpen: 'tidak ada',
   notRated: 'belum dinilai',
