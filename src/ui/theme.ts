@@ -62,6 +62,31 @@ export const THEME_CSS = `
   --rust: oklch(0.577 0.245 27.325);
   --teal: oklch(0.546 0.245 262.881);
 
+  /**
+   * Chart hues. Four, in a FIXED order, never cycled — a fifth series folds into
+   * "other" rather than inventing a colour, because a hue that appears once is a
+   * hue nobody learns.
+   *
+   * Both sets were run through a contrast and colour-vision validator against
+   * their own surface rather than eyeballed: lightness band, chroma floor,
+   * adjacent-pair separation under deuteranopia/protanopia/tritanopia, and
+   * contrast against the card. All five checks pass in both modes.
+   *
+   * One caveat that shapes the markup: blue and green sit close under
+   * tritanopia (ΔE 5.3). So every series carries a DIRECT LABEL, not just a
+   * legend swatch — identity is never left to colour alone.
+   *
+   * The --c-brand-N steps are the sequential ramp: one hue, light to dark, for a measure
+   * that narrows. Never used for identity.
+   */
+  --c1: #B8860B;
+  --c2: #2563EB;
+  --c3: #0E8A63;
+  --c4: #7C3AED;
+  --c-brand-1: oklch(0.9 0.11 92);
+  --c-brand-2: oklch(0.82 0.16 90);
+  --c-brand-3: oklch(0.66 0.15 87);
+
   --r-card: 14px;
   --r-ctl: 8px;
   --shadow: 0 1px 2px rgba(0,0,0,.05);
@@ -82,6 +107,15 @@ export const THEME_CSS = `
     --brass: oklch(0.852 0.199 91.936);
     --rust: oklch(0.704 0.191 22.216);
     --teal: oklch(0.707 0.165 254.624);
+    /* Re-stepped for the dark surface, not flipped. Same four hues, same order,
+       validated again against the dark card. */
+    --c1: #B98A12;
+    --c2: #4C86E6;
+    --c3: #0F9D74;
+    --c4: #9A6AE8;
+    --c-brand-1: oklch(0.5 0.1 90);
+    --c-brand-2: oklch(0.62 0.14 88);
+    --c-brand-3: oklch(0.78 0.17 87);
     --shadow: 0 1px 2px rgba(0,0,0,.3);
   }
 }
@@ -191,6 +225,79 @@ code{
 .lever.on{border-color:var(--brand)}
 .lever.off{opacity:.72}
 .lever.unk{border-style:dashed}
+
+/* ---------------------------------------------------------------- charts */
+/* SVG text carries TEXT tokens, never a series colour: the mark beside a label
+   carries identity, the label stays ink. */
+/* The funnel. Counts are the figure; the step between them carries the rate and
+   a meter whose scale is our own median — a 0.75% rate has no readable place on
+   a 0-100% track, and this project measured exactly that. */
+.fun{display:flex;flex-direction:column;gap:0;margin:.15rem 0 .1rem}
+.fst{display:flex;align-items:baseline;gap:.5rem}
+.fst-n{font-size:1.3rem;font-weight:650;line-height:1.25;
+  font-variant-numeric:tabular-nums;min-width:4.6rem}
+.fst-l{font-size:.8rem;color:var(--mut)}
+.fstep{display:flex;align-items:center;gap:.55rem;padding:.22rem 0 .22rem 1.1rem;
+  margin-left:.55rem;border-left:2px solid var(--line)}
+.fstep-r{font-size:.82rem;font-weight:600;font-variant-numeric:tabular-nums;
+  min-width:3.4rem;color:var(--brass)}
+.fm{position:relative;display:block;flex:1;max-width:15rem;height:.5rem;
+  background:var(--sunk);border-radius:999px;overflow:hidden}
+.fm-fill{position:absolute;inset:0 auto 0 0;background:var(--c2);border-radius:999px}
+/* Over twice the median: the track has run out, so the end is squared off rather
+   than pretending the value fits. */
+.fm-fill.over{background:var(--c3);border-radius:999px 0 0 999px}
+.fm-mid{position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--mut);
+  opacity:.55}
+.fm-none{font-size:.72rem;color:var(--mut);font-style:italic}
+
+.cx{width:100%;height:auto;display:block;overflow:visible;margin:.2rem 0 .1rem}
+.cx-strip{width:auto;height:20px;vertical-align:middle;margin-left:.3rem}
+.cx text{font-family:var(--font)}
+.cx-lab{font-size:11px;fill:var(--mut)}
+.cx-val{font-size:12px;fill:var(--ink);font-weight:600;
+  font-variant-numeric:tabular-nums}
+.cx-in{font-size:11px;font-variant-numeric:tabular-nums}
+.cx-in.on{fill:var(--on-brand)}
+.cx-in.off{fill:var(--mut)}
+.cx-seg{font-size:11px;fill:#fff;font-weight:600;font-variant-numeric:tabular-nums}
+.cx-ax{font-size:10px;fill:var(--mut);font-variant-numeric:tabular-nums}
+.cx-dl{font-size:11px;font-weight:600;font-variant-numeric:tabular-nums}
+.cx-dl.c1{fill:var(--c1)}
+.cx-dl.c2{fill:var(--c2)}
+.cx-dl.mut{fill:var(--mut);font-weight:500}
+.cx-grid{stroke:var(--line);stroke-width:1}
+/* Last year is a reference, not a series — dashed, so it cannot be misread as
+   a fourth measurement. */
+.cx-ref{stroke:var(--mut);stroke-width:1.5;stroke-dasharray:3 3}
+.cx-line{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.cx-line.c2{stroke:var(--c2)}
+/* A 2px surface ring, so an overlapping dot stays separable from its line. */
+.cx-dot{stroke:var(--surface);stroke-width:2}
+.cx-dot.c1{fill:var(--c1)}
+.cx-dot.c2{fill:var(--c2)}
+.cx-keys{display:flex;flex-wrap:wrap;gap:.3rem 1rem;margin-top:.45rem;
+  font-size:.76rem;color:var(--mut)}
+.cx-key i{display:inline-block;width:.55rem;height:.55rem;border-radius:2px;
+  margin-right:.35rem;vertical-align:baseline}
+
+/* The lever matrix. A fixed grid, so an EMPTY cell is as informative as a full
+   one — which a row of chips could never be. */
+.lvgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(6.6rem,1fr));gap:.3rem}
+.lv{border:1px solid var(--line);border-radius:8px;padding:.35rem .45rem;
+  min-height:2.9rem;display:flex;flex-direction:column;justify-content:space-between}
+.lv-k{font-size:.66rem;line-height:1.25;color:var(--mut);text-transform:capitalize}
+.lv-v{font-size:.86rem;font-weight:650;font-variant-numeric:tabular-nums}
+.lv.on{border-color:var(--brand);background:color-mix(in oklab,var(--brand) 14%,transparent)}
+.lv.on .lv-v{color:var(--brass)}
+.lv.off{opacity:.6}
+.lv.unk{border-style:dashed}
+.lv.none{background:var(--sunk);opacity:.5}
+.lvkey{display:flex;flex-wrap:wrap;align-items:center;gap:.3rem .9rem;
+  margin-top:.6rem;font-size:.72rem;color:var(--mut)}
+.lvkey .lv{min-height:0;width:.85rem;height:.85rem;padding:0;border-radius:3px;
+  display:inline-block;margin-right:-.15rem}
+.ph{font-size:1.05rem;margin:0}
 .stat{padding:.9rem 1.1rem}
 .card > h1:first-child{margin-bottom:.5rem}
 

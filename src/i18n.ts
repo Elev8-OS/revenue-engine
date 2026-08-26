@@ -117,6 +117,16 @@ export interface Strings {
   funnelViews: string
   funnelBookings: string
   funnelChainNote: string
+  /* --- chart descriptions, for a screen reader and for the aria-label */
+  funnelChartAria: string
+  cohortNoScale: string
+  cohortMedianIs: (median: string) => string
+  horizonAria: string
+  channelAria: string
+  coverageAria: string
+  leversPortfolio: string
+  leversPortfolioNote: string
+  leverStateNone: string
   /* --- what actually sold */
   realisedHeading: string
   realisedWindow: (days: number, bookings: number) => string
@@ -421,6 +431,17 @@ export const en: Strings = {
   funnelBookings: 'booked',
   funnelChainNote: 'Each share is computed from the two counts beside it, not taken '
     + 'from the provider — a rate whose scale is unstated can be wrong by a hundredfold.',
+  funnelChartAria: 'Funnel stages, each drawn as a share of the stage above it',
+  cohortNoScale: 'no comparable set yet',
+  cohortMedianIs: m => `median of our own set: ${m}`,
+  horizonAria: 'Occupancy at 7, 30 and 90 nights, ours against the market',
+  channelAria: 'Share of gross revenue per channel',
+  coverageAria: 'How many rooms run each promotion',
+  leversPortfolio: 'Levers across the portfolio',
+  leversPortfolioNote: 'How many rooms run each promotion. The question worth '
+    + 'asking of an account-wide list is which lever is barely used — not which '
+    + 'promotions exist.',
+  leverStateNone: 'not offered on this room',
   realisedHeading: 'What actually sold',
   realisedWindow: (d, b) => `arrivals in the last ${d} days · ${b} booking${b === 1 ? '' : 's'}`,
   realisedRevenue: 'gross',
@@ -752,6 +773,17 @@ export const id: Strings = {
   funnelBookings: 'memesan',
   funnelChainNote: 'Setiap persentase dihitung dari dua angka di sebelahnya, bukan '
     + 'diambil dari penyedia — rasio yang skalanya tidak dinyatakan bisa salah seratus kali.',
+  funnelChartAria: 'Tahapan funnel, masing-masing sebagai bagian dari tahap di atasnya',
+  cohortNoScale: 'belum ada kelompok pembanding',
+  cohortMedianIs: m => `median kelompok kita sendiri: ${m}`,
+  horizonAria: 'Okupansi pada 7, 30 dan 90 malam, kita berbanding pasar',
+  channelAria: 'Porsi pendapatan bruto per kanal',
+  coverageAria: 'Berapa unit menjalankan setiap promosi',
+  leversPortfolio: 'Tuas di seluruh portofolio',
+  leversPortfolioNote: 'Berapa unit menjalankan setiap promosi. Pertanyaan yang '
+    + 'layak diajukan pada daftar seluruh akun adalah tuas mana yang hampir tidak '
+    + 'dipakai — bukan promosi apa saja yang ada.',
+  leverStateNone: 'tidak ditawarkan pada unit ini',
   realisedHeading: 'Yang benar-benar terjual',
   realisedWindow: (d, b) => `kedatangan dalam ${d} hari terakhir · ${b} pemesanan`,
   realisedRevenue: 'bruto',

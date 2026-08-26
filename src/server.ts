@@ -1113,6 +1113,7 @@ ${funnelDetail(run?.report ?? null)}
           return { promotions: p.byEntity, accountPromotions: p.account }
         })(),
         cohorts: await q.funnelCohorts(c),
+        leverCoverage: await q.leverCoverage(c),
         // The same measured state the checks use, so the macro block on a page
         // and the gate note inside a finding can never disagree.
         funnel: (await q.funnelState(c)).kind,

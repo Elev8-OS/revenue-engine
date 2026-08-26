@@ -63,6 +63,22 @@ export const PROMOTIONS: FieldSpec = {
   startsOn: ['start_date', 'starts_on', 'valid_from', 'from_date', 'stay_start'],
   endsOn: ['end_date', 'ends_on', 'valid_to', 'to_date', 'stay_end'],
   observedAt: ['data_as_of', 'updated_at', 'created_at'],
+  /**
+   * Claimed after the first live pass reported them as unclaimed. This is the
+   * loop the resolver exists for: 500 rows came back, five keys were named as
+   * unanticipated, and three of them change what the page can say.
+   *
+   * `family` groups the nine deal types this account runs, so they stop reading
+   * as nine independent switches. `deactivated_at` is the difference between
+   * "off" and "was on until Tuesday" — and since the pass found NO start or end
+   * date field, it is the only time signal this payload carries.
+   */
+  family: ['family', 'group', 'promotion_family'],
+  categoryId: ['category_id', 'category'],
+  deactivatedAt: ['deactivated_at', 'disabled_at', 'ended_at'],
+  /** Named so it stops appearing as a surprise; its contents are not mapped. */
+  attributes: ['attributes'],
+  createdAtChannel: ['created_at_booking', 'created_at_channel'],
 }
 
 /* ------------------------------------------------------------------ report */
@@ -229,25 +245,52 @@ async function readReviews(
 
 /* ---------------------------------------------------------------- promotions */
 
+/** One page is 500 rows; ten pages is a ceiling, not an expectation. */
+const PAGE = 500
+const MAX_PAGES = 10
+
 async function readPromotions(
   client: PoolClient, mdv: MdvClient, asOf: string,
 ): Promise<ReputationEndpoint> {
   const path = '/booking/promotions/'
   const out = blank(path)
-  let body: unknown
-  try {
-    body = await mdv.get<unknown>(client, path, { limit: 500 })
-  } catch (err) {
-    const status = err instanceof MdvError && err.status ? err.status : 0
-    return { ...out, status: status || 'ok',
-             note: `the endpoint did not answer: ${(err as Error).message}` }
+  /**
+   * PAGINATED, because the first live pass came back with exactly 500 rows
+   * against a page size of 500 — and reported it. A full page is a page, not an
+   * answer: every listing whose promotions happened to sort onto page two had no
+   * levers at all, and the page would have shown that as "none running".
+   *
+   * The loop stops on a short page, on a repeat (a provider that ignores offset
+   * would otherwise spin), or at the ceiling — and says which.
+   */
+  const rows: unknown[] = []
+  let envelope = ''
+  let pages = 0
+  let hitCeiling = false
+  for (; pages < MAX_PAGES; pages++) {
+    let body: unknown
+    try {
+      body = await mdv.get<unknown>(client, path, { limit: PAGE, offset: pages * PAGE })
+    } catch (err) {
+      const status = err instanceof MdvError && err.status ? err.status : 0
+      if (!rows.length) {
+        return { ...out, status: status || 'ok',
+                 note: `the endpoint did not answer: ${(err as Error).message}` }
+      }
+      break
+    }
+    const page = rowsOf(body)
+    envelope = page.envelope
+    if (!page.rows.length) break
+    rows.push(...page.rows)
+    if (page.rows.length < PAGE) break
+    if (pages === MAX_PAGES - 1) hitCeiling = true
   }
-  const { rows, envelope } = rowsOf(body)
   await recordShape(client, 'mdv', `GET ${path}`, rows.slice(0, 20),
-                    `promotions pass, envelope: ${envelope}`)
+                    `promotions pass, ${pages + 1} page(s), envelope: ${envelope}`)
   const resolution = resolveFields(rows, PROMOTIONS)
-  const o = { ...out, rows: rows.length, envelope, resolution,
-              truncated: rows.length >= 500 }
+  // Truncated now means the CEILING was hit, not that one page was full.
+  const o = { ...out, rows: rows.length, envelope, resolution, truncated: hitCeiling }
   if (!rows.length) return { ...o, note: 'the endpoint answered with no rows' }
 
   const kindKey = resolution.used.kind
@@ -282,15 +325,20 @@ async function readPromotions(
     const res = await client.query(
       `insert into channel_promotion
          (entity_id, source, external_id, kind, active, discount_pct,
-          starts_on, ends_on, observed_at, as_of_date)
-       values ($1, 'mdv_booking', $2, $3, $4, $5, $6::date, $7::date, $8, $9::date)
+          starts_on, ends_on, observed_at, as_of_date,
+          family, category_id, deactivated_at)
+       values ($1, 'mdv_booking', $2, $3, $4, $5, $6::date, $7::date, $8, $9::date,
+               $10, $11, $12)
        on conflict (source, as_of_date, coalesce(entity_id::text, '-'),
                     coalesce(external_id, kind))
          do update set active = excluded.active,
                        discount_pct = excluded.discount_pct,
                        starts_on = excluded.starts_on,
                        ends_on = excluded.ends_on,
-                       observed_at = excluded.observed_at`,
+                       observed_at = excluded.observed_at,
+                       family = excluded.family,
+                       category_id = excluded.category_id,
+                       deactivated_at = excluded.deactivated_at`,
       [entityId,
        resolution.used.externalId ? String(row[resolution.used.externalId] ?? '') || null : null,
        kind,
@@ -301,7 +349,14 @@ async function readPromotions(
        resolution.used.observedAt
          && typeof row[resolution.used.observedAt] === 'string'
          ? row[resolution.used.observedAt] : null,
-       asOf])
+       asOf,
+       resolution.used.family ? String(row[resolution.used.family] ?? '') || null : null,
+       resolution.used.categoryId
+         ? String(row[resolution.used.categoryId] ?? '') || null : null,
+       resolution.used.deactivatedAt
+         && typeof row[resolution.used.deactivatedAt] === 'string'
+         ? row[resolution.used.deactivatedAt] : null,
+      ])
     stored += res.rowCount ?? 0
   }
   const notes: string[] = []
@@ -313,7 +368,10 @@ async function readPromotions(
   if (resolution.unclaimed.length) {
     notes.push(`unclaimed keys present: ${resolution.unclaimed.join(', ')}`)
   }
-  if (o.truncated) notes.push('the row count hit the page size, so this is one page')
+  notes.push(`${pages + 1} page(s) read`)
+  if (o.truncated) {
+    notes.push(`the page ceiling of ${MAX_PAGES} was reached, so there may be more`)
+  }
   return { ...o, matched: objs.length - unattributed - unresolved.size,
            unresolvedIds: [...unresolved].slice(0, 20), unattributed, withheld, stored,
            vocabulary: [...kinds].sort().slice(0, 40), note: notes.join('; ') }

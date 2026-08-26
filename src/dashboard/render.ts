@@ -38,11 +38,15 @@ const count = (v: number, locale: string) =>
  * percent that is "1%", and the difference between 0.75 and 1 is a third of the
  * traffic. Two decimals below one percent, one above.
  */
-const pct = (v: number, locale: string) =>
-  new Intl.NumberFormat(locale, {
-    minimumFractionDigits: v < 1 ? 2 : v < 10 ? 1 : 0,
-    maximumFractionDigits: v < 1 ? 2 : v < 10 ? 1 : 0,
+const pct = (v: number, locale: string) => {
+  // Zero is exactly zero and gets no decimals: an axis reading "0.00%" spends
+  // three characters saying nothing and makes the reader check for a rounding
+  // they need not think about.
+  const d = v === 0 ? 0 : v < 1 ? 2 : v < 10 ? 1 : 0
+  return new Intl.NumberFormat(locale, {
+    minimumFractionDigits: d, maximumFractionDigits: d,
   }).format(v) + '%'
+}
 
 export interface DashboardData {
   lang: Lang
@@ -65,6 +69,11 @@ export interface DashboardData {
   /** Commercial levers attributed to an object, and the account-wide ones. */
   promotions: Map<string, q.Promotion[]>
   accountPromotions: q.Promotion[]
+  /**
+   * How many rooms run each lever. The account-wide question worth asking —
+   * which lever is barely used — rather than a list of what exists.
+   */
+  leverCoverage: Array<{ kind: string, on: number, of: number }>
   /** Where each listing's funnel sits inside our OWN market × band × channel set. */
   cohorts: Map<string, { booking: q.CohortStanding | null, airbnb: q.CohortStanding | null }>
   /**
@@ -205,6 +214,8 @@ interface Detail {
   rev: { booking: q.ReviewStanding | null, airbnb: q.ReviewStanding | null } | undefined
   promos: q.Promotion[] | undefined
   accountPromos: q.Promotion[]
+  /** Every lever the account offers, so an empty cell means "not taken". */
+  knownLevers: string[]
   cohort: { booking: q.CohortStanding | null, airbnb: q.CohortStanding | null } | undefined
 }
 
@@ -213,7 +224,7 @@ function detailBlocks(r: Row, d: Detail, s: Strings): string {
   return trendBlock(d.sig, s)
     + realisedBlock(r, d.real, s)
     + reviewsBlock(d.rev, s)
-    + leversBlock(d.promos, d.accountPromos, s)
+    + leversBlock(d.promos, d.accountPromos, d.knownLevers, s)
 }
 
 function potential(
@@ -436,19 +447,15 @@ function funnelChain(
   // dates — the same failure mode as the revoked-grant sentence.
   const label = `${channel} \u00b7 ${sideOf.axis === 'forward'
     ? s.funnelAxisForward(sideOf.nights) : s.funnelAxisTrailing}`
-  const n = (v: number | null) =>
-    v === null ? '<span class="mut">—</span>' : e(count(v, s.numberLocale))
-  const share = (num: number | null, den: number | null) =>
-    num === null || den === null || den <= 0 ? ''
-      : `<span class="mut">${e(pct(100 * num / den, s.numberLocale))}</span>`
-  const stage = (value: number | null, name: string, of: number | null) =>
-    `<div class="fstage"><div class="fnum">${n(value)}</div>
-      <div class="flab">${e(name)}</div><div class="fsh">${share(value, of)}</div></div>`
   return `<div class="fchain"><div class="flabel">${e(label)}${
     cohortChip(standing, s)}</div>
-    <div class="frow">${stage(seen, s.funnelImpressions, null)
-      }<div class="farrow">&rsaquo;</div>${stage(views, s.funnelViews, seen)
-      }<div class="farrow">&rsaquo;</div>${stage(booked, s.funnelBookings, views)}</div></div>`
+    ${funnelChart([
+      { label: s.funnelImpressions, value: seen, of: null, median: null },
+      { label: s.funnelViews, value: views, of: seen,
+        median: standing?.viewRateMedian ?? null },
+      { label: s.funnelBookings, value: booked, of: views,
+        median: standing?.bookRateMedian ?? null },
+    ], s)}</div>`
 }
 
 /**
@@ -460,6 +467,279 @@ function funnelChain(
  * is derived, and once real figures exist the sentence about their absence is not
  * merely wrong, it is contradicted by the numbers next to it.
  */
+/* =========================================================== charts ======= */
+/*
+ * Every chart here is inline SVG on the page's own tokens, and every one of them
+ * follows three rules that came out of getting them wrong first:
+ *
+ *   ONE AXIS, ALWAYS. Two measures of different scale get two charts, never two
+ *   y-scales on one. A funnel that runs 99'014 → 743 → 12 cannot be drawn on a
+ *   linear axis at all — the last two stages are invisible slivers — so it is
+ *   drawn as nested proportions instead of forced onto one.
+ *
+ *   IDENTITY IS NEVER COLOUR ALONE. The four chart hues were validated against
+ *   colour-vision simulation, and blue and green still sit close under
+ *   tritanopia. So every series is directly labelled as well as coloured.
+ *
+ *   THE DENOMINATOR TRAVELS WITH THE NUMBER. A share over three bookings and a
+ *   share over sixty are different claims, and a chart that hides the count is
+ *   the most confident kind of wrong.
+ */
+
+/** A funnel stage: how many, the share of the stage above, and our own median. */
+interface Stage {
+  label: string
+  value: number | null
+  of: number | null
+  /** The cohort's median for THIS step, which is what gives the share a scale. */
+  median: number | null
+}
+
+/**
+ * The funnel: three counts, two rates, and each rate against our own median.
+ *
+ * THE FORM CHANGED AFTER LOOKING AT IT. The first version drew each stage as a
+ * share of the stage above, on the reasoning that every bar would then use the
+ * full width. It does not: the measured chain is 99'014 seen → 743 opened → 12
+ * booked, so the second bar is 0.75% of the track and the third is smaller
+ * still. Two invisible slivers, under a comment claiming they could not happen.
+ *
+ * A rate of 0.75% has no readable position on a 0-100% track, and log scaling
+ * only moves the problem into the reader's head. What it does have a readable
+ * position against is the MEDIAN OF OUR OWN SET — below the middle or above it —
+ * and that is also the only comparison this project can defend, since no
+ * provider sells the neighbours' funnel. So the track runs 0 to twice the
+ * median, the median is ticked at the centre, and a rate off the end is clamped
+ * with the number still printed.
+ *
+ * Without a cohort there is no scale, so no meter is drawn — the counts and the
+ * rate stand on their own rather than sitting on an invented axis.
+ */
+function funnelChart(stages: Stage[], s: Strings): string {
+  const drawn = stages.filter(st => st.value !== null)
+  if (!drawn.length) return ''
+  const rows = drawn.map((st, i) => {
+    const share = st.of !== null && st.of > 0 && st.value !== null
+      ? st.value / st.of : null
+    const meter = (() => {
+      if (share === null) return ''
+      if (st.median === null || st.median <= 0) {
+        return `<span class="fm-none">${e(s.cohortNoScale)}</span>`
+      }
+      const full = st.median * 2
+      const at = Math.min(1, share / full)
+      const over = share > full
+      return `<span class="fm" title="${e(s.cohortMedianIs(pct(st.median * 100, s.numberLocale)))}">
+        <span class="fm-fill${over ? ' over' : ''}" style="width:${(at * 100).toFixed(1)}%"></span>
+        <span class="fm-mid"></span></span>`
+    })()
+    return `${i > 0 ? `<div class="fstep">
+        <span class="fstep-r">${share === null ? ''
+          : e(pct(share * 100, s.numberLocale))}</span>${meter}</div>` : ''}
+      <div class="fst">
+        <span class="fst-n">${e(count(st.value ?? 0, s.numberLocale))}</span>
+        <span class="fst-l">${e(st.label)}</span>
+      </div>`
+  })
+  return `<div class="fun">${rows.join('')}</div>`
+}
+
+/**
+ * Occupancy across three horizons, ours against the market, with last year marked.
+ *
+ * A slope chart rather than bars: the question is not "how much at 30 days" but
+ * "is the gap widening as the horizon lengthens", and only a line answers that.
+ * One axis, in percent, for both series — they are the same measure.
+ */
+function horizonChart(sig: q.Signals, s: Strings): string {
+  const ours = [sig.occupancy7, sig.occupancy, sig.occupancy90]
+  if (ours.every(v => v === null)) return ''
+  const theirs = [null, sig.marketOccupancy, null]
+  const W = 560, H = 150, PAD_B = 26, PAD_T = 14, PAD_R = 54
+  const all = [...ours, ...theirs, sig.stlyOccupancy].filter((v): v is number => v !== null)
+  const top = Math.max(20, Math.ceil(Math.max(...all) / 10) * 10 + 5)
+  const x = (i: number) => (i / 2) * (W - PAD_R)
+  const y = (v: number) => PAD_T + (1 - v / top) * (H - PAD_T - PAD_B)
+  const parts: string[] = []
+  // A recessive grid: two lines, no box, no ticks the reader has to decode.
+  for (const g of [0, top / 2, top]) {
+    parts.push(`<line x1="0" y1="${y(g)}" x2="${W - PAD_R}" y2="${y(g)}"
+      class="cx-grid"></line>`)
+    parts.push(`<text x="${W - PAD_R + 6}" y="${y(g) + 4}" class="cx-ax">${
+      e(pct(g, s.numberLocale))}</text>`)
+  }
+  const line = (vals: Array<number | null>, cls: string) => {
+    const pts = vals.map((v, i) => v === null ? null : `${x(i)},${y(v)}`)
+      .filter((p): p is string => p !== null)
+    if (pts.length < 2) return ''
+    return `<polyline points="${pts.join(' ')}" class="cx-line ${cls}"></polyline>`
+  }
+  parts.push(line(ours, 'c2'))
+  ours.forEach((v, i) => {
+    if (v === null) return
+    parts.push(`<circle cx="${x(i)}" cy="${y(v)}" r="4.5" class="cx-dot c2"></circle>`)
+  })
+  if (sig.marketOccupancy !== null) {
+    parts.push(`<circle cx="${x(1)}" cy="${y(sig.marketOccupancy)}" r="4.5"
+      class="cx-dot c1"></circle>`)
+    // Right-anchored, left of the point: the "ours" label sits to the right of
+    // the same x, and at a small gap the two collide.
+    parts.push(`<text x="${x(1) - 10}" y="${y(sig.marketOccupancy) + 4}" class="cx-dl c1"
+      text-anchor="end">${e(s.potentialMarket)} ${
+      e(pct(sig.marketOccupancy, s.numberLocale))}</text>`)
+  }
+  if (sig.stlyOccupancy !== null) {
+    // Last year is a REFERENCE, not a series: a dashed rule with its own label,
+    // so it cannot be mistaken for a fourth measurement.
+    parts.push(`<line x1="0" y1="${y(sig.stlyOccupancy)}" x2="${W - PAD_R}"
+      y2="${y(sig.stlyOccupancy)}" class="cx-ref"></line>`)
+    // Right-aligned at the end of its own rule: the middle of the plot is where
+    // both series labels live, and three labels competing for it collided.
+    parts.push(`<text x="${W - PAD_R - 4}" y="${y(sig.stlyOccupancy) - 7}"
+      class="cx-dl mut" text-anchor="end">${e(s.trendYoy)} ${
+      e(pct(sig.stlyOccupancy, s.numberLocale))}</text>`)
+  }
+  if (sig.occupancy !== null) {
+    parts.push(`<text x="${x(1) + 9}" y="${y(sig.occupancy) - 8}" class="cx-dl c2">${
+      e(s.potentialOurs)} ${e(pct(sig.occupancy, s.numberLocale))}</text>`)
+  }
+  ;['7', '30', '90'].forEach((n, i) => {
+    parts.push(`<text x="${x(i)}" y="${H - 6}" class="cx-ax"
+      text-anchor="${i === 0 ? 'start' : i === 2 ? 'end' : 'middle'}">${e(n)}</text>`)
+  })
+  return `<svg class="cx" viewBox="0 0 ${W} ${H}" role="img"
+    aria-label="${e(s.horizonAria)}">${parts.join('')}</svg>`
+}
+
+/**
+ * Channel mix as ONE stacked bar.
+ *
+ * Two rows of separate bars invited a comparison between channels' absolute
+ * revenue; the question is what share each takes of this room's gross, which is
+ * a part-to-whole and belongs in one bar. Segments get a 2px gap so adjacent
+ * fills never touch, and each is labelled by name — the hues pass validation but
+ * blue and green are close under tritanopia, so the name carries identity.
+ */
+const CHANNEL_ORDER = ['booking', 'airbnb', 'direct', 'other']
+const channelHue = (name: string): string => {
+  const i = CHANNEL_ORDER.indexOf(name.toLowerCase())
+  // A fifth channel is never given an invented hue: it folds into the fourth
+  // slot, because a colour that appears once is a colour nobody learns.
+  return `var(--c${(i < 0 ? 3 : i) + 1})`
+}
+
+function channelChart(real: q.Realised, s: Strings, cur: string | null): string {
+  if (!real.channels.length || real.revenue <= 0) return ''
+  const W = 560, BAR = 26, GAP = 2
+  let cursor = 0
+  const segs: string[] = []
+  const legend: string[] = []
+  for (const c of real.channels) {
+    const w = Math.max(0, c.share * W - GAP)
+    if (w > 1) {
+      segs.push(`<rect x="${cursor.toFixed(1)}" y="0" width="${w.toFixed(1)}"
+        height="${BAR}" rx="3" fill="${channelHue(c.name)}"></rect>`)
+      if (w > 74) {
+        segs.push(`<text x="${(cursor + w / 2).toFixed(1)}" y="${BAR / 2 + 4}"
+          class="cx-seg" text-anchor="middle">${e(pct(c.share * 100, s.numberLocale))}</text>`)
+      }
+    }
+    cursor += c.share * W
+    legend.push(`<span class="cx-key"><i style="background:${channelHue(c.name)}"></i>${
+      e(c.name)} · ${e(pct(c.share * 100, s.numberLocale))} · ${
+      e(money(c.revenue, cur, s.numberLocale))}</span>`)
+  }
+  return `<svg class="cx" viewBox="0 0 ${W} ${BAR}" role="img"
+      aria-label="${e(s.channelAria)}">${segs.join('')}</svg>
+    <div class="cx-keys">${legend.join('')}</div>`
+}
+
+/**
+ * The commercial levers as a MATRIX, not a chip pile.
+ *
+ * This replaces a row of nine equal chips, which is what "shown as a whole
+ * instead of per listing" was really describing: nine independent-looking
+ * switches, in no order, repeated identically on every room. The provider groups
+ * these deal types itself — the payload carries a `family` — and the nine are a
+ * fixed vocabulary, so the honest form is a fixed grid where a listing's row can
+ * be compared against the one above it at a glance, and an EMPTY cell is as
+ * informative as a filled one.
+ *
+ * Three states, never two: on, off, and not stated. A switch the payload never
+ * sent is not a switch that is off.
+ */
+function leverMatrix(
+  known: string[], own: q.Promotion[], s: Strings,
+): string {
+  if (!known.length) return ''
+  const byKind = new Map(own.map(p => [p.kind, p]))
+  const cell = (kind: string) => {
+    const p = byKind.get(kind)
+    const state = !p ? 'none' : p.active === null ? 'unk' : p.active ? 'on' : 'off'
+    const label = p?.discountPct !== null && p?.discountPct !== undefined
+      ? pct(p.discountPct, s.numberLocale) : ''
+    return `<div class="lv ${state}" title="${e(kind)}">
+      <div class="lv-k">${e(kind.replace(/_/g, ' ').toLowerCase())}</div>
+      <div class="lv-v">${label ? e(label) : state === 'on' ? '●'
+        : state === 'unk' ? '?' : ''}</div></div>`
+  }
+  return `<div class="lvgrid">${known.map(cell).join('')}</div>`
+}
+
+/**
+ * How many rooms run each lever, across the portfolio.
+ *
+ * The account-wide view done as a question worth asking — "which lever are we
+ * barely using" — rather than as a list of every promotion on the account. Bars
+ * because the job is comparing magnitudes across a category; sorted, because an
+ * unsorted bar chart makes the reader do the sorting.
+ */
+function leverCoverage(
+  rows: Array<{ kind: string, on: number, of: number }>, s: Strings,
+): string {
+  if (!rows.length) return ''
+  const W = 560, ROW = 22, LAB = 150
+  const max = Math.max(...rows.map(r => r.of), 1)
+  const parts = rows.map((r, i) => {
+    const y = i * ROW
+    const track = W - LAB - 46
+    const wOn = (r.on / max) * track
+    return `<text x="0" y="${y + 14}" class="cx-lab">${
+        e(r.kind.replace(/_/g, ' ').toLowerCase())}</text>
+      <rect x="${LAB}" y="${y + 5}" width="${track}" height="11" rx="3"
+        fill="var(--sunk)"></rect>
+      <rect x="${LAB}" y="${y + 5}" width="${Math.max(0, wOn).toFixed(1)}" height="11"
+        rx="3" fill="var(--c1)"></rect>
+      <text x="${W}" y="${y + 14}" class="cx-val" text-anchor="end">${r.on}</text>`
+  })
+  return `<svg class="cx" viewBox="0 0 ${W} ${rows.length * ROW}" role="img"
+    aria-label="${e(s.coverageAria)}">${parts.join('')}</svg>`
+}
+
+/**
+ * A review score on its own channel's scale, with the portfolio median marked.
+ *
+ * A number alone cannot be read: 8.6 is good on Booking's ten and impossible on
+ * Airbnb's five. So the scale is drawn, the maximum is stated, and the median of
+ * our own set is a tick — which is the only comparison available, since no
+ * provider sells the neighbours' review scores either.
+ */
+function scoreStrip(
+  score: number, max: number, median: number | null, s: Strings,
+): string {
+  const W = 240, H = 20
+  const at = (v: number) => Math.max(0, Math.min(1, v / max)) * W
+  return `<svg class="cx-strip" viewBox="-2 0 ${W + 4} ${H}" role="img"
+      aria-label="${e(s.reviewsScore)}">
+    <rect x="0" y="${H / 2 - 4}" width="${W}" height="8" rx="4" fill="var(--sunk)"></rect>
+    <rect x="0" y="${H / 2 - 4}" width="${at(score).toFixed(1)}" height="8" rx="4"
+      fill="var(--c-brand-2)"></rect>
+    ${median === null ? '' : `<line x1="${at(median).toFixed(1)}" y1="1"
+      x2="${at(median).toFixed(1)}" y2="${H - 1}" class="cx-ref"></line>`}
+    <circle cx="${at(score).toFixed(1)}" cy="${H / 2}" r="5" class="cx-dot c2"></circle>
+  </svg>`
+}
+
 /* ------------------------------------------------- what the archive already had */
 
 /**
@@ -479,15 +759,16 @@ function trendBlock(sig: q.Signals | undefined, s: Strings): string {
       <div class="tlab">${e(label)}</div>
       <div class="tval">${cells.map(c =>
         `<span>${c === null ? '<i class="mut">—</i>' : e(c)}</span>`).join('')}</div></div>`
-  const body = line(s.trendHorizon,
-      [pp(sig.occupancy7), pp(sig.occupancy), pp(sig.occupancy90)])
-    + line(s.trendYoy, [pp(sig.stlyOccupancy)])
-    + line(s.trendBlocked, [pp(sig.adjustedOccupancy)])
+  // Deliberately NOT repeating the three horizons or last year: both are drawn
+  // in the chart above, and a table restating a chart teaches the reader that one
+  // of the two is not to be trusted.
+  const body = line(s.trendBlocked, [pp(sig.adjustedOccupancy)])
     + line(s.trendRevpar, [sig.revpar === null ? null
         : money(sig.revpar, sig.currency, s.numberLocale)])
-  if (!body) return ''
+  const chart = horizonChart(sig, s)
+  if (!body && !chart) return ''
   return `<section class="panel"><h3>${e(s.occupancy30)}</h3>
-    <div class="trend">${body}</div></section>`
+    ${chart}${body ? `<div class="trend">${body}</div>` : ''}</section>`
 }
 
 /**
@@ -507,12 +788,7 @@ function realisedBlock(r: Row, real: q.Realised | undefined, s: Strings): string
   const stat = (label: string, value: string) =>
     `<div class="rstat"><div class="rnum">${e(value)}</div>
       <div class="rlab">${e(label)}</div></div>`
-  const bars = real.channels.map(c => `<div class="crow">
-      <div class="cname">${e(c.name)}</div>
-      <div class="ctrack"><span style="width:${(c.share * 100).toFixed(1)}%"></span></div>
-      <div class="cval">${e(pct(c.share * 100, s.numberLocale))}</div>
-      <div class="cmon mut">${e(money(c.revenue, cur, s.numberLocale))}</div>
-    </div>`).join('')
+  const bars = channelChart(real, s, cur)
   return `<section class="panel"><h3>${e(s.realisedHeading)}</h3>
     <p class="mut" style="margin:0 0 .6rem;font-size:.78rem">${
       e(s.realisedWindow(realisedWindowDays, real.bookings))}</p>
@@ -544,7 +820,16 @@ function reviewsBlock(
   st: { booking: q.ReviewStanding | null, airbnb: q.ReviewStanding | null } | undefined,
   s: Strings,
 ): string {
-  const side = (channel: string, v: q.ReviewStanding | null) => {
+  /**
+   * The scale, taken from the score itself and not from the channel name.
+   *
+   * Booking runs 0-10 and Airbnb 0-5, and hardcoding that per channel would be a
+   * claim about the provider's conventions rather than a reading of the payload.
+   * A value above 5 can only be on a ten-point scale; below it, either is
+   * possible, so the smaller one is used — it is the one that cannot overstate.
+   */
+  const side = (channel: string, v: q.ReviewStanding | null, median: number | null) => {
+    const scale = v && v.score !== null && v.score > 5 ? 10 : 5
     if (!v || (v.score === null && v.count === null)) return ''
     const thin = v.count !== null && v.count <= THIN_REVIEWS
     return `<div class="rvside">
@@ -554,6 +839,7 @@ function reviewsBlock(
           : e(new Intl.NumberFormat(s.numberLocale,
               { maximumFractionDigits: 1 }).format(v.score))}</span>
         <span class="mut">${e(s.reviewsScore)}</span>
+        ${v.score === null ? '' : scoreStrip(v.score, scale, median, s)}
         <span class="rvcount${thin ? ' thin' : ''}">${v.count === null ? '—'
           : e(count(v.count, s.numberLocale))}</span>
         <span class="mut">${e(s.reviewsCount)}</span>
@@ -561,8 +847,8 @@ function reviewsBlock(
       ${thin && v.count !== null
         ? `<p class="warnline">${e(s.reviewsThin(v.count))}</p>` : ''}</div>`
   }
-  const body = side(s.funnelChannelBooking, st?.booking ?? null)
-    + side(s.funnelChannelAirbnb, st?.airbnb ?? null)
+  const body = side(s.funnelChannelBooking, st?.booking ?? null, null)
+    + side(s.funnelChannelAirbnb, st?.airbnb ?? null, null)
   return `<section class="panel"><h3>${e(s.reviewsHeading)}</h3>
     ${body || `<p class="mut" style="margin:0;font-size:.86rem">${e(s.reviewsNone)}</p>`}
     </section>`
@@ -570,24 +856,25 @@ function reviewsBlock(
 
 /** The commercial levers, as the provider names them. Never renamed by us. */
 function leversBlock(
-  own: q.Promotion[] | undefined, account: q.Promotion[], s: Strings,
+  own: q.Promotion[] | undefined, account: q.Promotion[],
+  known: string[], s: Strings,
 ): string {
-  const chip = (p: q.Promotion) => {
-    const state = p.active === null ? 'unk' : p.active ? 'on' : 'off'
-    const word = p.active === null ? s.leverUnknown : p.active ? s.leverOn : s.leverOff
-    return `<span class="lever ${state}"><b>${e(p.kind)}</b> ${e(word)}${
-      p.discountPct !== null ? ` · ${e(pct(p.discountPct, s.numberLocale))}` : ''}${
-      p.endsOn ? ` · ${e(s.leverUntil(p.endsOn))}` : ''}</span>`
-  }
-  const mine = (own ?? []).map(chip).join('')
-  const acct = account.map(chip).join('')
-  if (!mine && !acct) {
+  const grid = leverMatrix(known, own ?? [], s)
+  if (!grid && !account.length) {
     return `<section class="panel"><h3>${e(s.leversHeading)}</h3>
       <p class="mut" style="margin:0;font-size:.86rem">${e(s.leversNone)}</p></section>`
   }
+  const acct = account.map(p => `<span class="lever ${
+    p.active === null ? 'unk' : p.active ? 'on' : 'off'}"><b>${e(p.kind)}</b> ${
+    e(p.active === null ? s.leverUnknown : p.active ? s.leverOn : s.leverOff)}${
+    p.discountPct !== null ? ` · ${e(pct(p.discountPct, s.numberLocale))}` : ''}</span>`).join('')
   return `<section class="panel"><h3>${e(s.leversHeading)}</h3>
-    ${mine ? `<div class="levers">${mine}</div>` : ''}
-    ${acct ? `<p class="mut" style="margin:${mine ? '.6rem' : '0'} 0 .35rem;font-size:.76rem">${
+    ${grid}
+    <div class="lvkey"><span class="lv on"></span>${e(s.leverOn)}
+      <span class="lv off"></span>${e(s.leverOff)}
+      <span class="lv unk"></span>${e(s.leverUnknown)}
+      <span class="lv none"></span>${e(s.leverStateNone)}</div>
+    ${acct ? `<p class="mut" style="margin:.7rem 0 .35rem;font-size:.76rem">${
       e(s.leversAccount)}</p><div class="levers">${acct}</div>` : ''}</section>`
 }
 
@@ -692,6 +979,7 @@ export function renderDashboard(d: DashboardData): string {
           rev: d.reviews.get(r.entityId),
           promos: d.promotions.get(r.entityId),
           accountPromos: d.accountPromotions,
+          knownLevers: d.leverCoverage.map(l => l.kind),
           cohort: d.cohorts.get(r.entityId),
         })}
         ${gateBlock(d, s)}
@@ -760,6 +1048,12 @@ export function renderDashboard(d: DashboardData): string {
     <tbody>${rows}</tbody></table>`
     : `<div class="empty"><p><b>${e(s.noPropertiesYet)}</b></p>
        <p>${e(s.noPropertiesWhy)} <a href="/status?lang=${d.lang}">${e(s.readiness)}</a>.</p></div>`}
+  ${d.leverCoverage.length ? `<section class="card">
+    <h2 class="ph">${e(s.leversPortfolio)}</h2>
+    <p class="mut" style="margin:.1rem 0 .8rem;font-size:.84rem">${
+      e(s.leversPortfolioNote)}</p>
+    ${leverCoverage(d.leverCoverage, s)}
+  </section>` : ''}
   <details class="legend">
     <summary>${e(s.legendHeading)}</summary>
     <p class="mut">${e(s.legendLead)}</p>

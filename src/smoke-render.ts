@@ -47,7 +47,7 @@ const data = (over: Partial<DashboardData> = {}): DashboardData => ({
   // Empty by default: the page has to be right for a portfolio where none of
   // this has been read yet, which is where every listing starts.
   realised: new Map(), reviews: new Map(), promotions: new Map(),
-  accountPromotions: [], cohorts: new Map(),
+  accountPromotions: [], cohorts: new Map(), leverCoverage: [],
   notAssessable: [], freshness: [], gate: [], evidence: [],
   signals: new Map([[ID, sig()]]), funnel: 'unread', demo: false, unprotected: false, ...over,
 })
@@ -236,14 +236,23 @@ const full = renderDashboard(data({
                { name: 'airbnb', revenue: 5_520, share: 0.3 }],
   }]]),
   reviews: new Map([[ID, { booking: { score: 10, count: 1 }, airbnb: null }]]),
+  // The nine deal types this account actually runs, taken from the live pass.
   promotions: new Map([[ID, [
-    { kind: 'genius', active: true, discountPct: 10, endsOn: null },
-    { kind: 'preferred', active: null, discountPct: null, endsOn: null },
+    { kind: 'MOBILE_RATE', active: true, discountPct: 10, endsOn: null,
+      family: 'RATE', deactivatedAt: null },
+    { kind: 'SECRET_DEAL', active: null, discountPct: null, endsOn: null,
+      family: 'DEAL', deactivatedAt: null },
+    { kind: 'LAST_MINUTE_DEAL', active: false, discountPct: 15, endsOn: null,
+      family: 'DEAL', deactivatedAt: '2026-08-01' },
   ]]]),
-  accountPromotions: [
-    { kind: 'visibility_booster', active: true, discountPct: 12, endsOn: '2026-09-30' },
+  accountPromotions: [],
+  leverCoverage: [
+    { kind: 'MOBILE_RATE', on: 31, of: 40 },
+    { kind: 'SECRET_DEAL', on: 12, of: 40 },
+    { kind: 'LAST_MINUTE_DEAL', on: 3, of: 40 },
+    { kind: 'GETAWAY_CAMPAIGN', on: 0, of: 40 },
   ],
-  cohorts: new Map([[ID, { booking: { better: 9, of: 12, median: 0.011 }, airbnb: null }]]),
+  cohorts: new Map([[ID, { booking: { better: 9, of: 12, viewRateMedian: 0.011, bookRateMedian: 0.02 }, airbnb: null }]]),
 }))
 
 // A single occupancy figure is not a finding. 26 against 41 last year is.
@@ -251,8 +260,10 @@ check('the year-on-year figure appears, because 26% alone has no direction',
       full.includes('41') && full.includes(en.trendYoy), '')
 check('the blocked-night figure appears beside it, so "full" and "closed" are separable',
       full.includes(en.trendBlocked))
-check('and the shorter and longer horizons, so a trend is visible',
-      full.includes('12') && full.includes('38') && full.includes(en.trendHorizon))
+// The three horizons live in the CHART now, not in a table beside it — a table
+// restating a chart teaches the reader that one of the two is not to be trusted.
+check('the shorter and longer horizons are plotted, not tabulated',
+      full.includes('cx-line') && !full.includes(en.trendHorizon), '')
 // booking_economics: eighteen columns, 541 measured rows, never read until now.
 check('the channel split is drawn from realised bookings',
       full.includes('booking') && full.includes('airbnb') && full.includes('70'), '')
@@ -263,10 +274,20 @@ check('and it says commission rather than claiming to be the whole take rate',
 // The case a pricing tool cannot see.
 check('a perfect score on one review carries its warning',
       full.includes(en.reviewsThin(1)), '')
-check('a lever with no switch reads "not stated", never "off"',
-      full.includes(en.leverUnknown) && full.includes('preferred'))
-check('an account-wide lever is labelled as account-wide, not pinned to the room',
-      full.includes(en.leversAccount) && full.includes('visibility_booster'))
+// The matrix replaced a row of nine equal chips. What it must do that a chip row
+// could not: distinguish three states, and make an EMPTY cell mean something.
+check('all four lever states are named, so "not stated" can never read as "off"',
+      full.includes(en.leverUnknown) && full.includes(en.leverOn)
+      && full.includes(en.leverOff) && full.includes(en.leverStateNone), '')
+check('a lever the room does not run still gets a cell, so the gap is visible',
+      full.includes('getaway campaign'), '')
+check('and the ones it does run are there with their rate',
+      full.includes('mobile rate') && full.includes('last minute deal'), '')
+// The account-wide list became a question worth asking.
+check('the portfolio panel says how many rooms run each lever',
+      full.includes(en.leversPortfolio) && full.includes('31') && full.includes('>0<'), '')
+check('and it explains why that is the useful question',
+      full.includes('barely used'))
 check('the cohort rank names its own size, so third of three cannot read as third of forty',
       full.includes(en.cohortRank(9, 12)), '')
 check('and the yardstick is named as ours, never as "the market"',
@@ -277,7 +298,7 @@ const thin = renderDashboard(data({
   openId: ID, funnel: 'read',
   signals: new Map([[ID, sig({ funnelBooking: { axis: 'trailing', impressions: 100,
     views: 4, conversions: 1, nights: 0 } })]]),
-  cohorts: new Map([[ID, { booking: { better: 1, of: 2, median: null }, airbnb: null }]]),
+  cohorts: new Map([[ID, { booking: { better: 1, of: 2, viewRateMedian: null, bookRateMedian: null }, airbnb: null }]]),
 }))
 check('a set of two is refused as a ranking basis',
       thin.includes(en.cohortThin(2)) && !thin.includes(en.cohortRank(1, 2)), '')
@@ -292,6 +313,25 @@ for (const [what, sentence] of [
 ] as const) {
   check(`${what}: the absence is named, not left blank`, bare.includes(sentence), '')
 }
+
+/* ---------------------------------------------------------------- the charts */
+
+// The funnel cannot go on a shared axis: 99'014 → 743 → 12 makes the last two
+// stages invisible. Each stage is drawn against the one above it instead, so the
+// bar for 12 bookings out of 743 views is still readable.
+check('the funnel is drawn as nested shares, so no stage is an invisible sliver',
+      full.includes('0.75%') || full.includes('0,75%'), '')
+check('and every stage still prints its absolute count',
+      full.includes('99') && full.includes('743') && full.includes('>12<'), '')
+check('the horizon chart draws three points and names last year as a reference',
+      full.includes('cx-line') && full.includes(en.trendYoy), '')
+check('the channel mix is one stacked bar with each channel named in its key',
+      full.includes('cx-keys') && full.includes('booking') && full.includes('airbnb'), '')
+// Identity is never colour alone: blue and green are close under tritanopia.
+check('every series carries a direct label, not just a swatch',
+      full.includes('cx-dl') && full.includes('cx-key'), '')
+check('the review score is drawn on its own scale rather than as a bare number',
+      full.includes('cx-strip'), '')
 
 console.log(fails ? `\n${fails} FAILED` : '\nall green')
 process.exit(fails ? 1 : 0)

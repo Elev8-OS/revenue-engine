@@ -712,6 +712,10 @@ export interface Promotion {
   active: boolean | null
   discountPct: number | null
   endsOn: string | null
+  /** The provider's own grouping. Transcribed, never mapped onto ours. */
+  family: string | null
+  /** When the channel switched it off — the only time signal this payload has. */
+  deactivatedAt: string | null
 }
 
 /**
@@ -723,15 +727,42 @@ export interface Promotion {
  * take-rate stack is multiplicative, so attributing a discount to the wrong
  * object misstates a margin rather than rounding it.
  */
+/**
+ * Every lever the provider offers on this account, and how many rooms run it.
+ *
+ * The account-wide list asked the wrong question. "Here are the promotions on the
+ * account" is a fact nobody acts on; "eleven of forty rooms run the mobile rate"
+ * is. The vocabulary also gives the per-room matrix its columns, so an empty cell
+ * means "offered and not taken" rather than "unknown" — which is the whole
+ * difference between a grid and a pile of chips.
+ */
+export async function leverCoverage(
+  client: PoolClient,
+): Promise<Array<{ kind: string, on: number, of: number }>> {
+  const { rows } = await client.query<{ kind: string, on: number, of: number }>(`
+    with latest as (select max(as_of_date) as d from channel_promotion),
+    rooms as (select count(*)::int n from entity where active)
+    select p.kind,
+           count(*) filter (where p.active is true and p.entity_id is not null)::int as on,
+           (select n from rooms) as of
+      from channel_promotion p, latest
+     where p.as_of_date = latest.d
+     group by p.kind
+     order by 2 desc, 1`)
+  return rows
+}
+
 export async function promotions(
   client: PoolClient,
 ): Promise<{ byEntity: Map<string, Promotion[]>, account: Promotion[] }> {
   const { rows } = await client.query<{
     entity_id: string | null, kind: string, active: boolean | null,
-    discount_pct: string | null, ends_on: Date | null
+    discount_pct: string | null, ends_on: Date | null,
+    family: string | null, deactivated_at: Date | null
   }>(`
     with latest as (select max(as_of_date) as d from channel_promotion)
-    select entity_id::text as entity_id, kind, active, discount_pct::text, ends_on
+    select entity_id::text as entity_id, kind, active, discount_pct::text, ends_on,
+           family, deactivated_at
       from channel_promotion, latest
      where as_of_date = latest.d
      order by kind`)
@@ -742,6 +773,9 @@ export async function promotions(
       kind: r.kind, active: r.active,
       discountPct: r.discount_pct === null ? null : Number(r.discount_pct),
       endsOn: r.ends_on ? r.ends_on.toISOString().slice(0, 10) : null,
+      family: r.family,
+      deactivatedAt: r.deactivated_at
+        ? r.deactivated_at.toISOString().slice(0, 10) : null,
     }
     if (r.entity_id) {
       const list = byEntity.get(r.entity_id) ?? []
@@ -758,8 +792,16 @@ export interface CohortStanding {
   better: number
   /** How large the cohort is, including this listing. */
   of: number
-  /** The cohort's own median, for context the rank alone does not give. */
-  median: number | null
+  /**
+   * The cohort's own medians, which are what make a rate DRAWABLE.
+   *
+   * A search-to-view rate of 0.75% cannot go on a 0-100% track: the bar is a
+   * sliver and the reader learns nothing. Against the median of our own set it
+   * has a scale that means something — below the middle, or above it — and that
+   * is also the only comparison we can defend.
+   */
+  viewRateMedian: number | null
+  bookRateMedian: number | null
 }
 
 /**
@@ -786,7 +828,8 @@ export async function funnelCohorts(
   client: PoolClient,
 ): Promise<Map<string, { booking: CohortStanding | null, airbnb: CohortStanding | null }>> {
   const { rows } = await client.query<{
-    entity_id: string, channel: string, better: number, of: number, median: string | null
+    entity_id: string, channel: string, better: number, of: number,
+    median: string | null, book_median: string | null
   }>(`
     with latest as (
       -- One rate per entity per channel, from the most recent pass that wrote it.
@@ -817,6 +860,23 @@ export async function funnelCohorts(
              -- grouped query: percentile_cont cannot take an OVER clause.
              percentile_cont(0.5) within group (order by value) as median
         from keyed group by market, band, channel
+    ),
+    -- The book-rate median needs its own pass: it is a different metric over the
+    -- same cohort key, and folding it into the keyed set would rank listings on the
+    -- wrong number.
+    booked as (
+      select distinct on (s.entity_id, s.metric) s.entity_id, s.metric, s.value
+        from snapshot s
+       where s.metric in ('funnel_booking_book_rate_trailing', 'funnel_booking_book_rate',
+                          'funnel_airbnb_book_rate_trailing', 'funnel_airbnb_book_rate')
+       order by s.entity_id, s.metric, s.as_of_date desc
+    ),
+    booked_cohort as (
+      select e.market::text as market, coalesce(e.band, '(no band)') as band,
+             case when b.metric like 'funnel_booking%' then 'booking' else 'airbnb' end as channel,
+             percentile_cont(0.5) within group (order by b.value) as median
+        from booked b join entity e on e.id = b.entity_id and e.active
+       group by 1, 2, 3
     )
     select k.entity_id::text as entity_id, k.channel,
            -- rank() minus one counts strictly better values only, so ties do not
@@ -824,15 +884,19 @@ export async function funnelCohorts(
            (rank() over (partition by k.market, k.band, k.channel
                          order by k.value desc) - 1)::int as better,
            c.n as of,
-           c.median::text as median
+           c.median::text as median,
+           bc.median::text as book_median
       from keyed k
-      join cohort c on c.market = k.market and c.band = k.band and c.channel = k.channel`)
+      join cohort c on c.market = k.market and c.band = k.band and c.channel = k.channel
+      left join booked_cohort bc on bc.market = k.market and bc.band = k.band
+                                and bc.channel = k.channel`)
   const out = new Map<string, { booking: CohortStanding | null, airbnb: CohortStanding | null }>()
   for (const r of rows) {
     const entry = out.get(r.entity_id) ?? { booking: null, airbnb: null }
     entry[r.channel === 'booking' ? 'booking' : 'airbnb'] = {
       better: r.better, of: r.of,
-      median: r.median === null ? null : Number(r.median),
+      viewRateMedian: r.median === null ? null : Number(r.median),
+      bookRateMedian: r.book_median === null ? null : Number(r.book_median),
     }
     out.set(r.entity_id, entry)
   }
