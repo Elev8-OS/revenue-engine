@@ -106,8 +106,10 @@ export interface Strings {
   pricePos: Record<'belowP25' | 'p25p50' | 'p50p75' | 'p75p90' | 'aboveP90', string>
   /** The macro layer, and why it is not here. */
   macroHeading: string
-  funnelTrailingLabel: string
-  funnelForwardLabel: (nights: number) => string
+  funnelChannelBooking: string
+  funnelChannelAirbnb: string
+  funnelAxisTrailing: string
+  funnelAxisForward: (nights: number) => string
   funnelImpressions: string
   funnelViews: string
   funnelBookings: string
@@ -367,8 +369,10 @@ export const en: Strings = {
     aboveP90: 'above the top tenth of the neighbourhood',
   },
   macroHeading: 'Macro',
-  funnelTrailingLabel: 'Booking.com · recent history',
-  funnelForwardLabel: n => `Airbnb · next 30 nights (${n} read)`,
+  funnelChannelBooking: 'Booking.com',
+  funnelChannelAirbnb: 'Airbnb',
+  funnelAxisTrailing: 'recent history, window set by the channel',
+  funnelAxisForward: n => `next 30 nights (${n} read)`,
   funnelImpressions: 'seen in search',
   funnelViews: 'opened the listing',
   funnelBookings: 'booked',
@@ -658,8 +662,10 @@ export const id: Strings = {
     aboveP90: 'di atas sepersepuluh teratas lingkungan',
   },
   macroHeading: 'Makro',
-  funnelTrailingLabel: 'Booking.com · riwayat terkini',
-  funnelForwardLabel: n => `Airbnb · 30 malam ke depan (${n} terbaca)`,
+  funnelChannelBooking: 'Booking.com',
+  funnelChannelAirbnb: 'Airbnb',
+  funnelAxisTrailing: 'riwayat terkini, jendela ditentukan kanal',
+  funnelAxisForward: n => `30 malam ke depan (${n} terbaca)`,
   funnelImpressions: 'terlihat di pencarian',
   funnelViews: 'membuka listing',
   funnelBookings: 'memesan',

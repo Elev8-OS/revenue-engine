@@ -171,14 +171,16 @@ const ratio = (num: number | null, den: number | null): number | null =>
  */
 export const BOOKING_RANKING: FieldSpec = {
   propertyId: ['property_id', 'property', 'hotel_id', 'id'],
-  impressions: ['impressions', 'search_impressions', 'search_results',
-                'search_appearances', 'appearances', 'searches'],
+  impressions: ['search_views', 'impressions', 'search_impressions', 'search_results',
+                'search_appearances', 'appearances'],
   views: ['property_views', 'views', 'page_views', 'detail_page_views', 'property_page_views'],
-  conversions: ['conversions', 'bookings', 'reservations', 'conversion_count'],
+  conversions: ['booking_conversions', 'conversions', 'bookings', 'reservations',
+                'conversion_count'],
   providerViewRate: ['search_to_view_rate', 'search_to_views_rate', 'view_rate',
                      'click_through_rate', 'ctr'],
-  providerBookRate: ['view_to_book_rate', 'conversion_rate', 'booking_rate'],
-  observedAt: ['data_as_of', 'updated_at', 'report_date', 'date', 'period_end'],
+  providerBookRate: ['view_to_booking_rate', 'view_to_book_rate', 'conversion_rate',
+                     'booking_rate'],
+  observedAt: ['data_as_of', 'updated_at', 'report_date', 'period_end'],
 }
 
 /**
@@ -190,11 +192,14 @@ export const BOOKING_RANKING: FieldSpec = {
 export const AIRBNB_RANKING: FieldSpec = {
   listingId: ['listing_id', 'listing', 'id'],
   stayDate: ['stay_date', 'date', 'checkin_date', 'ds', 'day'],
-  impressions: ['impressions', 'search_impressions', 'searches', 'search_views'],
-  views: ['views', 'listing_views', 'page_views', 'p3_views', 'detail_views'],
-  conversions: ['bookings', 'conversions', 'reservations', 'booked'],
+  impressions: ['search_views', 'impressions', 'search_impressions', 'searches'],
+  views: ['property_views', 'views', 'listing_views', 'page_views', 'p3_views',
+          'detail_views'],
+  conversions: ['booking_conversions', 'bookings', 'conversions', 'reservations', 'booked'],
   providerViewRate: ['search_to_view_rate', 'search_to_views_rate', 'view_rate', 'ctr'],
+  providerBookRate: ['view_to_booking_rate', 'view_to_book_rate', 'conversion_rate'],
   position: ['rank', 'average_rank', 'position', 'search_rank', 'avg_position'],
+  observedAt: ['data_as_of', 'updated_at', 'report_date'],
 }
 
 /**
@@ -206,8 +211,22 @@ export const AIRBNB_RANKING: FieldSpec = {
 export const BOOKING_DEMAND: FieldSpec = {
   propertyId: ['property_id', 'property', 'id'],
   stayDate: ['stay_date', 'date', 'checkin_date', 'period_start'],
-  searches: ['searches', 'search_volume', 'search_count', 'demand', 'impressions'],
+  searches: ['searches', 'search_volume', 'search_count', 'demand'],
   reservations: ['reservations', 'bookings', 'conversions'],
+  /**
+   * Demand came back in LONG form: one row per figure, carrying `section`,
+   * `category` and `value` instead of a column per metric. So there is nothing
+   * named `searches` to find, and there never will be.
+   *
+   * These three concepts detect that shape. When they resolve and the named
+   * metrics do not, the pass reports the label vocabulary and stores nothing —
+   * because `value` arrives with no unit, under a word, and deciding that
+   * "Searches" means a count of searches would be inference dressed as a
+   * measurement. The vocabulary is cheap to report and makes the next edit exact.
+   */
+  metricSection: ['section', 'group', 'report', 'report_section'],
+  metricLabel: ['category', 'metric', 'name', 'kpi', 'label'],
+  metricValue: ['value', 'amount', 'count', 'figure'],
 }
 
 /* -------------------------------------------------------------------- report */
@@ -225,6 +244,27 @@ export interface EndpointOutcome {
   withheld: number
   rateUnit: RateUnit
   snapshotRows: number
+  /**
+   * DERIVED from the payload, never declared.
+   *
+   * The provider's own documentation says Airbnb's ranking report is forward
+   * looking, per future stay date. This account's does not carry a date field at
+   * all: 47 rows, one per listing, with `data_as_of`. Declaring the axis in the
+   * call site made every one of those 38 matched rows unfilable, and the run
+   * stored nothing while reporting success on the fields it had found.
+   *
+   * So the axis is now whatever the rows can support, and it is REPORTED —
+   * because a metric suffix that changes with the payload must be visible, not
+   * inferred from a dashboard label.
+   */
+  axis: 'forward' | 'trailing' | 'none'
+  /**
+   * For a long-form report: the label vocabulary, so the next mapping is written
+   * against words the provider actually used.
+   */
+  vocabulary: string[]
+  /** The row count hit the page size, so this is a page and not the whole set. */
+  truncated: boolean
   note: string
 }
 
@@ -276,8 +316,8 @@ interface PassInput {
   source: 'mdv_booking' | 'mdv_airbnb'
   kind: 'property' | 'listing'
   idConcept: string
-  /** Per stay date, or one trailing figure per object. */
-  axis: 'forward' | 'trailing'
+  /** The page size asked for, so a full page can be reported as a partial answer. */
+  limit?: number
 }
 
 async function runPass(
@@ -287,7 +327,7 @@ async function runPass(
     path: input.path, status: 'ok', rows: 0, envelope: '',
     resolution: { used: {}, missing: [], unclaimed: [] },
     matched: 0, unresolvedIds: [], withheld: 0, rateUnit: 'undecidable',
-    snapshotRows: 0, note: '',
+    snapshotRows: 0, axis: 'none', vocabulary: [], truncated: false, note: '',
   }
   let body: unknown
   try {
@@ -308,6 +348,39 @@ async function runPass(
   const out: EndpointOutcome = { ...base, rows: rows.length, envelope, resolution }
   if (!rows.length) return { ...out, note: 'the endpoint answered with no rows' }
 
+  out.truncated = input.limit !== undefined && rows.length >= input.limit
+
+  /**
+   * A LONG-FORM report: `section`, `category`, `value` instead of a column per
+   * figure. Reported, not mapped.
+   *
+   * `value` arrives with no unit, under a word. Deciding that a category called
+   * "Searches" holds a count of searches — rather than an index, a share or a
+   * rank — would be inference wearing a measurement's clothes, and this file's
+   * whole reason for existing is that the project has twice paid for exactly
+   * that. The vocabulary costs one line to report and makes the mapping exact.
+   */
+  if (resolution.used.metricValue && resolution.used.metricLabel
+      && !resolution.used.searches && !resolution.used.reservations) {
+    const labels = new Set<string>()
+    for (const r of rows) {
+      if (!r || typeof r !== 'object') continue
+      const o = r as Record<string, unknown>
+      const sec = resolution.used.metricSection ? o[resolution.used.metricSection] : null
+      const lab = o[resolution.used.metricLabel]
+      if (typeof lab === 'string' && lab) {
+        labels.add(typeof sec === 'string' && sec ? `${sec} / ${lab}` : lab)
+      }
+    }
+    return { ...out, vocabulary: [...labels].sort().slice(0, 40),
+      note: `long-form report: one row per figure under `
+        + `${resolution.used.metricLabel}, with the number in `
+        + `${resolution.used.metricValue}. Nothing stored: the value carries no `
+        + `unit, and reading a meaning off the label would be a guess. The `
+        + `vocabulary is listed so the mapping can be written against it`
+        + (out.truncated ? '. NOTE: the row count hit the page size, so this is one page' : '') }
+  }
+
   const idKey = resolution.used[input.idConcept]
   if (!idKey) {
     // Named absence. A team-wide report is a real answer, and saying so is worth
@@ -319,6 +392,13 @@ async function runPass(
 
   const objs = rows.filter((r): r is Record<string, unknown> =>
     Boolean(r) && typeof r === 'object')
+  /**
+   * The axis, decided by what the rows carry rather than by what the call site
+   * believed. A date field means each row is about a night; no date field means
+   * the row is one figure about the object over a window the provider chose.
+   */
+  const axis: 'forward' | 'trailing' = resolution.used.stayDate ? 'forward' : 'trailing'
+  out.axis = axis
   const rateKey = resolution.used.providerViewRate
   const unit = rateKey
     ? rateUnit(objs.map(o => Number(o[rateKey])).filter(n => Number.isFinite(n)))
@@ -327,7 +407,7 @@ async function runPass(
   const snapshots: SnapshotRow[] = []
   const unresolved = new Set<string>()
   let withheld = 0
-  const suffix = input.axis === 'trailing' ? '_trailing' : ''
+  const suffix = axis === 'trailing' ? '_trailing' : ''
 
   for (const row of objs) {
     const externalId = String(row[idKey] ?? '').trim()
@@ -336,9 +416,7 @@ async function runPass(
     if (!entityId) { unresolved.add(externalId); continue }
 
     const stayKey = resolution.used.stayDate
-    const stayDate = input.axis === 'forward'
-      ? (stayKey ? isoDate(row[stayKey]) : null)
-      : asOf
+    const stayDate = axis === 'forward' && stayKey ? isoDate(row[stayKey]) : asOf
     // A forward row with no date it is about cannot be filed. Guessing today
       // would put next month's impressions on tonight.
     if (!stayDate) { withheld++; continue }
@@ -389,8 +467,18 @@ async function runPass(
   if (resolution.unclaimed.length) {
     notes.push(`unclaimed keys present: ${resolution.unclaimed.join(', ')}`)
   }
+  // Said out loud, because it decides what the metric is called and therefore
+  // which half of the dashboard reads it.
+  notes.push(axis === 'forward'
+    ? `filed per stay date, from ${resolution.used.stayDate}`
+    : `filed as one trailing figure per object: no date field was present, so `
+      + `the window is the provider's own and is not named`)
+  if (out.truncated) {
+    notes.push(`the row count hit the page size, so this is one page and not the `
+      + `whole set`)
+  }
   return {
-    ...out, matched: snapshots.length ? new Set(snapshots.map(s => s.entityId)).size : 0,
+    ...out, axis, matched: snapshots.length ? new Set(snapshots.map(s => s.entityId)).size : 0,
     unresolvedIds: [...unresolved].slice(0, 20), withheld, rateUnit: unit,
     snapshotRows: written, note: notes.join('; '),
   }
@@ -409,13 +497,17 @@ export async function importFunnel(
 ): Promise<FunnelReport> {
   const asOf = today()
   const passes: PassInput[] = [
-    { path: '/booking/ranking/', params: { limit: 500 }, spec: BOOKING_RANKING,
-      source: 'mdv_booking', kind: 'property', idConcept: 'propertyId', axis: 'trailing' },
-    { path: '/airbnb/ranking/', params: { limit: 500, days_ahead: 90 },
+    { path: '/booking/ranking/', params: { limit: 500 }, limit: 500,
+      spec: BOOKING_RANKING, source: 'mdv_booking', kind: 'property',
+      idConcept: 'propertyId' },
+    // `days_ahead` is still sent because the provider documents it, but this
+    // account's answer carries no date, so the axis comes from the rows.
+    { path: '/airbnb/ranking/', params: { limit: 500, days_ahead: 90 }, limit: 500,
       spec: AIRBNB_RANKING, source: 'mdv_airbnb', kind: 'listing',
-      idConcept: 'listingId', axis: 'forward' },
-    { path: '/booking/demand/', params: { limit: 500 }, spec: BOOKING_DEMAND,
-      source: 'mdv_booking', kind: 'property', idConcept: 'propertyId', axis: 'forward' },
+      idConcept: 'listingId' },
+    { path: '/booking/demand/', params: { limit: 500 }, limit: 500,
+      spec: BOOKING_DEMAND, source: 'mdv_booking', kind: 'property',
+      idConcept: 'propertyId' },
   ]
   const endpoints: EndpointOutcome[] = []
   for (const p of passes) endpoints.push(await runPass(client, mdv, asOf, p))

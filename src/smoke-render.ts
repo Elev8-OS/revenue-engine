@@ -36,9 +36,7 @@ const sig = (over: Partial<Signals> = {}): Signals => ({
   nbhdP25: 60, nbhdP50: 80, nbhdP75: 98, nbhdP90: 136, nbhdListings: 155,
   // The default is a portfolio with NO funnel read yet, because that is the state
   // every listing was in for weeks and the page has to be right in it.
-  funnelTrailingImpressions: null, funnelTrailingViews: null, funnelTrailingConversions: null,
-  funnelForwardImpressions: null, funnelForwardViews: null, funnelForwardConversions: null,
-  funnelForwardNights: 0, ...over,
+  funnelBooking: null, funnelAirbnb: null, ...over,
 })
 const data = (over: Partial<DashboardData> = {}): DashboardData => ({
   lang: 'en', basis: 'revenue', openId: null, rows: [row()],

@@ -290,22 +290,31 @@ export interface Signals {
   /** How many listings the band rests on. Two and 155 are different claims. */
   nbhdListings: number | null
   /**
-   * The funnel, kept in TWO sets on purpose.
+   * The funnel, one side per CHANNEL.
    *
-   * Booking reports trailing over a window it does not name; Airbnb reports
-   * forward per stay date. Summing them into one "impressions" would add a
-   * figure about the past to a figure about the future and produce a number
-   * about nothing. An apartment listed on both channels legitimately has both,
-   * and the page says which is which.
+   * Split by source and not by metric name, which is the correction. Both
+   * channels turned out to answer with the same field names AND the same axis,
+   * so both write `funnel_impressions_trailing` — and a query keyed on the
+   * metric alone would have collapsed Booking and Airbnb with a `max()`,
+   * silently reporting whichever number happened to be larger as though it were
+   * the listing's whole visibility.
+   *
+   * The axis travels with the side because it is derived from the payload, so a
+   * label that said "recent history" from a constant could be wrong the day the
+   * provider starts sending dates.
    */
-  funnelTrailingImpressions: number | null
-  funnelTrailingViews: number | null
-  funnelTrailingConversions: number | null
-  funnelForwardImpressions: number | null
-  funnelForwardViews: number | null
-  funnelForwardConversions: number | null
-  /** Nights the forward figures rest on. Three and ninety are different claims. */
-  funnelForwardNights: number
+  funnelBooking: FunnelSide | null
+  funnelAirbnb: FunnelSide | null
+}
+
+export interface FunnelSide {
+  /** What the rows were about: one figure over a window, or one per night. */
+  axis: 'trailing' | 'forward'
+  impressions: number | null
+  views: number | null
+  conversions: number | null
+  /** Forward only: nights the sums rest on. Three and ninety are different claims. */
+  nights: number
 }
 
 export async function signals(client: PoolClient): Promise<Map<string, Signals>> {
@@ -316,9 +325,12 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
     currency: string | null, observed_at: Date | null, as_of: string | null,
     p25: string | null, p50: string | null, p75: string | null, p90: string | null,
     listings: string | null,
-    ft_impressions: string | null, ft_views: string | null, ft_conversions: string | null,
-    ff_impressions: string | null, ff_views: string | null, ff_conversions: string | null,
-    ff_nights: number
+    b_t_impr: string | null, b_t_views: string | null, b_t_conv: string | null,
+    b_f_impr: string | null, b_f_views: string | null, b_f_conv: string | null,
+    b_nights: number,
+    a_t_impr: string | null, a_t_views: string | null, a_t_conv: string | null,
+    a_f_impr: string | null, a_f_views: string | null, a_f_conv: string | null,
+    a_nights: number
   }>(`
     -- Per entity, the most recent pass. Not a global max: a listing PriceLabs
     -- refused today must show yesterday's number as yesterday's, not vanish.
@@ -375,39 +387,34 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
          and s.stay_date >= p.as_of and s.stay_date < p.as_of + 30
        group by s.entity_id
     ),
-    -- The funnel, trailing: one figure per object over a window the provider does
-    -- not name, which is why the metric is suffixed _trailing and not a day count.
-    fn_t_asof as (
-      select entity_id, max(as_of_date) as as_of
-        from snapshot where metric = 'funnel_impressions_trailing' group by entity_id
+    -- The funnel, per entity AND per source. Grouping by source is the whole
+    -- point: both channels answer with the same field names, so both land under
+    -- the same metric, and a max() across them would hide one channel entirely.
+    fn_asof as (
+      select entity_id, source, max(as_of_date) as as_of
+        from snapshot
+       where metric in ('funnel_impressions', 'funnel_impressions_trailing')
+       group by entity_id, source
     ),
-    fn_t as (
-      select s.entity_id,
-             max(s.value) filter (where s.metric = 'funnel_impressions_trailing') as impressions,
-             max(s.value) filter (where s.metric = 'funnel_views_trailing')       as views,
-             max(s.value) filter (where s.metric = 'funnel_conversions_trailing') as conversions
+    fn as (
+      select s.entity_id, s.source,
+             max(s.value) filter (where s.metric = 'funnel_impressions_trailing') as t_impr,
+             max(s.value) filter (where s.metric = 'funnel_views_trailing')       as t_views,
+             max(s.value) filter (where s.metric = 'funnel_conversions_trailing') as t_conv,
+             -- Forward figures are summed over the same thirty nights the
+             -- occupancy figure above covers, so the two are comparable.
+             sum(s.value) filter (where s.metric = 'funnel_impressions'
+               and s.stay_date >= a.as_of and s.stay_date < a.as_of + 30)        as f_impr,
+             sum(s.value) filter (where s.metric = 'funnel_views'
+               and s.stay_date >= a.as_of and s.stay_date < a.as_of + 30)        as f_views,
+             sum(s.value) filter (where s.metric = 'funnel_conversions'
+               and s.stay_date >= a.as_of and s.stay_date < a.as_of + 30)        as f_conv,
+             count(*) filter (where s.metric = 'funnel_impressions'
+               and s.stay_date >= a.as_of and s.stay_date < a.as_of + 30)::int   as f_nights
         from snapshot s
-        join fn_t_asof a on a.entity_id = s.entity_id and s.as_of_date = a.as_of
-       group by s.entity_id
-    ),
-    -- The funnel, forward: per stay date, so the window is a SUM over the same
-    -- thirty nights the occupancy figure above covers. Rates are computed from
-    -- these sums rather than averaged over nights: averaging would weight a night
-    -- with three impressions the same as a night with three thousand.
-    fn_f_asof as (
-      select entity_id, max(as_of_date) as as_of
-        from snapshot where metric = 'funnel_impressions' group by entity_id
-    ),
-    fn_f as (
-      select s.entity_id,
-             sum(s.value) filter (where s.metric = 'funnel_impressions') as impressions,
-             sum(s.value) filter (where s.metric = 'funnel_views')       as views,
-             sum(s.value) filter (where s.metric = 'funnel_conversions') as conversions,
-             count(*) filter (where s.metric = 'funnel_impressions')::int as nights
-        from snapshot s
-        join fn_f_asof a on a.entity_id = s.entity_id and s.as_of_date = a.as_of
-       where s.stay_date >= a.as_of and s.stay_date < a.as_of + 30
-       group by s.entity_id
+        join fn_asof a on a.entity_id = s.entity_id and a.source = s.source
+                      and s.as_of_date = a.as_of
+       group by s.entity_id, s.source
     )
     select e.id::text as entity_id,
            w.occupancy::text, w.market_occupancy::text, w.mpi::text,
@@ -416,19 +423,43 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
            coalesce(c.nights, 0) as nights, c.currency, c.observed_at,
            w.as_of,
            nb.p25::text, nb.p50::text, nb.p75::text, nb.p90::text, nb.listings::text,
-           ft.impressions::text as ft_impressions, ft.views::text as ft_views,
-           ft.conversions::text as ft_conversions,
-           ff.impressions::text as ff_impressions, ff.views::text as ff_views,
-           ff.conversions::text as ff_conversions, coalesce(ff.nights, 0) as ff_nights
+           fb.t_impr::text as b_t_impr, fb.t_views::text as b_t_views,
+           fb.t_conv::text as b_t_conv, fb.f_impr::text as b_f_impr,
+           fb.f_views::text as b_f_views, fb.f_conv::text as b_f_conv,
+           coalesce(fb.f_nights, 0) as b_nights,
+           fa.t_impr::text as a_t_impr, fa.t_views::text as a_t_views,
+           fa.t_conv::text as a_t_conv, fa.f_impr::text as a_f_impr,
+           fa.f_views::text as a_f_views, fa.f_conv::text as a_f_conv,
+           coalesce(fa.f_nights, 0) as a_nights
       from entity e
       left join win w on w.entity_id = e.id
       left join cal c on c.entity_id = e.id
       left join nb on nb.entity_id = e.id
-      left join fn_t ft on ft.entity_id = e.id
-      left join fn_f ff on ff.entity_id = e.id
+      left join fn fb on fb.entity_id = e.id and fb.source = 'mdv_booking'
+      left join fn fa on fa.entity_id = e.id and fa.source = 'mdv_airbnb'
      where e.active`)
 
   const num = (v: string | null) => v === null ? null : Number(v)
+  /**
+   * One channel's side, or null when that channel said nothing.
+   *
+   * Only one axis can be populated per (entity, source, day) — the adapter
+   * derives the axis once per pass, so it writes the suffixed metrics or the
+   * unsuffixed ones, never both. Forward is checked first anyway, because it is
+   * the more specific answer and a leftover trailing row from an earlier shape
+   * must not outrank a dated one.
+   */
+  const side = (ti: number | null, tv: number | null, tc: number | null,
+                fi: number | null, fv: number | null, fc: number | null,
+                nights: number): FunnelSide | null => {
+    if (fi !== null || fv !== null || fc !== null) {
+      return { axis: 'forward', impressions: fi, views: fv, conversions: fc, nights }
+    }
+    if (ti !== null || tv !== null || tc !== null) {
+      return { axis: 'trailing', impressions: ti, views: tv, conversions: tc, nights: 0 }
+    }
+    return null
+  }
   return new Map(rows.map(r => [r.entity_id, {
     occupancy: num(r.occupancy), marketOccupancy: num(r.market_occupancy),
     mpi: num(r.mpi), adr: num(r.adr), marketAdr: num(r.market_adr), revenue: num(r.revenue),
@@ -436,13 +467,10 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
     nights: r.nights, currency: r.currency, observedAt: r.observed_at, asOf: r.as_of,
     nbhdP25: num(r.p25), nbhdP50: num(r.p50), nbhdP75: num(r.p75), nbhdP90: num(r.p90),
     nbhdListings: num(r.listings),
-    funnelTrailingImpressions: num(r.ft_impressions),
-    funnelTrailingViews: num(r.ft_views),
-    funnelTrailingConversions: num(r.ft_conversions),
-    funnelForwardImpressions: num(r.ff_impressions),
-    funnelForwardViews: num(r.ff_views),
-    funnelForwardConversions: num(r.ff_conversions),
-    funnelForwardNights: r.ff_nights,
+    funnelBooking: side(num(r.b_t_impr), num(r.b_t_views), num(r.b_t_conv),
+                        num(r.b_f_impr), num(r.b_f_views), num(r.b_f_conv), r.b_nights),
+    funnelAirbnb: side(num(r.a_t_impr), num(r.a_t_views), num(r.a_t_conv),
+                       num(r.a_f_impr), num(r.a_f_views), num(r.a_f_conv), r.a_nights),
   }]))
 }
 

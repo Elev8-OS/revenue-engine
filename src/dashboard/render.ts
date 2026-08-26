@@ -388,10 +388,16 @@ function pricePositionBlock(sig: q.Signals | undefined, r: Row, s: Strings): str
  * for the missing stage would hide the stage we have.
  */
 function funnelChain(
-  label: string, s: Strings,
-  seen: number | null, views: number | null, booked: number | null,
+  channel: string, s: Strings, sideOf: q.FunnelSide | null,
 ): string {
+  if (!sideOf) return ''
+  const { impressions: seen, views, conversions: booked } = sideOf
   if (seen === null && views === null && booked === null) return ''
+  // The axis is measured, so the label is derived too. A constant reading
+  // "recent history" would go on saying it the day the channel starts sending
+  // dates — the same failure mode as the revoked-grant sentence.
+  const label = `${channel} \u00b7 ${sideOf.axis === 'forward'
+    ? s.funnelAxisForward(sideOf.nights) : s.funnelAxisTrailing}`
   const n = (v: number | null) =>
     v === null ? '<span class="mut">—</span>' : e(count(v, s.numberLocale))
   const share = (num: number | null, den: number | null) =>
@@ -418,13 +424,8 @@ function funnelChain(
 function macroBlock(
   s: Strings, funnel: q.FunnelState['kind'], sig?: q.Signals,
 ): string {
-  const trailing = funnelChain(s.funnelTrailingLabel, s,
-    sig?.funnelTrailingImpressions ?? null, sig?.funnelTrailingViews ?? null,
-    sig?.funnelTrailingConversions ?? null)
-  const forward = funnelChain(s.funnelForwardLabel(sig?.funnelForwardNights ?? 0), s,
-    sig?.funnelForwardImpressions ?? null, sig?.funnelForwardViews ?? null,
-    sig?.funnelForwardConversions ?? null)
-  const chains = trailing + forward
+  const chains = funnelChain(s.funnelChannelBooking, s, sig?.funnelBooking ?? null)
+    + funnelChain(s.funnelChannelAirbnb, s, sig?.funnelAirbnb ?? null)
   return `<section class="panel"><h3>${e(s.macroHeading)}</h3>
     ${chains
       ? chains + `<p class="mut" style="margin:.5rem 0 0;font-size:.78rem">${
