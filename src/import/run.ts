@@ -20,6 +20,8 @@ import { importElev8, type Elev8ImportReport } from '../sources/elev8/import.js'
 import { PriceLabsClient } from '../sources/pricelabs/client.js'
 import { importPriceLabs, type PriceLabsImportReport } from '../sources/pricelabs/import.js'
 import { runChecks, type CheckReport } from '../checks/run.js'
+import { discoverMdv, type DiscoverReport } from '../sources/mdv/discover.js'
+import { clientCredentials } from '../sources/mdv/register.js'
 
 /**
  * Three importers, three report shapes, one column.
@@ -32,6 +34,7 @@ import { runChecks, type CheckReport } from '../checks/run.js'
  * unique to what it identifies.
  */
 export type AnyReport = ImportReport | Elev8ImportReport | PriceLabsImportReport | CheckReport
+  | DiscoverReport
 
 export interface RunRow {
   id: string
@@ -74,6 +77,9 @@ export const isPriceLabsReport = (r: AnyReport | null): r is PriceLabsImportRepo
  */
 export const isCheckReport = (r: AnyReport | null): r is CheckReport =>
   Boolean(r) && (r as CheckReport).kind === 'checks'
+
+export const isDiscoverReport = (r: AnyReport | null): r is DiscoverReport =>
+  Boolean(r) && (r as DiscoverReport).kind === 'mdv-discover'
 
 export class ImportBusyError extends Error {
   constructor() { super('an import is already running') }
@@ -131,6 +137,7 @@ async function run(pool: Pool, runId: string, source: string): Promise<void> {
       ? await runElev8(client)
       : source === 'pricelabs' ? await runPriceLabs(client)
       : source === 'checks' ? await runChecks(client)
+      : source === 'mdv-discover' ? await runDiscover(client)
       : source === 'mdv' ? await runMdv(client)
       : (() => { throw new Error(`no importer for source ${source}`) })()
     await client.query(
@@ -194,14 +201,37 @@ async function runPriceLabs(client: PoolClient): Promise<PriceLabsImportReport> 
   })
 }
 
+/**
+ * The discovery pass. Same transport as the import, but it maps nothing — it
+ * asks a list of candidate endpoints what they answer and records the shapes.
+ *
+ * Its own source rather than a stage inside the MDV import, because it is a
+ * question and not a read: it should be runnable without touching the portfolio,
+ * and it should be obvious from the run list that a pass wrote no data.
+ */
+async function runDiscover(client: PoolClient): Promise<DiscoverReport> {
+  const creds = await clientCredentials(client)
+  if (!creds) throw new Error('no MDV client: none registered and MDV_CLIENT_ID is not set')
+  const mdv = new MdvClient({
+    clientId: creds.clientId,
+    clientSecret: creds.clientSecret ?? '',
+    base: process.env.MDV_BASE_URL ?? undefined,
+    tokenUrl: process.env.MDV_TOKEN_URL ?? undefined,
+  })
+  return discoverMdv(client, mdv)
+}
+
 async function runMdv(client: PoolClient): Promise<ImportReport> {
-  const clientId = process.env.MDV_CLIENT_ID
-  const clientSecret = process.env.MDV_CLIENT_SECRET
-  if (!clientId || !clientSecret) {
-    throw new Error('MDV_CLIENT_ID and MDV_CLIENT_SECRET must both be set')
+  // Our own registered client wherever one exists. Reading the variables here
+  // while the grant was authorised under our own client would present the wrong
+  // credentials to the token endpoint — and it would go on spending the shared
+  // chain, which is the thing the registration exists to stop.
+  const creds = await clientCredentials(client)
+  if (!creds) {
+    throw new Error('no MDV client: none registered and MDV_CLIENT_ID is not set')
   }
   const mdv = new MdvClient({
-    clientId, clientSecret,
+    clientId: creds.clientId, clientSecret: creds.clientSecret ?? '',
     base: process.env.MDV_BASE_URL ?? undefined,
     // A seam, not a knob: without it this function cannot be tested against a
     // stand-in provider, and an untested importer is one nobody can trust
@@ -223,6 +253,12 @@ export function reportCounts(r: AnyReport | null): {
   created: number, known: number, unresolved: number
 } {
   if (!r) return { created: 0, known: 0, unresolved: 0 }
+  if (isDiscoverReport(r)) {
+    // Endpoints that answered, controls aside, and the ones that do not exist.
+    // "Created" is zero and must stay zero: a discovery pass that changed the
+    // portfolio would be a migration in disguise.
+    return { created: 0, known: r.answered, unresolved: r.missing.length }
+  }
   if (isCheckReport(r)) {
     // The same three slots, read as a check run reads them: findings written,
     // rooms that came out healthy, rooms nothing could reach. `created` is the

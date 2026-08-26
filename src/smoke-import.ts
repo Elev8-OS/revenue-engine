@@ -9,7 +9,8 @@
 import { createServer } from 'node:http'
 import { Pool } from 'pg'
 import { startImport, latestRun, releaseAbandoned, ImportBusyError,
-  isElev8Report, isPriceLabsReport, isCheckReport, reportCounts } from './import/run.js'
+  isElev8Report, isPriceLabsReport, isCheckReport, isDiscoverReport,
+  reportCounts } from './import/run.js'
 import { seedRefreshToken } from './sources/mdv/client.js'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL! })
@@ -85,9 +86,10 @@ check('the run finishes and records its report', done?.finishedAt !== null && !d
 // report as an Elev8 one.
 const stored = done?.report ?? null
 check('the stored report is recognisably the MDV shape',
-      !isElev8Report(stored) && !isPriceLabsReport(stored) && !isCheckReport(stored))
+      !isElev8Report(stored) && !isPriceLabsReport(stored) && !isCheckReport(stored)
+      && !isDiscoverReport(stored))
 const asMdv = !isElev8Report(stored) && !isPriceLabsReport(stored) && !isCheckReport(stored)
-  ? stored : null
+  && !isDiscoverReport(stored) ? stored : null
 // One Booking object arrived and no room in this fixture carries its id, so the
 // honest outcome is one unresolved row and no new object. That changed when MDV
 // stopped creating entities: Elev8 is the authority for what exists.
@@ -115,6 +117,12 @@ await settle()
 /* ------------------------------- 2 · a failure must not become a permanent lock */
 
 await c.query('truncate import_run')
+// A REGISTERED client now beats the variable, which is the whole point of owning
+// one — so unsetting the variable is no longer enough to make this importer
+// unconfigured. An earlier suite in this same throwaway database leaves a
+// registration behind, and without clearing it this test silently asserted
+// nothing: the run succeeded and the "it says why" check read an empty error.
+await c.query(`delete from oauth_client`)
 const savedId = process.env.MDV_CLIENT_ID
 delete process.env.MDV_CLIENT_ID
 await startImport(pool)
@@ -122,7 +130,9 @@ await settle()
 const failed = await latestRun(c)
 check('a run that cannot even start is still FINISHED, not left open',
       failed?.finishedAt !== null)
-check('and it says why', Boolean(failed?.error?.includes('MDV_CLIENT_ID')), failed?.error ?? '')
+check('and it says why, naming both ways to configure one',
+      Boolean(failed?.error?.includes('MDV_CLIENT_ID'))
+      && Boolean(failed?.error?.includes('registered')), failed?.error ?? '')
 process.env.MDV_CLIENT_ID = savedId
 let againAfterFailure = false
 try { await startImport(pool); againAfterFailure = true } catch { /* blocked */ }

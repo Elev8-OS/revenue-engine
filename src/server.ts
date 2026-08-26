@@ -889,7 +889,8 @@ ${detail.shape.map(e => {
     // an unknown value would only ever be a mistake or a probe.
     const source = form.source === 'elev8' ? 'elev8'
       : form.source === 'pricelabs' ? 'pricelabs'
-      : form.source === 'checks' ? 'checks' : 'mdv'
+      : form.source === 'checks' ? 'checks'
+      : form.source === 'mdv-discover' ? 'mdv-discover' : 'mdv'
     try {
       await startImport(pool, { startedBy: session.email || 'open', source })
     } catch (err) {
@@ -933,6 +934,11 @@ ${mdvReady ? '' : `<div class="card warn">${t.importNeedsMdv}</div>`}
   <button type="submit" name="source" value="pricelabs"${priceLabsReady && (!run || run.finishedAt) ? '' : ' disabled'}>PriceLabs</button>
   <button type="submit" name="source" value="mdv"${mdvReady && (!run || run.finishedAt) ? '' : ' disabled'}>MyDataValue</button>
 </form>
+<form class="actions" method="post" action="/import?lang=${lang}">
+  <span class="label">${esc(t.discoverStart)}</span>
+  <button type="submit" name="source" value="mdv-discover"${mdvReady && (!run || run.finishedAt) ? '' : ' disabled'}>${esc(t.discoverRun)}</button>
+</form>
+<p class="sub">${esc(t.discoverNote)}</p>
 <form class="actions" method="post" action="/import?lang=${lang}">
   <span class="label">${esc(t.checksStart)}</span>
   <button type="submit" name="source" value="checks"${!run || run.finishedAt ? '' : ' disabled'}>${esc(t.checksRun)}</button>

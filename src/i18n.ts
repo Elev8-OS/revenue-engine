@@ -73,6 +73,9 @@ export interface Strings {
   recommendLabel: string
   occupancy30: string
   nightsArchived: (n: number) => string
+  discoverStart: string
+  discoverRun: string
+  discoverNote: string
   checksStart: string
   checksRun: string
   checksNote: string
@@ -281,6 +284,12 @@ export const en: Strings = {
   recommendLabel: 'recommended',
   occupancy30: 'occupancy, next 30 nights',
   nightsArchived: n => `${n} night${n === 1 ? '' : 's'}`,
+  discoverStart: 'Ask MyDataValue what it has',
+  discoverRun: 'Probe endpoints',
+  discoverNote: 'Calls a list of candidate endpoints and records only the SHAPE of each '
+    + 'answer — paths, key names and how often each was filled, never a value. Writes no '
+    + 'objects and no measurements. Read the result on /shapes; it is what the funnel '
+    + 'mapper gets written against, instead of against remembered field names.',
   checksStart: 'Assess the portfolio',
   checksRun: 'Run checks',
   checksNote: 'Reads the archive and writes findings. Re-running replaces the previous set '
@@ -553,6 +562,11 @@ export const id: Strings = {
   recommendLabel: 'disarankan',
   occupancy30: 'okupansi, 30 malam berikutnya',
   nightsArchived: n => `${n} malam`,
+  discoverStart: 'Tanya MyDataValue apa yang ada',
+  discoverRun: 'Sondir endpoint',
+  discoverNote: 'Memanggil daftar endpoint kandidat dan mencatat hanya BENTUK setiap '
+    + 'jawaban — path, nama kunci dan seberapa sering terisi, tidak pernah nilainya. Tidak '
+    + 'menulis objek maupun pengukuran. Baca hasilnya di /shapes.',
   checksStart: 'Nilai portofolio',
   checksRun: 'Jalankan pemeriksaan',
   checksNote: 'Membaca arsip dan menulis temuan. Menjalankan ulang menggantikan set sebelumnya, '

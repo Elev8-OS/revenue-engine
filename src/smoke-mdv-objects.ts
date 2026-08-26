@@ -16,6 +16,7 @@ import { createServer } from 'node:http'
 import { Pool } from 'pg'
 import { MdvClient, seedRefreshToken } from './sources/mdv/client.js'
 import { importObjects, marketFromCountry, marketFromCoordinates } from './sources/mdv/objects.js'
+import { discoverMdv, rowsOf, CANDIDATES } from './sources/mdv/discover.js'
 import { RateBudget } from './scheduler/budget.js'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL! })
@@ -224,6 +225,55 @@ check('one detail call per matched object, and none for the misses',
 const stillFour = await c.query<{ n: number }>('select count(*)::int n from entity')
 check('so the object count is still unchanged', stillFour.rows[0]!.n === 4,
       String(stillFour.rows[0]!.n))
+
+
+/* ----------------------------------------- 6 · discovery: look before mapping */
+
+/**
+ * The funnel signals are the last missing piece and their paths are not recorded
+ * anywhere. Twice this project has paid for mapping against remembered field
+ * names — the Elev8 room filter that never fired, the PriceLabs panel that read
+ * nothing over 43 listings — and both cost a deploy and a live run to discover.
+ * So this pass asks and writes down only the shape.
+ */
+await c.query(`delete from api_shape where source = 'mdv'`)
+const found = await discoverMdv(c, mdv)
+check('every candidate is probed', found.probed === CANDIDATES.length, String(found.probed))
+check('the controls answered, so a miss elsewhere is about the path and not the grant',
+      found.controlsOk, JSON.stringify(found.probes.filter(p => p.status !== 'ok')))
+// The first version scraped the status out of the error MESSAGE with a
+// word-boundary regex, and `http_404` has no boundary before the digits because
+// an underscore is a word character — so every 404 was filed as a stage error.
+// The status now comes off the typed field.
+check('a path that does not exist is recorded as missing, not as an error',
+      found.missing.length > 0 && found.stageErrors.length === 0,
+      JSON.stringify({ missing: found.missing, errors: found.stageErrors }))
+check('and every missing path carries its 404, so the report is auditable',
+      found.probes.filter(p => found.missing.includes(p.path)).every(p => p.status === 404),
+      JSON.stringify(found.probes.filter(p => p.status !== 'ok')))
+check('and the envelope each answer arrived in is named',
+      found.probes.some(p => p.envelope === 'properties')
+      && found.probes.some(p => p.envelope === 'results'),
+      JSON.stringify(found.probes.filter(p => p.status === 'ok').map(p => p.envelope)))
+
+const shapes = await c.query<{ endpoint: string, sample_count: number }>(
+  `select endpoint, sample_count from api_shape where source = 'mdv' order by endpoint`)
+check('a shape is recorded per answering endpoint', shapes.rows.length === found.answered,
+      JSON.stringify(shapes.rows.map(r => r.endpoint)))
+
+// The one rule that makes this safe to run at any time.
+const untouched = await c.query<{ n: number }>('select count(*)::int n from entity')
+check('discovery writes NO objects: a pass that changed the portfolio would be a '
+      + 'migration in disguise', untouched.rows[0]!.n === 4, String(untouched.rows[0]!.n))
+const noSnaps = await c.query<{ n: number }>(
+  `select count(*)::int n from snapshot where source in ('mdv_booking','mdv_airbnb')`)
+check('and no measurements either', noSnaps.rows[0]!.n === 0)
+
+check('a bare array is recognised', rowsOf([1, 2]).envelope === 'bare array')
+check('a paginated envelope is recognised by its key', rowsOf({ results: [] }).envelope === 'results')
+check('an unknown envelope names its keys instead of guessing',
+      rowsOf({ total: 1, widgets: 2 }).envelope.includes('total'),
+      rowsOf({ total: 1, widgets: 2 }).envelope)
 
 srv.close(); c.release(); await pool.end()
 console.log(`\n${fails === 0 ? 'all green' : fails + ' FAILING'}`)
