@@ -14,6 +14,7 @@ npx tsx src/smoke-auth.ts
 npx tsx src/smoke-oauth.ts
 npx tsx src/smoke-sso.ts
 npx tsx src/smoke-mdv-client.ts
+npx tsx src/smoke-mdv-register.ts
 npx tsx src/smoke-mdv-objects.ts
 npx tsx src/smoke-import.ts
 # Added because they were not in this list. Eleven suites existed and eight ran,

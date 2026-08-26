@@ -228,6 +228,15 @@ export interface Strings {
   noticeMdvRefusedBody: (code: string) => string
   noticeMdvConnected: string
   noticeMdvConnectedBody: string
+  noticeClientRegistered: string
+  noticeClientRegisteredBody: (clientId: string) => string
+  noticeRegisterFailed: string
+  /** The readiness card for the client this service is actually using. */
+  clientOwn: (clientId: string) => string
+  clientShared: (clientId: string) => string
+  clientNone: string
+  clientRegisterAction: string
+  clientSharedCaution: string
   noticeStartFailed: string
   noticeStartFailedBody: string
   noticeAuthFailed: string
@@ -486,6 +495,20 @@ export const en: Strings = {
   noticeMdvRefusedBody: code => `The provider reports <code>${code}</code>.`,
   noticeMdvConnected: 'MyDataValue is connected',
   noticeMdvConnectedBody: 'The refresh token now lives in the database and rotates there. <code>MDV_SEED_REFRESH_TOKEN</code> is no longer read and can stay empty.',
+  noticeClientRegistered: 'Client registered',
+  noticeClientRegisteredBody: clientId =>
+    `This service now has a client of its own, <code>${clientId}</code>. Authorise it once `
+    + 'and its grant is separate from every other service on the account.',
+  noticeRegisterFailed: 'Client registration failed',
+  clientOwn: clientId =>
+    `using a client of our own (${clientId}) — its grant is not shared with anything else`,
+  clientShared: clientId =>
+    `using the configured client (${clientId}), which is SHARED. MyDataValue rotates the `
+    + 'refresh token on every use, so whichever service refreshes last leaves the other '
+    + 'holding a spent one. Register a client of our own to end that.',
+  clientNone: 'no client at all: none registered and MDV_CLIENT_ID is not set',
+  clientRegisterAction: 'Register a client of our own',
+  clientSharedCaution: 'Registering replaces the current registration and abandons its grant.',
   noticeStartFailed: 'Authorisation could not start',
   noticeStartFailedBody: 'The provider metadata was not readable. Details are in the deploy log.',
   noticeAuthFailed: 'Authorisation failed',
@@ -737,6 +760,20 @@ export const id: Strings = {
   noticeMdvRefusedBody: code => `Penyedia melaporkan <code>${code}</code>.`,
   noticeMdvConnected: 'MyDataValue tersambung',
   noticeMdvConnectedBody: 'Refresh token sekarang tersimpan di basis data dan berotasi di sana. <code>MDV_SEED_REFRESH_TOKEN</code> tidak dibaca lagi dan boleh dibiarkan kosong.',
+  noticeClientRegistered: 'Klien terdaftar',
+  noticeClientRegisteredBody: clientId =>
+    `Layanan ini kini punya klien sendiri, <code>${clientId}</code>. Otorisasikan sekali dan `
+    + 'izinnya terpisah dari layanan lain di akun ini.',
+  noticeRegisterFailed: 'Pendaftaran klien gagal',
+  clientOwn: clientId =>
+    `memakai klien milik sendiri (${clientId}) — izinnya tidak dibagi dengan apa pun`,
+  clientShared: clientId =>
+    `memakai klien dari konfigurasi (${clientId}), yang DIBAGI. MyDataValue memutar token `
+    + 'refresh setiap kali dipakai, jadi layanan yang menyegarkan terakhir meninggalkan yang '
+    + 'lain memegang token terpakai. Daftarkan klien sendiri untuk mengakhirinya.',
+  clientNone: 'tidak ada klien sama sekali: belum terdaftar dan MDV_CLIENT_ID tidak diset',
+  clientRegisterAction: 'Daftarkan klien sendiri',
+  clientSharedCaution: 'Mendaftar menggantikan pendaftaran saat ini dan meninggalkan izinnya.',
   noticeStartFailed: 'Otorisasi tidak dapat dimulai',
   noticeStartFailedBody: 'Metadata penyedia tidak dapat dibaca. Detailnya ada di log deploy.',
   noticeAuthFailed: 'Otorisasi gagal',

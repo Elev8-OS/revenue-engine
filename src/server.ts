@@ -38,6 +38,7 @@ import { publicOrigin } from './public-origin.js'
 import { authFromEnv, sessionState as elev8Session } from './sources/elev8/auth.js'
 import { retire, verdictFor, candidates as retireCandidates } from './entity/retire.js'
 import { knownShapes, latestShape } from './sources/elev8/shape.js'
+import { registerClient, clientCredentials, clientState } from './sources/mdv/register.js'
 import { head, THEME_CSS } from './ui/theme.js'
 import * as q from './dashboard/query.js'
 import { renderDashboard, renderLogin } from './dashboard/render.js'
@@ -480,14 +481,64 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
    * gate anyone with the URL could complete a flow against THEIR MyDataValue
    * account, and we would store their grant as ours.
    */
+  /**
+   * Registers a client of our OWN, so this service stops sharing a grant.
+   *
+   * Two services on one grant strand each other by design: MDV rotates the
+   * refresh token on every use, so whichever refreshes last leaves the other
+   * holding a spent one. Observed today between this engine and the
+   * `mydatavalue-mcp` server, minutes apart, in both directions.
+   *
+   * A POST, gated behind sign-in, because it creates a credential at the
+   * provider. Registering twice is safe — the row is replaced — but it abandons
+   * the previous client, so it is not something a link should do by being
+   * followed.
+   */
+  if (path === '/auth/mdv/register' && req.method === 'POST') {
+    if (!gateEnabled) {
+      html(res, notice(lang, t.noticeAuthBlocked, t.noticeAuthBlockedBody), 403)
+      return
+    }
+    if (!process.env.PUBLIC_BASE_URL) {
+      html(res, notice(lang, t.noticeMissingVars,
+        t.noticeMissingVarsBody('<code>PUBLIC_BASE_URL</code>')), 400)
+      return
+    }
+    try {
+      const reg = await withClient(c => registerClient(c, {
+        issuer: MDV_ISSUER,
+        redirectUri: mdvRedirectUri,
+        clientName: process.env.MDV_CLIENT_NAME ?? 'Elev8 Revenue Engine',
+        scopes: process.env.MDV_SCOPES ?? DEFAULT_SCOPES,
+      }))
+      // The client id is not a secret and an operator needs it to tell one
+      // registration from another. The secret is never printed anywhere.
+      console.log(`mdv client registered: ${reg!.clientId} `
+        + `(${reg!.confidential ? 'confidential' : 'public'})`)
+      html(res, notice(lang, t.noticeClientRegistered,
+        `${t.noticeClientRegisteredBody(esc(reg!.clientId))} `
+        + `<a href="/auth/mdv?lang=${lang}">${esc(t.authoriseNow)}</a>`))
+    } catch (err) {
+      console.error(`mdv client registration failed: ${(err as Error).message}`)
+      html(res, notice(lang, t.noticeRegisterFailed, esc((err as Error).message)), 502)
+    }
+    return
+  }
+
   if (path === '/auth/mdv') {
     if (!gateEnabled) {
       html(res, notice(lang, t.noticeAuthBlocked, t.noticeAuthBlockedBody), 403)
       return
     }
-    const missing = ['MDV_CLIENT_ID', 'MDV_CLIENT_SECRET', 'PUBLIC_BASE_URL']
-      .filter(n => !process.env[n])
-    if (missing.length) {
+    // Our own registration first, the shared variable second. Once a client of
+    // our own exists, still preferring the variable would mean the fix was built
+    // and never used.
+    const creds = await withClient(c => clientCredentials(c))
+    if (!creds || !process.env.PUBLIC_BASE_URL) {
+      const missing = [
+        creds ? null : 'MDV_CLIENT_ID (or register a client of our own)',
+        process.env.PUBLIC_BASE_URL ? null : 'PUBLIC_BASE_URL',
+      ].filter(Boolean) as string[]
       html(res, notice(lang, t.noticeMissingVars,
         t.noticeMissingVarsBody(missing.map(m => `<code>${m}</code>`).join(', '))), 400)
       return
@@ -495,7 +546,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     try {
       const started = await withClient(c => mdvBegin(c, {
         issuer: MDV_ISSUER,
-        clientId: process.env.MDV_CLIENT_ID!,
+        clientId: creds.clientId,
         redirectUri: mdvRedirectUri,
         scopes: process.env.MDV_SCOPES ?? DEFAULT_SCOPES,
         startedBy: session.email || 'open',
@@ -518,14 +569,20 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const token = await withClient(async c => {
         // Named `tok`, not `t`: `t` is the language table in this scope, and a
         // shadow that happens to work today is a trap for the next edit.
+        // The SAME resolution as the start of the flow. Using the variable here
+        // while the authorisation was begun with our own client would exchange
+        // the code against the wrong client and fail with a message about
+        // credentials.
+        const creds = await clientCredentials(c)
+        if (!creds) throw new Error('no MDV client: none registered and none configured')
         const tok = await mdvComplete(c, {
           issuer: MDV_ISSUER,
-          clientId: process.env.MDV_CLIENT_ID!,
-          clientSecret: process.env.MDV_CLIENT_SECRET!,
+          clientId: creds.clientId,
+          clientSecret: creds.clientSecret ?? '',
           code: url.searchParams.get('code') ?? '',
           state: url.searchParams.get('state') ?? '',
         })
-        await storeInitialToken(c, 'mdv', process.env.MDV_CLIENT_ID!, tok)
+        await storeInitialToken(c, 'mdv', creds.clientId, tok)
         return tok
       })
       // Never the token. The fact that one exists is the whole message.
@@ -548,6 +605,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }>(`select rotation, revoked_at, stale_since from oauth_token
           where provider = 'mdv'`)).rows[0])
     const elev8State = await withClient(c => elev8Session(c))
+    // Which client this service is actually using. The operationally important
+    // fact: a shared client means every refresh strands another service.
+    const mdvClient = await withClient(c => clientCredentials(c))
+    const mdvOwn = await withClient(c => clientState(c))
     const grantText = !grant ? `<span class="no">${esc(t.grantNone)}</span>`
       : grant.revoked_at ? `<span class="no">${esc(t.grantRevoked)}</span>`
       // Its own state, in its own colour. "Behind" is amber because it is
@@ -581,7 +642,23 @@ ${base.note
   // quotes a value, and both are the same in every language.
   ? `<br><span class="no">${esc(base.note)}</span>`
   : ''}</div>
-<div class="card"><b>MyDataValue</b> — ${grantText}<br>${esc(t.redirectUriLabel)}
+<div class="card"><b>MyDataValue</b> — ${grantText}<br>
+${(() => {
+  // Untranslated ids, translated sentence. A client id is not a secret and an
+  // operator needs it verbatim to tell one registration from another.
+  if (!mdvClient) return `<span class="no">${esc(t.clientNone)}</span>`
+  return mdvClient.origin === 'own_registration'
+    ? `<span class="ok">${esc(t.clientOwn(mdvClient.clientId))}</span>`
+      + (mdvOwn?.secretExpiresAt
+        ? ` · secret expires ${esc(mdvOwn.secretExpiresAt.toISOString().slice(0, 10))}`
+        : '')
+    : `<span class="part">${esc(t.clientShared(mdvClient.clientId))}</span>`
+})()}
+<form method="post" action="/auth/mdv/register?lang=${lang}" style="margin:.6rem 0 .2rem">
+  <button type="submit"${gateEnabled ? '' : ' disabled'}>${esc(t.clientRegisterAction)}</button>
+  <div class="sub">${esc(t.clientSharedCaution)}</div>
+</form>
+${esc(t.redirectUriLabel)}
 <code>${esc(mdvRedirectUri)}</code>${gateEnabled
   ? ` · <a href="/auth/mdv?lang=${lang}">${esc(grant && !grant.revoked_at && !grant.stale_since
       ? t.grantReplace : t.authoriseNow)}</a>`
