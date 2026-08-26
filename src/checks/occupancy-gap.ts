@@ -47,6 +47,54 @@
 
 export type Text = { en: string, id: string }
 
+/**
+ * Why the funnel is dark — DERIVED, never asserted.
+ *
+ * The first version hardcoded "the MyDataValue grant is revoked" into all three
+ * gate notes. Two things were wrong with that and the second is worse than the
+ * first. It went stale the moment the grant came back, so every finding on the
+ * page kept announcing a revocation that no longer existed. And it was never a
+ * fact this check had established: it stated a CAUSE for missing data without
+ * checking the cause, which is the same error as naming a lever we cannot see.
+ *
+ * The state is now read from the database once per run and passed in, so the
+ * sentence corrects itself when the world changes — and when the funnel adapter
+ * lands, these notes stop being about credentials at all.
+ */
+export type FunnelState =
+  /** No MDV credentials configured. */
+  | { kind: 'not_configured' }
+  /** The grant itself is gone; a new authorisation is needed. */
+  | { kind: 'grant_revoked' }
+  /** We hold an old token. The chain is alive; one variable fixes it. */
+  | { kind: 'grant_stale' }
+  /** Connected, and nothing reads the funnel yet. The honest common case. */
+  | { kind: 'unread' }
+  /** Funnel signals exist in the archive, just not for this room and window. */
+  | { kind: 'read' }
+
+/** One sentence per state, for the three gates that cannot be evaluated. */
+export function funnelNote(state: FunnelState, signal: Text): Text {
+  const why: Text = {
+    not_configured: {
+      en: 'MyDataValue is not configured',
+      id: 'MyDataValue belum dikonfigurasi' },
+    grant_revoked: {
+      en: 'the MyDataValue grant is revoked and needs a new authorisation',
+      id: 'izin MyDataValue dicabut dan perlu otorisasi baru' },
+    grant_stale: {
+      en: 'the stored MyDataValue token is behind the chain',
+      id: 'token MyDataValue yang tersimpan tertinggal dari rantai' },
+    unread: {
+      en: 'nothing reads MyDataValue\u2019s funnel yet',
+      id: 'belum ada yang membaca funnel MyDataValue' },
+    read: {
+      en: 'none was reported for this room in this window',
+      id: 'tidak ada yang dilaporkan untuk kamar ini pada jendela ini' },
+  }[state.kind]
+  return { en: `no ${signal.en}: ${why.en}`, id: `tidak ada ${signal.id}: ${why.id}` }
+}
+
 export const CHECK_KEY = 'occupancy_gap_30d'
 export const CHECK_VERSION = 1
 
@@ -134,6 +182,8 @@ export interface CheckInput {
   currency: string | null
   /** The day we observed it, which dates the window. */
   asOf: string
+  /** Why the three upstream gates cannot be evaluated. Read, not assumed. */
+  funnel: FunnelState
 }
 
 export type GateStage = 'impressions' | 'ctr' | 'conversion' | 'price'
@@ -266,16 +316,17 @@ export function assess(input: CheckInput): Verdict {
 
   const gates: Draft['gates'] = [
     // All three funnel gates, written as unknown rather than omitted. An absent
-    // row would read as "not applicable"; these are applicable and unseen.
-    { stage: 'impressions', verdict: 'unknown', note: {
-      en: 'no impression data: the MyDataValue grant is revoked',
-      id: 'tidak ada data tayangan: izin MyDataValue dicabut' } },
-    { stage: 'ctr', verdict: 'unknown', note: {
-      en: 'no click-through data: the MyDataValue grant is revoked',
-      id: 'tidak ada data klik: izin MyDataValue dicabut' } },
-    { stage: 'conversion', verdict: 'unknown', note: {
-      en: 'no conversion data: the MyDataValue grant is revoked',
-      id: 'tidak ada data konversi: izin MyDataValue dicabut' } },
+    // row would read as "not applicable"; these are applicable and unseen. The
+    // REASON comes from the measured state, so the sentence corrects itself.
+    { stage: 'impressions', verdict: 'unknown',
+      note: funnelNote(input.funnel,
+        { en: 'impression data', id: 'data tayangan' }) },
+    { stage: 'ctr', verdict: 'unknown',
+      note: funnelNote(input.funnel,
+        { en: 'click-through data', id: 'data klik' }) },
+    { stage: 'conversion', verdict: 'unknown',
+      note: funnelNote(input.funnel,
+        { en: 'conversion data', id: 'data konversi' }) },
     { stage: 'price', verdict: priceFailing ? 'failing' : priceHealthy ? 'healthy' : 'unknown',
       note: input.mpi === null
         ? { en: 'no market pricing index for this room',
@@ -303,13 +354,19 @@ export function assess(input: CheckInput): Verdict {
         + ` — selisih ${Math.round(gap)} poin` } },
     // REQUIRED, and the most important row here. Without it the screen implies
     // a price diagnosis that the evidence cannot carry.
-    { side: 'against', family: 'funnel', metric: 'impressions', claim: {
-      en: 'the funnel is unmeasured: impressions, click-through and conversion are all unknown'
-        + ' while the MyDataValue grant is revoked, so a visibility problem would look'
-        + ' identical to this one',
-      id: 'funnel belum terukur: tayangan, klik dan konversi semuanya tidak diketahui'
-        + ' selama izin MyDataValue dicabut, sehingga masalah visibilitas akan terlihat'
-        + ' sama seperti ini' } },
+    { side: 'against', family: 'funnel', metric: 'impressions',
+      claim: (() => {
+        const w = funnelNote(input.funnel,
+          { en: 'funnel data', id: 'data funnel' })
+        return {
+          en: `the funnel is unmeasured — ${w.en.replace(/^no funnel data: /, '')} — so`
+            + ' impressions, click-through and conversion are all unknown, and a'
+            + ' visibility problem would look identical to this one',
+          id: `funnel belum terukur — ${w.id.replace(/^tidak ada data funnel: /, '')} —`
+            + ' sehingga tayangan, klik dan konversi tidak diketahui, dan masalah'
+            + ' visibilitas akan terlihat sama seperti ini',
+        }
+      })() },
     { side: 'unknown', family: 'cost', metric: 'amount_margin', claim: {
       en: 'margin is not computable: no confirmed cost basis for this room',
       id: 'marjin belum bisa dihitung: belum ada dasar biaya terkonfirmasi untuk kamar ini' } },

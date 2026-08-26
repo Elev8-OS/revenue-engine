@@ -38,6 +38,7 @@ const base: CheckInput = {
   entityId: '00000000-0000-0000-0000-000000000000', label: 'Test Flat', band: '2BR',
   occupancy: 21, marketOccupancy: 51, mpi: 2.08, revenue: 1_200,
   priceRecommended: 47, priceLive: 45, nights: 30, currency: 'CHF', asOf: ASOF,
+  funnel: { kind: 'unread' },
 }
 const withInput = (over: Partial<CheckInput>): CheckInput => ({ ...base, ...over })
 
@@ -250,6 +251,48 @@ async function main() {
   check('the window starts on the day we observed it', d.windowFrom === ASOF)
   check('and runs the length of the metric', d.windowTo === '2026-09-24')
 
+  /* -------------------------------- 9b · the funnel reason is derived, not asserted */
+
+  // The gate notes hardcoded "the MyDataValue grant is revoked". It went stale
+  // the day the grant came back — every finding on the page kept announcing a
+  // revocation that no longer existed — and it was never something this check had
+  // established. It stated a CAUSE for missing data without looking.
+  const noteFor = (state: CheckInput['funnel']) => {
+    const v = assess(withInput({ funnel: state }))
+    if (v.kind !== 'finding') throw new Error('expected a finding')
+    return v.draft.gates.find(g => g.stage === 'impressions')!.note
+  }
+  check('when nothing reads the funnel, that is what it says',
+        noteFor({ kind: 'unread' }).en === 'no impression data: nothing reads MyDataValue\u2019s funnel yet',
+        noteFor({ kind: 'unread' }).en)
+  check('a revoked grant says a new authorisation is needed',
+        noteFor({ kind: 'grant_revoked' }).en.includes('new authorisation'))
+  check('a stale token says it is behind, not revoked',
+        noteFor({ kind: 'grant_stale' }).en.includes('behind the chain')
+        && !noteFor({ kind: 'grant_stale' }).en.includes('revoked'),
+        noteFor({ kind: 'grant_stale' }).en)
+  check('an unconfigured source says so rather than blaming a grant',
+        noteFor({ kind: 'not_configured' }).en.includes('not configured'))
+  check('and when the funnel IS read, the gap is about the room and the window',
+        noteFor({ kind: 'read' }).en.includes('this room in this window'),
+        noteFor({ kind: 'read' }).en)
+  check('no state claims a revocation unless the grant is actually revoked',
+        (['unread', 'grant_stale', 'not_configured', 'read'] as const)
+          .every(k => !noteFor({ kind: k }).en.includes('revoked')))
+  for (const k of ['unread', 'grant_revoked', 'grant_stale', 'not_configured', 'read'] as const) {
+    const n = noteFor({ kind: k })
+    check(`${k}: both languages are written`, n.en.length > 20 && n.id.length > 20
+          && n.en !== n.id, JSON.stringify(n))
+  }
+  const against = (() => {
+    const v = assess(withInput({ funnel: { kind: 'unread' } }))
+    if (v.kind !== 'finding') throw new Error('expected a finding')
+    return v.draft.evidence.find(e => e.family === 'funnel')!.claim
+  })()
+  check('the counter-case carries the same measured reason',
+        against.en.includes('nothing reads') && against.en.includes('look identical'),
+        against.en)
+
   /* ---------------------------------------------- 10 · the run, against a database */
 
   const c = await pool.connect()
@@ -306,6 +349,11 @@ async function main() {
   check('the lever was named exactly once', r1.leverNamed === 1)
   check('nothing was superseded on a first run', r1.superseded === 0)
   check('the report tags itself as a check run', isCheckReport(r1))
+  // MDV_CLIENT_ID is not set in the test environment, so the honest answer is
+  // "not configured" — and the run records which of the five it was, so a
+  // finding's prose can be traced to the state that produced it.
+  check('and it records WHY the funnel gates were dark',
+        r1.funnel === 'not_configured', r1.funnel)
   check('and the import page reads it as findings, healthy, unreachable',
         reportCounts(r1).created === 1 && reportCounts(r1).known === 1
         && reportCounts(r1).unresolved === 2, JSON.stringify(reportCounts(r1)))
