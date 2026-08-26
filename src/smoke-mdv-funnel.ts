@@ -80,14 +80,14 @@ const port = 4597
 // The two rate field names are what prove that ordering — `search_to_view_rate`
 // and `view_to_booking_rate` name their own endpoints, so the chain is the
 // provider's own and not our reading of three nouns.
-const BOOKING_ROWS = [
+const BOOKING_ROWS: Array<Record<string, unknown>> = [
   { property_id: 501, search_views: 99_014, property_views: 743,
     booking_conversions: 12, data_as_of: '2026-08-26T04:00:00Z' },
   { property_id: 502, search_views: 1_000, property_views: -1, booking_conversions: 0 },
 ]
 // Documented as forward per stay date; this account sends ONE ROW PER LISTING with
 // no date at all. The axis must come from the payload, or all of it is unfilable.
-const AIRBNB_ROWS = [
+const AIRBNB_ROWS: Array<Record<string, unknown>> = [
   { listing_id: 'L1', search_views: 1_000, property_views: 40,
     booking_conversions: 2, search_to_view_rate: 4.0, view_to_booking_rate: 5.0 },
   { listing_id: 'GHOST', search_views: 10, property_views: 1, booking_conversions: 0,
@@ -146,6 +146,28 @@ await c.query(`insert into entity_alias (entity_id, source, kind, external_id, m
   values ($1, 'mdv_booking', 'property', '501', 'mdv_property_id')`, [bookingEntity])
 await c.query(`insert into entity_alias (entity_id, source, kind, external_id, matched_by)
   values ($1, 'mdv_airbnb', 'listing', 'L1', 'ota_id')`, [airbnbEntity])
+/**
+ * THE FIXTURE THAT WAS MISSING, and its absence let a real bug ship.
+ *
+ * The old suite gave each channel its own entity, so it proved that two rows with
+ * two sources exist — and never once asked what happens when ONE apartment is
+ * listed on BOTH OTAs. That is the normal case in this portfolio, and there the
+ * two channels wrote the same metric name for the same object on the same day.
+ * `snapshot`'s primary key has no source column, so the second pass overwrote the
+ * first and every dual-listed room showed exactly one chain.
+ *
+ * A test that cannot fail on the portfolio's most common shape is not a test.
+ */
+const bothEntity = await mk('Listed on both')
+await c.query(`insert into entity_alias (entity_id, source, kind, external_id, matched_by)
+  values ($1, 'mdv_booking', 'property', '777', 'mdv_property_id')`, [bothEntity])
+await c.query(`insert into entity_alias (entity_id, source, kind, external_id, matched_by)
+  values ($1, 'mdv_airbnb', 'listing', 'B777', 'ota_id')`, [bothEntity])
+BOOKING_ROWS.push({ property_id: 777, search_views: 5_000, property_views: 100,
+                    booking_conversions: 4, data_as_of: '2026-08-26T04:00:00Z' })
+AIRBNB_ROWS.push({ listing_id: 'B777', search_views: 800, property_views: 60,
+                   booking_conversions: 3, search_to_view_rate: 7.5,
+                   view_to_booking_rate: 5.0 })
 // 502 deliberately has no alias.
 
 const mdv = new MdvClient({
@@ -183,9 +205,9 @@ check('every booking figure is stored as trailing',
       [...byMetric.keys()].every(m => m.endsWith('_trailing')),
       [...byMetric.keys()].join(','))
 check('the whole chain arrives, not just the middle of it',
-      byMetric.get('funnel_impressions_trailing') === 99_014
-      && byMetric.get('funnel_views_trailing') === 743
-      && byMetric.get('funnel_conversions_trailing') === 12,
+      byMetric.get('funnel_booking_impressions_trailing') === 99_014
+      && byMetric.get('funnel_booking_views_trailing') === 743
+      && byMetric.get('funnel_booking_conversions_trailing') === 12,
       [...byMetric.entries()].map(([k, v]) => `${k}=${v}`).join(' '))
 // 743/99014 = 0.00750398..., computed here and never taken from the provider.
 //
@@ -195,11 +217,11 @@ check('the whole chain arrives, not just the middle of it',
 // storage decides the resolution here, because the same column also holds prices
 // where six decimals is generous and occupancy where it is absurd.
 const STORED = 1e-6
-const vr = byMetric.get('funnel_view_rate_trailing')
+const vr = byMetric.get('funnel_booking_view_rate_trailing')
 check('the view rate is computed from the two counts, as a fraction',
       vr !== undefined && Math.abs(vr - 743 / 99_014) < STORED, String(vr))
-check('and the book rate too', Math.abs((byMetric.get('funnel_book_rate_trailing') ?? 0)
-      - 12 / 743) < STORED, String(byMetric.get('funnel_book_rate_trailing')))
+check('and the book rate too', Math.abs((byMetric.get('funnel_booking_book_rate_trailing') ?? 0)
+      - 12 / 743) < STORED, String(byMetric.get('funnel_booking_book_rate_trailing')))
 
 const airbnb = report.endpoints.find(e => e.path === '/airbnb/ranking/')!
 // The defect this replaces: the axis was DECLARED forward because the provider
@@ -211,22 +233,45 @@ check('an undated airbnb payload is filed as trailing rather than withheld whole
 check('the ghost id is reported rather than given a room',
       airbnb.unresolvedIds.includes('GHOST'), airbnb.unresolvedIds.join(','))
 check('and no entity was created by a signal pass',
-      (await c.query<{ n: number }>(`select count(*)::int n from entity`)).rows[0]!.n === 2)
+      (await c.query<{ n: number }>(`select count(*)::int n from entity`)).rows[0]!.n === 3)
 
 // THE COLLAPSE THIS PREVENTS: both channels answer with the same field names and
 // the same axis, so both write `funnel_impressions_trailing`. Keyed on the metric
 // alone, one channel would vanish behind the other's max().
-// Sorted in TS, not in SQL. `source` is an enum, and Postgres orders enums by
-// DECLARATION order — mdv_booking is declared before mdv_airbnb — so `order by
-// source` is not alphabetical and an assertion that assumed it was would fail on
-// correct behaviour. Which is exactly what it did.
-const both = await c.query<{ source: string, value: string }>(
-  `select source, value::text from snapshot where metric = 'funnel_impressions_trailing'`)
-check('the two channels are stored separately, not collapsed onto one metric',
+// THE ASSERTION THAT WOULD HAVE CAUGHT IT. One apartment, both OTAs, and both
+// chains must survive the pass — not whichever ran last.
+const dual = await c.query<{ metric: string, value: string }>(
+  `select metric, value::text from snapshot where entity_id = $1 order by metric`,
+  [bothEntity])
+const dualBy = new Map(dual.rows.map(r => [r.metric, Number(r.value)]))
+check('an apartment on both OTAs keeps BOTH funnels, not the one that wrote last',
+      dualBy.get('funnel_booking_impressions_trailing') === 5_000
+      && dualBy.get('funnel_airbnb_impressions_trailing') === 800,
+      [...dualBy.keys()].join(','))
+check('and every stage of both, so neither chain is half a chain',
+      dualBy.get('funnel_booking_views_trailing') === 100
+      && dualBy.get('funnel_booking_conversions_trailing') === 4
+      && dualBy.get('funnel_airbnb_views_trailing') === 60
+      && dualBy.get('funnel_airbnb_conversions_trailing') === 3,
+      JSON.stringify([...dualBy.entries()]))
+// The mechanism, stated: the primary key cannot separate them, so the name must.
+check('no metric name is shared between the two channels',
+      [...dualBy.keys()].every(m => m.startsWith('funnel_booking_')
+                                 || m.startsWith('funnel_airbnb_')),
+      [...dualBy.keys()].join(','))
+
+// Named, not pattern-matched. The two channels no longer share a metric name at
+// all — which is the fix — so asking for both names by hand is the honest check.
+const both = await c.query<{ source: string, metric: string, value: string }>(
+  `select source, metric, value::text from snapshot
+    where metric in ('funnel_booking_impressions_trailing',
+                     'funnel_airbnb_impressions_trailing')
+      and entity_id in ($1, $2)`, [bookingEntity, airbnbEntity])
+check('each channel stored its own figure under its own name',
       both.rows.length === 2
       && both.rows.map(r => r.source).sort().join(',') === 'mdv_airbnb,mdv_booking',
       JSON.stringify(both.rows))
-check('and each keeps its own figure',
+check('and each keeps its own number',
       Number(both.rows.find(r => r.source === 'mdv_booking')!.value) === 99_014
       && Number(both.rows.find(r => r.source === 'mdv_airbnb')!.value) === 1_000,
       JSON.stringify(both.rows))
@@ -253,17 +298,17 @@ check('the axis follows the data: dates appear, and the same pass files per nigh
       dated.axis === 'forward' && /filed per stay date/.test(dated.note), dated.note)
 const perNight = await c.query<{ n: number, d: string }>(
   `select count(*)::int n, min(stay_date)::text d from snapshot
-    where entity_id = $1 and metric = 'funnel_impressions'`, [airbnbEntity])
+    where entity_id = $1 and metric = 'funnel_airbnb_impressions'`, [airbnbEntity])
 check('two nights arrive, each carrying the date it is about',
       perNight.rows[0]!.n === 2 && perNight.rows[0]!.d === '2026-09-01',
       JSON.stringify(perNight.rows))
 check('and nothing is filed under the trailing name any more',
       (await c.query<{ n: number }>(`select count(*)::int n from snapshot
-        where source = 'mdv_airbnb' and metric like '%_trailing'`)).rows[0]!.n === 0)
+        where source = 'mdv_airbnb' and metric like '%\\_trailing'`)).rows[0]!.n === 0)
 // 8.5, 1.0 — max above 1, so percent, so 8.5 becomes 0.085.
 const provided = await c.query<{ value: string }>(
   `select value::text from snapshot
-    where entity_id = $1 and metric = 'funnel_provider_view_rate'
+    where entity_id = $1 and metric = 'funnel_airbnb_provider_view_rate'
     order by stay_date limit 1`, [airbnbEntity])
 check('a provider rate is stored only once its scale is settled, normalised to a fraction',
       provided.rows.length === 1 && Math.abs(Number(provided.rows[0]!.value) - 0.085) < STORED,

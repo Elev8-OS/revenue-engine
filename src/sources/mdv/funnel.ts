@@ -407,7 +407,29 @@ async function runPass(
   const snapshots: SnapshotRow[] = []
   const unresolved = new Set<string>()
   let withheld = 0
+  /**
+   * The metric name carries the CHANNEL, and this is the correction for a bug
+   * that silently halved the funnel.
+   *
+   * `snapshot`'s primary key is (entity_id, metric, stay_date, as_of_date). There
+   * is no `source` in it. Both channels answer with the same field names, the
+   * same axis and — for a trailing figure — the same stay_date, so both wrote
+   * `funnel_impressions_trailing` on the same object on the same day. The second
+   * write won the upsert and the first channel disappeared: every listing on both
+   * OTAs showed exactly one chain, and which one depended on pass order.
+   *
+   * The read side was already split by source. Splitting only the read was the
+   * mistake — by the time the query ran there was one row left to split.
+   *
+   * So the channel goes into the name, because the name is ours and "how many
+   * people saw this listing" is not a complete question until it says where.
+   * Widening the primary key would be the other fix, and a bigger one: that
+   * column is shared with prices, occupancy and market rows, and changing what
+   * makes them unique is not a change to make while chasing a display bug.
+   */
+  const channel = input.source === 'mdv_booking' ? 'booking' : 'airbnb'
   const suffix = axis === 'trailing' ? '_trailing' : ''
+  const name = (concept: string) => `funnel_${channel}_${concept}`
 
   for (const row of objs) {
     const externalId = String(row[idKey] ?? '').trim()
@@ -436,22 +458,22 @@ async function runPass(
       snapshots.push({ entityId, metric: metric + suffix, stayDate, value,
                        source: input.source, observedAt })
     }
-    if (resolution.used.impressions) put('funnel_impressions', imp)
-    if (resolution.used.views) put('funnel_views', views)
-    if (resolution.used.conversions) put('funnel_conversions', conv)
-    if (resolution.used.position) put('funnel_position', pos)
+    if (resolution.used.impressions) put(name('impressions'), imp)
+    if (resolution.used.views) put(name('views'), views)
+    if (resolution.used.conversions) put(name('conversions'), conv)
+    if (resolution.used.position) put(name('position'), pos)
 
     // Computed from the counts, so there is no scale to misread. The provider's
     // own rate is written only in addition, and only once its unit is settled.
     const vr = ratio(views, imp)
-    if (vr !== null) put('funnel_view_rate', vr)
+    if (vr !== null) put(name('view_rate'), vr)
     const br = ratio(conv, views)
-    if (br !== null) put('funnel_book_rate', br)
+    if (br !== null) put(name('book_rate'), br)
     if (rateKey) {
       const raw = Number(row[rateKey])
       const asFrac = Number.isFinite(raw) ? asFraction(raw, unit) : null
       if (asFrac === null) withheld++
-      else put('funnel_provider_view_rate', asFrac)
+      else put(name('provider_view_rate'), asFrac)
     }
   }
 

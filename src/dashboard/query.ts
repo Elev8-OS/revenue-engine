@@ -387,34 +387,63 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
          and s.stay_date >= p.as_of and s.stay_date < p.as_of + 30
        group by s.entity_id
     ),
-    -- The funnel, per entity AND per source. Grouping by source is the whole
-    -- point: both channels answer with the same field names, so both land under
-    -- the same metric, and a max() across them would hide one channel entirely.
-    fn_asof as (
-      select entity_id, source, max(as_of_date) as as_of
+    -- Booking. Keyed on the metric NAME, which now carries the channel:
+    -- both channels write the same concepts about the same object on the same day,
+    -- and snapshot's primary key has no source column, so a shared name meant the
+    -- second pass overwrote the first. The name is what keeps them apart.
+    fnb_asof as (
+      select entity_id, max(as_of_date) as as_of
         from snapshot
-       where metric in ('funnel_impressions', 'funnel_impressions_trailing')
-       group by entity_id, source
+       where metric in ('funnel_booking_impressions', 'funnel_booking_impressions_trailing')
+       group by entity_id
     ),
-    fn as (
-      select s.entity_id, s.source,
-             max(s.value) filter (where s.metric = 'funnel_impressions_trailing') as t_impr,
-             max(s.value) filter (where s.metric = 'funnel_views_trailing')       as t_views,
-             max(s.value) filter (where s.metric = 'funnel_conversions_trailing') as t_conv,
-             -- Forward figures are summed over the same thirty nights the
-             -- occupancy figure above covers, so the two are comparable.
-             sum(s.value) filter (where s.metric = 'funnel_impressions'
-               and s.stay_date >= a.as_of and s.stay_date < a.as_of + 30)        as f_impr,
-             sum(s.value) filter (where s.metric = 'funnel_views'
-               and s.stay_date >= a.as_of and s.stay_date < a.as_of + 30)        as f_views,
-             sum(s.value) filter (where s.metric = 'funnel_conversions'
-               and s.stay_date >= a.as_of and s.stay_date < a.as_of + 30)        as f_conv,
-             count(*) filter (where s.metric = 'funnel_impressions'
-               and s.stay_date >= a.as_of and s.stay_date < a.as_of + 30)::int   as f_nights
+    fnb as (
+      select s.entity_id,
+             max(s.value) filter (where s.metric = 'funnel_booking_impressions_trailing') as t_impr,
+             max(s.value) filter (where s.metric = 'funnel_booking_views_trailing')       as t_views,
+             max(s.value) filter (where s.metric = 'funnel_booking_conversions_trailing') as t_conv,
+             -- Forward figures are summed over the same thirty nights the occupancy
+             -- figure above covers, so the two are comparable.
+             sum(s.value) filter (where s.metric = 'funnel_booking_impressions'
+               and s.stay_date >= a.as_of and s.stay_date < a.as_of + 30)             as f_impr,
+             sum(s.value) filter (where s.metric = 'funnel_booking_views'
+               and s.stay_date >= a.as_of and s.stay_date < a.as_of + 30)             as f_views,
+             sum(s.value) filter (where s.metric = 'funnel_booking_conversions'
+               and s.stay_date >= a.as_of and s.stay_date < a.as_of + 30)             as f_conv,
+             count(*) filter (where s.metric = 'funnel_booking_impressions'
+               and s.stay_date >= a.as_of and s.stay_date < a.as_of + 30)::int        as f_nights
         from snapshot s
-        join fn_asof a on a.entity_id = s.entity_id and a.source = s.source
-                      and s.as_of_date = a.as_of
-       group by s.entity_id, s.source
+        join fnb_asof a on a.entity_id = s.entity_id and s.as_of_date = a.as_of
+       group by s.entity_id
+    ),
+    -- Airbnb. Keyed on the metric NAME, which now carries the channel:
+    -- both channels write the same concepts about the same object on the same day,
+    -- and snapshot's primary key has no source column, so a shared name meant the
+    -- second pass overwrote the first. The name is what keeps them apart.
+    fna_asof as (
+      select entity_id, max(as_of_date) as as_of
+        from snapshot
+       where metric in ('funnel_airbnb_impressions', 'funnel_airbnb_impressions_trailing')
+       group by entity_id
+    ),
+    fna as (
+      select s.entity_id,
+             max(s.value) filter (where s.metric = 'funnel_airbnb_impressions_trailing') as t_impr,
+             max(s.value) filter (where s.metric = 'funnel_airbnb_views_trailing')       as t_views,
+             max(s.value) filter (where s.metric = 'funnel_airbnb_conversions_trailing') as t_conv,
+             -- Forward figures are summed over the same thirty nights the occupancy
+             -- figure above covers, so the two are comparable.
+             sum(s.value) filter (where s.metric = 'funnel_airbnb_impressions'
+               and s.stay_date >= a.as_of and s.stay_date < a.as_of + 30)             as f_impr,
+             sum(s.value) filter (where s.metric = 'funnel_airbnb_views'
+               and s.stay_date >= a.as_of and s.stay_date < a.as_of + 30)             as f_views,
+             sum(s.value) filter (where s.metric = 'funnel_airbnb_conversions'
+               and s.stay_date >= a.as_of and s.stay_date < a.as_of + 30)             as f_conv,
+             count(*) filter (where s.metric = 'funnel_airbnb_impressions'
+               and s.stay_date >= a.as_of and s.stay_date < a.as_of + 30)::int        as f_nights
+        from snapshot s
+        join fna_asof a on a.entity_id = s.entity_id and s.as_of_date = a.as_of
+       group by s.entity_id
     )
     select e.id::text as entity_id,
            w.occupancy::text, w.market_occupancy::text, w.mpi::text,
@@ -435,8 +464,8 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
       left join win w on w.entity_id = e.id
       left join cal c on c.entity_id = e.id
       left join nb on nb.entity_id = e.id
-      left join fn fb on fb.entity_id = e.id and fb.source = 'mdv_booking'
-      left join fn fa on fa.entity_id = e.id and fa.source = 'mdv_airbnb'
+      left join fnb fb on fb.entity_id = e.id
+      left join fna fa on fa.entity_id = e.id
      where e.active`)
 
   const num = (v: string | null) => v === null ? null : Number(v)
