@@ -31,8 +31,7 @@ import { begin as mdvBegin, complete as mdvComplete, sweepFlows, DEFAULT_SCOPES 
 import { storeInitialToken } from './sources/mdv/auth.js'
 import { seedRefreshToken } from './sources/mdv/client.js'
 import { startImport, latestRun, releaseAbandoned, reportCounts, ImportBusyError,
-  isFunnelReport, type AnyReport } from './import/run.js'
-import type { FunnelReport } from './sources/mdv/funnel.js'
+  funnelReportOf, type AnyReport } from './import/run.js'
 import { pickLang, stringsFor, otherLang, langCookie, langCookieMaxAge, type Lang }
   from './i18n.js'
 import { publicOrigin } from './public-origin.js'
@@ -977,9 +976,9 @@ ${detail.shape.map(e => {
   }
 
   const renderFunnelDetail = (report: AnyReport | null): string => {
-    const fr = isFunnelReport(report) ? report
-      : report && 'funnel' in report ? (report as { funnel?: FunnelReport }).funnel
-      : undefined
+    // By tag, not by key name. `'funnel' in report` was true for a check run,
+    // whose `funnel` is the STATE string "read" — see funnelReportOf.
+    const fr = funnelReportOf(report)
     if (!fr) return ''
     const row = (label: string, value: string) =>
       `<tr><td class="mut">${esc(label)}</td><td><code>${esc(value)}</code></td></tr>`

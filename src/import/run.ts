@@ -85,6 +85,29 @@ export const isDiscoverReport = (r: AnyReport | null): r is DiscoverReport =>
 export const isFunnelReport = (r: AnyReport | null): r is FunnelReport =>
   Boolean(r) && (r as FunnelReport).kind === 'mdv-funnel'
 
+/**
+ * The funnel report inside a report, whatever shape carried it — by its own TAG,
+ * never by the presence of a key.
+ *
+ * This exists because of a live outage with an embarrassing cause. `/import`
+ * looked for a nested funnel with `'funnel' in report`, and TWO different
+ * reports have a key called `funnel`: the MDV import nests the whole funnel
+ * REPORT under it, and a check run records the funnel STATE — the string
+ * "read". A truthy string passed the presence test, and reading `.endpoints` off
+ * it took the page down.
+ *
+ * The lesson was already written down three files away: `isPriceLabsReport`
+ * checks `.kind` and its comment says "tagged rather than inferred", for exactly
+ * this reason. Then I inferred from a key name anyway. So the narrowing lives
+ * here now, next to the other guards, where it is one function and has a test.
+ */
+export function funnelReportOf(r: AnyReport | null): FunnelReport | null {
+  if (isFunnelReport(r)) return r
+  if (!r || typeof r !== 'object') return null
+  const nested = (r as { funnel?: unknown }).funnel
+  return isFunnelReport(nested as AnyReport | null) ? nested as FunnelReport : null
+}
+
 export class ImportBusyError extends Error {
   constructor() { super('an import is already running') }
 }

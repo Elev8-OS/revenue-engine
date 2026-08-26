@@ -10,7 +10,7 @@ import { createServer } from 'node:http'
 import { Pool } from 'pg'
 import { startImport, latestRun, releaseAbandoned, ImportBusyError,
   isElev8Report, isPriceLabsReport, isCheckReport, isDiscoverReport, isFunnelReport,
-  reportCounts, type AnyReport } from './import/run.js'
+  reportCounts, funnelReportOf, type AnyReport } from './import/run.js'
 import type { ImportReport as MdvImportReport } from './sources/mdv/objects.js'
 import { seedRefreshToken } from './sources/mdv/client.js'
 
@@ -185,6 +185,40 @@ for (const [what, report] of OLDER) {
         [counts.created, counts.known, counts.unresolved].every(Number.isFinite),
         JSON.stringify(counts))
 }
+
+/* ------------- 5 · two reports, one key name, two entirely different meanings */
+
+// The regression for the second outage on the same page. `/import` looked for a
+// nested funnel report with `'funnel' in report`. A CHECK run also has a key
+// called `funnel` — holding the funnel STATE, the string "read". The presence
+// test passed, `.endpoints` was read off a string, and the page died.
+//
+// The rule was already written down: reports are TAGGED, not inferred. So this
+// asserts the tag is what decides.
+const CHECKS_WITH_STATE = { kind: 'checks', findings: 18, healthy: 18,
+                            notAssessable: 37, funnel: 'read' } as never
+check('a check run carrying funnel: "read" is NOT mistaken for a funnel report',
+      funnelReportOf(CHECKS_WITH_STATE) === null)
+check('and counting it still reads it as a check run',
+      reportCounts(CHECKS_WITH_STATE).created === 18)
+
+const MDV_WITH_NESTED = { bookingSeen: 58, bookingAttached: 0, airbnbSeen: 50,
+  airbnbAttached: 0, alreadyKnown: 78, unresolved: 30, crossKind: 0, freshnessRows: 305,
+  funnel: { kind: 'mdv-funnel', asOf: '2026-08-26', snapshotRows: 421, anyStored: true,
+            endpoints: [] } } as never
+const nested = funnelReportOf(MDV_WITH_NESTED)
+check('a genuine nested funnel report is found and carries its own numbers',
+      nested?.snapshotRows === 421, JSON.stringify(nested?.snapshotRows))
+check('a funnel report at the top level is found too',
+      funnelReportOf({ kind: 'mdv-funnel', asOf: 'x', snapshotRows: 1, anyStored: true,
+                       endpoints: [] } as never)?.asOf === 'x')
+check('and a report with no funnel anywhere yields null, not a guess',
+      funnelReportOf({ bedTypes: 2 } as never) === null
+      && funnelReportOf(null) === null)
+// The nastiest variant: a key called funnel holding something object-shaped but
+// untagged. Presence would pass; the tag must not.
+check('an untagged object under the same key is refused',
+      funnelReportOf({ alreadyKnown: 1, funnel: { asOf: 'x' } } as never) === null)
 
 srv.close(); c.release(); await pool.end()
 console.log(`\n${fails === 0 ? 'all green' : fails + ' FAILING'}`)
