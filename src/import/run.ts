@@ -253,7 +253,11 @@ export function reportCounts(r: AnyReport | null): {
     }
   }
   return {
-    created: r.bookingCreated + r.airbnbCreated,
+    // "Created" reads as attached for this source now. MDV stopped creating
+    // objects when Elev8 became the authority for what exists; the column means
+    // "channel objects this run brought into the portfolio", and for MDV that is
+    // an attachment to a room we already had.
+    created: r.bookingAttached + r.airbnbAttached,
     known: r.alreadyKnown,
     unresolved: r.unresolved,
   }

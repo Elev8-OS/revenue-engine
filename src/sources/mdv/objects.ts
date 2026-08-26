@@ -115,28 +115,112 @@ export function marketFromCoordinates(
 
 export interface ImportReport {
   bookingSeen: number
-  bookingCreated: number
+  /**
+   * Channel objects newly ATTACHED to an object we already hold. Not created —
+   * see `attach()`. Named `*Attached` rather than `*Created` because the old name
+   * described what this importer used to do and would have gone on reading as if
+   * it still did.
+   */
+  bookingAttached: number
   airbnbSeen: number
-  airbnbCreated: number
-  /** Already known from a previous run; no detail call was made for these. */
+  airbnbAttached: number
+  /** Already linked from a previous run; no detail call was made for these. */
   alreadyKnown: number
+  /** Channel objects that match nothing we hold. Reported, never invented. */
   unresolved: number
+  /**
+   * Matched under the OTHER alias kind — Elev8 records an OTA id as a 'listing',
+   * MDV addresses a Booking object as a 'property'. Counted separately because
+   * it is the join that stops this importer duplicating the portfolio, and a
+   * silent zero here would be the first sign that it broke.
+   */
+  crossKind: number
   freshnessRows: number
 }
 
 const empty = (): ImportReport => ({
-  bookingSeen: 0, bookingCreated: 0, airbnbSeen: 0, airbnbCreated: 0,
-  alreadyKnown: 0, unresolved: 0, freshnessRows: 0,
+  bookingSeen: 0, bookingAttached: 0, airbnbSeen: 0, airbnbAttached: 0,
+  alreadyKnown: 0, unresolved: 0, crossKind: 0, freshnessRows: 0,
 })
 
-async function createEntity(
-  client: PoolClient, label: string, market: Market, active: boolean,
-): Promise<string> {
-  const { rows } = await client.query<{ id: string }>(
-    `insert into entity (label, market, active) values ($1, $2::market, $3) returning id`,
-    [label, market, active],
-  )
-  return rows[0]!.id
+/**
+ * Finds the entity a channel object belongs to. NEVER creates one.
+ *
+ * This importer used to create an entity per channel object, deliberately,
+ * because there was no key to join the two channels and a guessed join is the
+ * worst possible input to a system that moves prices. That was right with the
+ * information available. It is wrong now: Elev8 sits upstream of the channel
+ * manager and its `ota_channels[]` carries each OTA's own listing id, so the
+ * join is the channel manager's own mapping rather than a guess.
+ *
+ * Left as it was, a first MDV pass would have added roughly 58 Booking
+ * properties and 50 Airbnb listings NEXT TO the 57 objects Elev8 had already
+ * placed — the same apartment two or three times, diluted cohort bands, and a
+ * "not assessable" count nobody could trust again.
+ *
+ * So the same rule PriceLabs already follows: attach, never invent. A channel
+ * object that matches nothing is a gap to report, with its id and label intact
+ * on the unresolved list, and can be promoted deliberately later.
+ *
+ * THE CROSS-KIND LOOKUP is the part that makes it work at all. Elev8 writes
+ * `(mdv_booking, listing, ota_id)`; MDV addresses the same object as
+ * `(mdv_booking, property, property_id)`. Looking up only our own kind would
+ * match nothing for Booking by construction — which is exactly the defect this
+ * function exists to close, so both kinds are tried and the tuple we were asked
+ * about is then linked too, so the next run is a direct hit.
+ */
+async function attach(
+  client: PoolClient,
+  input: { source: 'mdv_booking' | 'mdv_airbnb', kind: 'property' | 'listing',
+           externalId: string, label?: string },
+  report: ImportReport,
+): Promise<{ entityId: string, direct: boolean } | null> {
+  // `direct` means "this importer had already linked it, so nothing to do".
+  // It is NOT the same as "an alias exists" — see below.
+  const direct = await lookupAlias(client, input)
+  if (direct) {
+    /**
+     * "Already known" and "the join worked" are different facts, and a direct
+     * hit can be either. An alias this importer wrote on an earlier run means
+     * nothing happened; one Elev8 wrote means this channel object is entering
+     * the portfolio for the first time, through the channel manager's own
+     * mapping. Collapsing them would make the Airbnb join invisible — it would
+     * look exactly like a no-op second pass, and there would be no number
+     * anywhere saying whether it worked at all.
+     */
+    const ours = direct.matchedBy.startsWith('mdv_')
+      || direct.matchedBy === 'ota_id_crosskind'
+      || direct.matchedBy.endsWith('+mdv_confirmed')
+    if (!ours) {
+      /**
+       * The tuple is already exactly the one MDV addresses, so there is no new
+       * alias to write — and without recording anything, this run would classify
+       * it as a first attachment again tomorrow, and spend a detail call doing
+       * it. So the confirmation is appended to `matched_by` rather than
+       * replacing it: the origin of the link is the channel manager's own
+       * mapping and that provenance is the most valuable thing about it, but
+       * "MDV has since attached to it" is worth recording too.
+       */
+      await client.query(
+        `update entity_alias set matched_by = matched_by || '+mdv_confirmed'
+          where source = $1 and kind = $2::alias_kind and external_id = $3`,
+        [input.source, input.kind, input.externalId])
+    }
+    return { entityId: direct.entityId, direct: ours }
+  }
+
+  for (const kind of ['listing', 'property', 'room'] as const) {
+    if (kind === input.kind) continue
+    const other = await lookupAlias(client, { ...input, kind })
+    if (!other) continue
+    // Record the tuple MDV actually uses, so the next pass is a direct hit and
+    // the cross-kind path stays a one-off per object rather than a permanent
+    // detour.
+    await link(client, input, other.entityId, 'ota_id_crosskind')
+    report.crossKind++
+    return { entityId: other.entityId, direct: false }
+  }
+  return null
 }
 
 /** The Booking side: an id, a stated country, and per-dataset freshness. */
@@ -151,32 +235,25 @@ async function importBooking(
       source: 'mdv_booking' as const, kind: 'property' as const,
       externalId: String(p.property_id), label: p.name ?? undefined,
     }
-    // A pure lookup, not `resolve`: a miss here is a NEW object, not a failure,
-    // and recording it as unresolved would put a successfully imported row on
-    // the "not assessable" list.
-    if (await lookupAlias(client, input)) { report.alreadyKnown++; continue }
-
-    const detail = await mdv.get<BookingDetail>(
-      client, `/booking/properties/${p.property_id}/`)
-    const market = marketFromCountry(detail.country_code)
-      ?? marketFromCoordinates(detail.latitude, detail.longitude)
-    if (!market) {
+    const hit = await attach(client, input, report)
+    if (!hit) {
+      // Named, not invented. The label travels with it so the unresolved list is
+      // readable by a human deciding whether this is a retired listing, a
+      // misconfiguration, or an object Elev8 genuinely does not know.
       await recordUnresolved(client, input,
-        `no market: country_code=${detail.country_code ?? 'null'}, `
-        + `coords=${detail.latitude ?? 'null'},${detail.longitude ?? 'null'}`)
+        `no Elev8 listing carries this Booking id, and Elev8 is the authority for `
+        + `what exists; nothing was created`)
       report.unresolved++
       continue
     }
+    if (hit.direct) { report.alreadyKnown++; continue }
+    const entityId = hit.entityId
 
-    const label = p.name ?? detail.name ?? `booking:${p.property_id}`
-    // `status` from the list is the OTA's own view. 'removed' rows are imported
-    // as inactive rather than dropped, so a delisting is visible instead of
-    // looking like a row that never existed.
-    const entityId = await createEntity(client, label, market, p.status === 'active')
-    await link(client, input, entityId, 'mdv_property_id')
+    const detail = await mdv.get<BookingDetail>(
+      client, `/booking/properties/${p.property_id}/`)
     // It may have been undecidable on an earlier run; it is placed now.
     await clearUnresolved(client, input)
-    report.bookingCreated++
+    report.bookingAttached++
 
     // One row per dataset, because the account's datasets age at different
     // rates and a single "last synced" would hide the spread.
@@ -205,21 +282,21 @@ async function importAirbnb(
         source: 'mdv_airbnb' as const, kind: 'listing' as const,
         externalId: l.listing_id, label,
       }
-      if (await lookupAlias(client, input)) { report.alreadyKnown++; continue }
-
-      const detail = await mdv.get<AirbnbDetail>(
-        client, `/airbnb/listings/${encodeURIComponent(l.listing_id)}/`)
-      const market = marketFromCoordinates(detail.lat, detail.lng)
-      if (!market) {
+      const hit = await attach(client, input, report)
+      if (!hit) {
         await recordUnresolved(client, input,
-          `no market from coordinates: ${detail.lat ?? 'null'},${detail.lng ?? 'null'}`)
+          `no Elev8 listing carries this Airbnb id, and Elev8 is the authority for `
+          + `what exists; nothing was created`)
         report.unresolved++
         continue
       }
-      const entityId = await createEntity(client, label, market, l.active !== false)
-      await link(client, input, entityId, 'mdv_listing_id')
+      if (hit.direct) { report.alreadyKnown++; continue }
+      const entityId = hit.entityId
+
+      const detail = await mdv.get<AirbnbDetail>(
+        client, `/airbnb/listings/${encodeURIComponent(l.listing_id)}/`)
       await clearUnresolved(client, input)
-      report.airbnbCreated++
+      report.airbnbAttached++
       await recordFreshness(client, 'mdv_airbnb', 'listing_core', entityId,
                             detail.data_as_of ?? null,
                             detail.data_as_of ? 'ok' : 'unknown')

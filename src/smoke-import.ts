@@ -88,13 +88,25 @@ check('the stored report is recognisably the MDV shape',
       !isElev8Report(stored) && !isPriceLabsReport(stored) && !isCheckReport(stored))
 const asMdv = !isElev8Report(stored) && !isPriceLabsReport(stored) && !isCheckReport(stored)
   ? stored : null
-check('the report survives verbatim', asMdv?.bookingCreated === 1, JSON.stringify(stored))
-check('the page counts come out of either shape the same way',
-      reportCounts(stored).created === 1)
-const ent = await c.query<{ label: string, market: string }>(
-  `select label, market::text from entity`)
-check('and the object actually landed', ent.rows[0]?.label === 'Imported Flat'
-  && ent.rows[0]?.market === 'ch', JSON.stringify(ent.rows))
+// One Booking object arrived and no room in this fixture carries its id, so the
+// honest outcome is one unresolved row and no new object. That changed when MDV
+// stopped creating entities: Elev8 is the authority for what exists.
+check('the report survives verbatim', asMdv?.bookingSeen === 1
+      && asMdv?.unresolved === 1 && asMdv?.bookingAttached === 0, JSON.stringify(stored))
+check('the page counts come out of every shape the same way',
+      reportCounts(stored).created === 0 && reportCounts(stored).unresolved === 1,
+      JSON.stringify(reportCounts(stored)))
+const ent = await c.query<{ n: number }>(`select count(*)::int n from entity`)
+check('and the channel object did NOT become a room of its own',
+      ent.rows[0]!.n === 0, String(ent.rows[0]!.n))
+// Filtered by id: earlier suites in the same throwaway database leave their own
+// unresolved rows behind, and asserting on "the first row" would pass or fail by
+// suite order rather than by behaviour.
+const gap = await c.query<{ reason: string }>(
+  `select reason from unresolved_alias where external_id = '91'`)
+check('it is on the unresolved list with its id and a reason',
+      gap.rows.length === 1 && /Elev8 is the authority/.test(gap.rows[0]!.reason),
+      JSON.stringify(gap.rows))
 
 check('once finished, another import may start',
       Boolean(await startImport(pool)))

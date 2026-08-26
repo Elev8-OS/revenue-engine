@@ -1,9 +1,16 @@
 /**
  * The object import, against a stand-in provider.
  *
- * The tests that matter here are not "did rows appear" but the three judgements
- * the importer makes: which market a row belongs to, what happens when that
- * cannot be decided, and whether a second run is cheap and non-duplicating.
+ * REWRITTEN around the contract this importer now has. It used to create an
+ * entity per channel object, and these tests asserted that — so they would have
+ * watched a first live pass add roughly 58 Booking properties and 50 Airbnb
+ * listings next to the 57 objects Elev8 had already placed, and called it green.
+ *
+ * Elev8 is the authority for what exists, and its `ota_channels[]` carries each
+ * OTA's own listing id, so the join is the channel manager's own mapping. The
+ * judgements worth testing are therefore: does a channel object find the room it
+ * belongs to, does it find it even when the two systems disagree about the KIND
+ * of thing the id names, and does a miss get reported rather than invented.
  */
 import { createServer } from 'node:http'
 import { Pool } from 'pg'
@@ -39,8 +46,10 @@ const BOOKING_DETAIL: Record<string, Record<string, unknown>> = {
   '5': { property_id: 5, latitude: null, longitude: null, country_code: null, sync_state: {} },
 }
 const AIRBNB = [
+  // a1 is aliased below exactly as Elev8 writes it — same source, same kind.
   { listing_id: 'a1', listing_title: 'Vogelberg', nickname: '595153 - Vogelberg', active: true },
   { listing_id: 'a2', listing_title: 'Ubud Loft', nickname: null, active: true },
+  // a3 is carried by no Elev8 listing: the miss case.
   { listing_id: 'a3', listing_title: 'Lost Listing', nickname: null, active: false },
 ]
 const AIRBNB_DETAIL: Record<string, Record<string, unknown>> = {
@@ -99,44 +108,80 @@ check('a point in the CH/AT overlap returns nothing rather than picking one',
 check('a point in no market returns nothing', marketFromCoordinates(51.5, 0.1) === null)
 check('missing coordinates return nothing', marketFromCoordinates(null, undefined) === null)
 
-/* ------------------------------------------------------------- 2 · first pass */
+/* --------------------------------- 2 · the portfolio Elev8 already placed */
+
+/**
+ * The fixture is the real situation: rooms already exist, and their OTA ids were
+ * written by Elev8 as `kind = 'listing'` — including for Booking, which MDV
+ * addresses as a `property`. That kind mismatch is the defect these tests exist
+ * to close; without the cross-kind lookup every Booking object would miss by
+ * construction.
+ */
+const { rows: seeded } = await c.query<{ id: string, label: string }>(
+  `insert into entity (label, market) values
+     ('Basel Flat',      'ch'),
+     ('Canggu Villa',    'bali'),
+     ('Vogelberg',       'ch'),
+     ('Untouched Room',  'ch')
+   returning id, label`)
+const byLabel = new Map(seeded.map(r => [r.label, r.id]))
+await c.query(
+  `insert into entity_alias (source, kind, external_id, entity_id, matched_by) values
+     ('mdv_booking', 'listing', '1',  $1, 'elev8_ota_channels'),
+     ('mdv_booking', 'listing', '2',  $2, 'elev8_ota_channels'),
+     ('mdv_airbnb',  'listing', 'a1', $3, 'elev8_ota_channels')`,
+  [byLabel.get('Basel Flat'), byLabel.get('Canggu Villa'), byLabel.get('Vogelberg')])
+
+/* ------------------------------------------------------------- 3 · first pass */
 
 const first = await importObjects(c, mdv, { pageSize: 2 })
 check('every Booking row was seen', first.bookingSeen === 5, String(first.bookingSeen))
-check('the four decidable Booking rows became entities', first.bookingCreated === 4,
-      String(first.bookingCreated))
+check('the two Booking objects Elev8 carries are ATTACHED, not created',
+      first.bookingAttached === 2, String(first.bookingAttached))
+check('and both needed the cross-kind lookup, because Elev8 calls them listings',
+      first.crossKind === 2, String(first.crossKind))
 check('every Airbnb row was seen across pages', first.airbnbSeen === 3, String(first.airbnbSeen))
-check('the two with coordinates became entities', first.airbnbCreated === 2,
-      String(first.airbnbCreated))
-check('the two undecidable rows are recorded, not dropped', first.unresolved === 2,
-      String(first.unresolved))
+check('the Airbnb id Elev8 carries attaches directly, same source and same kind',
+      first.airbnbAttached === 1, String(first.airbnbAttached))
 
-const markets = await c.query<{ market: string, n: number }>(
-  `select market::text, count(*)::int n from entity group by market order by market`)
-check('markets come out right',
-      JSON.stringify(markets.rows) === JSON.stringify(
-        [{ market: 'at', n: 1 }, { market: 'bali', n: 2 }, { market: 'ch', n: 3 }]),
-      JSON.stringify(markets.rows))
+/**
+ * The whole point. Five Booking objects and three Airbnb listings arrived; three
+ * rooms carried a matching id. Nothing else may become an object, or the same
+ * apartment appears twice and the cohort bands dilute.
+ */
+const total = await c.query<{ n: number }>('select count(*)::int n from entity')
+check('NOTHING was created: the object count is exactly what Elev8 placed',
+      total.rows[0]!.n === 4, String(total.rows[0]!.n))
+check('the misses are reported instead', first.unresolved === 5, String(first.unresolved))
 
-const delisted = await c.query<{ active: boolean }>(
-  `select active from entity where label = 'Delisted Flat'`)
-check('a delisted property is imported as inactive rather than dropped',
-      delisted.rows[0]?.active === false)
+const unres = await c.query<{ external_id: string, reason: string }>(
+  `select external_id, reason from unresolved_alias order by external_id`)
+check('and each one says why, naming Elev8 as the authority',
+      unres.rows.length === 5 && unres.rows.every(r => /Elev8 is the authority/.test(r.reason)),
+      unres.rows.map(r => r.external_id).join(','))
+check('the room nothing pointed at was left alone',
+      (await c.query<{ n: number }>(
+        `select count(*)::int n from entity_alias where entity_id = $1`,
+        [byLabel.get('Untouched Room')])).rows[0]!.n === 0)
 
-const unres = await c.query<{ source: string, external_id: string, reason: string }>(
-  `select source::text, external_id, reason from unresolved_alias order by external_id`)
-check('the undecidable rows name why', unres.rows.length === 2
-  && unres.rows.every(r => /no market/.test(r.reason)),
-  unres.rows.map(r => `${r.external_id}: ${r.reason}`).join(' | '))
+/* ---------------------------------------------------- 4 · aliases and freshness */
 
-/* ---------------------------------------------------- 3 · aliases and freshness */
-
-const aliases = await c.query<{ source: string, matched_by: string, n: number }>(
-  `select source::text, matched_by, count(*)::int n from entity_alias
-    group by source, matched_by order by source`)
-check('aliases record which id matched',
-      aliases.rows.some(r => r.source === 'mdv_booking' && r.matched_by === 'mdv_property_id')
-      && aliases.rows.some(r => r.source === 'mdv_airbnb' && r.matched_by === 'mdv_listing_id'),
+const aliases = await c.query<{ matched_by: string, kind: string, n: number }>(
+  `select matched_by, kind::text, count(*)::int n from entity_alias
+    group by matched_by, kind order by matched_by, kind`)
+check('the cross-kind hit records the tuple MDV actually uses, so the next run is direct',
+      aliases.rows.some(r => r.matched_by === 'ota_id_crosskind' && r.kind === 'property'
+                             && r.n === 2), JSON.stringify(aliases.rows))
+// Two of the three Elev8 aliases were matched CROSS-kind, so a new tuple was
+// written beside them and they are untouched. The third was the exact tuple MDV
+// uses, so nothing new could be written — the confirmation is appended instead,
+// which keeps the provenance (the channel manager's own mapping) and still makes
+// the next run a no-op.
+check('a cross-kind match leaves the Elev8 alias alone',
+      aliases.rows.some(r => r.matched_by === 'elev8_ota_channels' && r.n === 2),
+      JSON.stringify(aliases.rows))
+check('an exact match records the confirmation without losing where the link came from',
+      aliases.rows.some(r => r.matched_by === 'elev8_ota_channels+mdv_confirmed' && r.n === 1),
       JSON.stringify(aliases.rows))
 
 const fresh = await c.query<{ dataset: string, status: string }>(
@@ -148,24 +193,28 @@ check('a dataset with no timestamp is recorded as unknown, not as fresh',
 
 const bands = await c.query<{ n: number }>(
   `select count(*)::int n from entity where band is null`)
-check('no bedroom band is invented, so the cohort stays honestly unresolved',
-      bands.rows[0]!.n === 6, String(bands.rows[0]!.n))
+check('no bedroom band is invented by this importer', bands.rows[0]!.n === 4)
 
-/* --------------------------------------------------------- 4 · the second pass */
+/* --------------------------------------------------------- 5 · the second pass */
 
 const callsAfterFirst = detailCalls
 const second = await importObjects(c, mdv, { pageSize: 2 })
-check('a second run creates nothing',
-      second.bookingCreated === 0 && second.airbnbCreated === 0)
-check('and recognises what it already knew', second.alreadyKnown === 6,
+check('a second run attaches nothing new',
+      second.bookingAttached === 0 && second.airbnbAttached === 0,
+      `${second.bookingAttached}/${second.airbnbAttached}`)
+check('and needs no cross-kind detour, because the first run recorded the tuple',
+      second.crossKind === 0, String(second.crossKind))
+check('it recognises the three it already linked', second.alreadyKnown === 3,
       String(second.alreadyKnown))
-// Two, not zero: the rows that could not be placed are re-probed every run,
-// because a missing coordinate may be filled in on the provider's side later.
-// Everything already placed costs nothing.
-check('only the still-undecidable rows are re-probed',
-      detailCalls - callsAfterFirst === 2, `${detailCalls - callsAfterFirst} detail calls`)
-const total = await c.query<{ n: number }>('select count(*)::int n from entity')
-check('so the object count is unchanged', total.rows[0]!.n === 6, String(total.rows[0]!.n))
+// The misses are re-probed every run on purpose: an Elev8 pass may add the
+// channel mapping later, and then the object attaches with no human involved.
+check('the still-unmatched rows are re-probed', second.unresolved === 5,
+      String(second.unresolved))
+check('no detail call was spent on anything already linked',
+      detailCalls - callsAfterFirst === 0, `${detailCalls - callsAfterFirst} detail calls`)
+const stillFour = await c.query<{ n: number }>('select count(*)::int n from entity')
+check('so the object count is still unchanged', stillFour.rows[0]!.n === 4,
+      String(stillFour.rows[0]!.n))
 
 srv.close(); c.release(); await pool.end()
 console.log(`\n${fails === 0 ? 'all green' : fails + ' FAILING'}`)
