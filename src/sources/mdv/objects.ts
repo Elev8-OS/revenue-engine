@@ -21,6 +21,7 @@
 import type { PoolClient } from 'pg'
 import type { MdvClient } from './client.js'
 import type { FunnelReport } from './funnel.js'
+import type { ReputationReport } from './reputation.js'
 import { lookupAlias, link, recordUnresolved, clearUnresolved }
   from '../../entity/resolve.js'
 import { recordFreshness } from '../../snapshot/write.js'
@@ -146,6 +147,9 @@ export interface ImportReport {
   funnel?: FunnelReport
   /** Why it did not run. Separate permissions, so this is an ordinary outcome. */
   funnelError?: string
+  /** Reviews and promotions, read alongside. Nested for the same reason. */
+  reputation?: ReputationReport
+  reputationError?: string
 }
 
 const empty = (): ImportReport => ({

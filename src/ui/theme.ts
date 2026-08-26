@@ -147,6 +147,50 @@ code{
 .flab{font-size:.74rem;color:var(--mut);line-height:1.25}
 .fsh{font-size:.78rem;font-variant-numeric:tabular-nums}
 .farrow{color:var(--bor);font-size:1.3rem;line-height:1.1;padding:0 .1rem}
+
+/* Cohort standing, on the chain's own label. The size is part of the claim, so
+   it is never styled away — a thin set gets a quieter chip, not a hidden one. */
+.cchip{display:inline-block;margin-left:.5rem;padding:.12rem .4rem;border-radius:5px;
+  border:1px solid var(--bor);font-size:.68rem;letter-spacing:.02em;
+  text-transform:none;color:var(--fg);background:var(--bg)}
+.cchip.thin{color:var(--mut);font-style:italic}
+
+/* The trend rows: one label, up to three horizons. Grid so the columns line up
+   across rows even when a row has a single value. */
+.trend{display:flex;flex-direction:column;gap:.3rem}
+.trow{display:grid;grid-template-columns:minmax(8rem,auto) 1fr;gap:.6rem;align-items:baseline}
+.tlab{font-size:.78rem;color:var(--mut)}
+.tval{display:flex;gap:1.1rem;font-variant-numeric:tabular-nums;font-size:.95rem}
+.tval span{min-width:3.2rem}
+
+/* What sold. Three figures, then the channel split. */
+.rstats{display:flex;flex-wrap:wrap;gap:1.4rem}
+.rstat{min-width:6rem}
+.rnum{font-size:1.05rem;font-weight:650;font-variant-numeric:tabular-nums;line-height:1.2}
+.rlab{font-size:.74rem;color:var(--mut)}
+.chan{display:flex;flex-direction:column;gap:.28rem;margin-top:.7rem}
+.crow{display:grid;grid-template-columns:5.5rem 1fr 3rem auto;gap:.5rem;align-items:center;
+  font-size:.8rem}
+.cname{color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ctrack{height:.45rem;background:var(--bor);border-radius:999px;overflow:hidden}
+.ctrack span{display:block;height:100%;background:var(--brand)}
+.cval,.cmon{font-variant-numeric:tabular-nums;text-align:right}
+
+/* Reviews. A thin count is marked, because the count is the finding. */
+.rvside+.rvside{margin-top:.6rem;padding-top:.55rem;border-top:1px solid var(--bor)}
+.rvnums{display:flex;align-items:baseline;gap:.35rem;flex-wrap:wrap;font-size:.82rem}
+.rvscore,.rvcount{font-size:1.05rem;font-weight:650;font-variant-numeric:tabular-nums}
+.rvcount.thin{color:var(--rust)}
+.warnline{margin:.35rem 0 0;font-size:.78rem;color:var(--rust);max-width:44em}
+
+/* Levers, as the provider names them. */
+.levers{display:flex;flex-wrap:wrap;gap:.35rem}
+.lever{font-size:.75rem;padding:.2rem .45rem;border-radius:6px;border:1px solid var(--bor);
+  background:var(--bg);color:var(--mut)}
+.lever b{font-weight:600;color:var(--fg)}
+.lever.on{border-color:var(--brand)}
+.lever.off{opacity:.72}
+.lever.unk{border-style:dashed}
 .stat{padding:.9rem 1.1rem}
 .card > h1:first-child{margin-bottom:.5rem}
 

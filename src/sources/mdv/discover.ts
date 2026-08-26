@@ -58,6 +58,22 @@ export const CANDIDATES: Array<{ path: string, params?: Record<string, string | 
   { path: '/airbnb/reviews/', params: { limit: 3 }, why: 'same, other channel' },
   { path: '/booking/pricing/', params: { limit: 3 }, why: 'markup and rate plans' },
   { path: '/change-log/', params: { limit: 3 }, why: 'the drift detector' },
+
+  /**
+   * Compset. Added late, and the omission is the point: the first candidate list
+   * was written from the endpoints the dashboard plan named as MISSING, and the
+   * competitor set was already described in the plan — so it never got probed,
+   * and "no compset on the page" read as a design gap when it was an unasked
+   * question.
+   *
+   * Four spellings because the tool surface calls it a comp-set and REST paths
+   * are rarely hyphenated the same way twice. Three will 404, which is a fact
+   * and cheaper than a mapper written against a guessed path.
+   */
+  { path: '/booking/compset/', params: { limit: 3 }, why: 'named competitors, score, distance' },
+  { path: '/booking/comp-set/', params: { limit: 3 }, why: 'same, other spelling' },
+  { path: '/airbnb/compset/', params: { limit: 3 }, why: 'same, other channel' },
+  { path: '/airbnb/comp-set/', params: { limit: 3 }, why: 'same, other spelling' },
 ]
 
 export interface Probe {

@@ -79,6 +79,9 @@ export interface Strings {
   funnelStart: string
   funnelRun: string
   funnelNote: string
+  reputationStart: string
+  reputationRun: string
+  reputationNote: string
   checksStart: string
   checksRun: string
   checksNote: string
@@ -114,6 +117,39 @@ export interface Strings {
   funnelViews: string
   funnelBookings: string
   funnelChainNote: string
+  /* --- what actually sold */
+  realisedHeading: string
+  realisedWindow: (days: number, bookings: number) => string
+  realisedRevenue: string
+  realisedNights: string
+  realisedCommission: string
+  realisedCommissionNote: string
+  realisedNone: (days: number) => string
+  /* --- reviews */
+  reviewsHeading: string
+  reviewsScore: string
+  reviewsCount: string
+  reviewsThin: (n: number) => string
+  reviewsNone: string
+  /* --- levers */
+  leversHeading: string
+  leversAccount: string
+  leverOn: string
+  leverOff: string
+  leverUnknown: string
+  leverUntil: (date: string) => string
+  leversNone: string
+  /* --- our own cohort */
+  cohortHeading: string
+  cohortRank: (better: number, of: number) => string
+  cohortBest: (of: number) => string
+  cohortThin: (of: number) => string
+  cohortNote: string
+  /* --- trend */
+  trendYoy: string
+  trendHorizon: string
+  trendBlocked: string
+  trendRevpar: string
   /**
    * One sentence per measured state — NOT one constant.
    *
@@ -295,6 +331,13 @@ export const en: Strings = {
   recommendLabel: 'recommended',
   occupancy30: 'occupancy, next 30 nights',
   nightsArchived: n => `${n} night${n === 1 ? '' : 's'}`,
+  reputationStart: 'Read reviews and levers',
+  reputationRun: 'Read reputation',
+  reputationNote: 'Reads review score and count per channel, and the promotions '
+    + 'running on the account — Genius, Visibility Booster, Mobile Discount, '
+    + 'Preferred. Promotions are stored under the provider\u2019s own label, never '
+    + 'renamed: the take-rate stack is multiplicative, so one mislabelled lever '
+    + 'misstates a whole margin rather than one line of it.',
   funnelStart: 'Read the funnel',
   funnelRun: 'Read visibility',
   funnelNote: 'Reads impressions, views and conversions per listing from MyDataValue. '
@@ -378,6 +421,39 @@ export const en: Strings = {
   funnelBookings: 'booked',
   funnelChainNote: 'Each share is computed from the two counts beside it, not taken '
     + 'from the provider — a rate whose scale is unstated can be wrong by a hundredfold.',
+  realisedHeading: 'What actually sold',
+  realisedWindow: (d, b) => `arrivals in the last ${d} days · ${b} booking${b === 1 ? '' : 's'}`,
+  realisedRevenue: 'gross',
+  realisedNights: 'nights',
+  realisedCommission: 'OTA commission',
+  realisedCommissionNote: 'Commission only. The full stack is multiplicative — '
+    + 'promotions, then commissions, then fixed deductions — so what the host '
+    + 'gives up is larger than this line.',
+  realisedNone: d => `No arrivals in the last ${d} days on this room.`,
+  reviewsHeading: 'Reviews',
+  reviewsScore: 'score',
+  reviewsCount: 'reviews',
+  reviewsThin: n => `${n} review${n === 1 ? '' : 's'} — a score on this few carries `
+    + 'a structural handicap in search that no price change repairs.',
+  reviewsNone: 'No review data read for this room yet.',
+  leversHeading: 'Commercial levers',
+  leversAccount: 'account-wide — the provider reports these without naming an object',
+  leverOn: 'on',
+  leverOff: 'off',
+  leverUnknown: 'not stated',
+  leverUntil: d => `until ${d}`,
+  leversNone: 'No promotions read for this room yet.',
+  cohortHeading: 'Against our own set',
+  cohortRank: (b, of) => `${b} of ${of} convert better`,
+  cohortBest: of => `best of ${of}`,
+  cohortThin: of => `only ${of} in this set — too few to rank against`,
+  cohortNote: 'Our own listings in the same market and size band. No provider '
+    + 'sells competitor funnel data, so this is the only comparison we can defend.',
+  trendYoy: 'same window last year',
+  trendHorizon: '7 / 30 / 90 nights',
+  trendBlocked: 'excluding blocked nights',
+  trendRevpar: 'RevPAR',
+
   macro: {
     not_configured: 'Not connected. Arrivals, exchange rates and season only become a signal '
       + 'for THIS room once the guest-origin mix is known per object — and that lives in '
@@ -588,6 +664,11 @@ export const id: Strings = {
   recommendLabel: 'disarankan',
   occupancy30: 'okupansi, 30 malam berikutnya',
   nightsArchived: n => `${n} malam`,
+  reputationStart: 'Baca ulasan dan tuas',
+  reputationRun: 'Baca reputasi',
+  reputationNote: 'Membaca skor dan jumlah ulasan per kanal, serta promosi yang '
+    + 'aktif di akun \u2014 Genius, Visibility Booster, Mobile Discount, Preferred. '
+    + 'Promosi disimpan dengan label penyedia sendiri, tidak pernah diganti nama.',
   funnelStart: 'Baca funnel',
   funnelRun: 'Baca keterlihatan',
   funnelNote: 'Membaca impresi, kunjungan dan konversi per listing dari MyDataValue. '
@@ -671,6 +752,39 @@ export const id: Strings = {
   funnelBookings: 'memesan',
   funnelChainNote: 'Setiap persentase dihitung dari dua angka di sebelahnya, bukan '
     + 'diambil dari penyedia — rasio yang skalanya tidak dinyatakan bisa salah seratus kali.',
+  realisedHeading: 'Yang benar-benar terjual',
+  realisedWindow: (d, b) => `kedatangan dalam ${d} hari terakhir · ${b} pemesanan`,
+  realisedRevenue: 'bruto',
+  realisedNights: 'malam',
+  realisedCommission: 'komisi OTA',
+  realisedCommissionNote: 'Hanya komisi. Tumpukannya berlipat — promosi, lalu '
+    + 'komisi, lalu potongan tetap — jadi yang dilepas pemilik lebih besar dari baris ini.',
+  realisedNone: d => `Tidak ada kedatangan dalam ${d} hari terakhir untuk unit ini.`,
+  reviewsHeading: 'Ulasan',
+  reviewsScore: 'skor',
+  reviewsCount: 'ulasan',
+  reviewsThin: n => `${n} ulasan — skor atas sesedikit ini membawa kerugian '
+    + 'struktural di pencarian yang tidak bisa diperbaiki perubahan harga.`,
+  reviewsNone: 'Belum ada data ulasan yang dibaca untuk unit ini.',
+  leversHeading: 'Tuas komersial',
+  leversAccount: 'seluruh akun — penyedia melaporkannya tanpa menyebut objek',
+  leverOn: 'aktif',
+  leverOff: 'mati',
+  leverUnknown: 'tidak dinyatakan',
+  leverUntil: d => `sampai ${d}`,
+  leversNone: 'Belum ada promosi yang dibaca untuk unit ini.',
+  cohortHeading: 'Terhadap kelompok kita sendiri',
+  cohortRank: (b, of) => `${b} dari ${of} berkonversi lebih baik`,
+  cohortBest: of => `terbaik dari ${of}`,
+  cohortThin: of => `hanya ${of} dalam kelompok ini — terlalu sedikit untuk diperingkat`,
+  cohortNote: 'Listing kita sendiri di pasar dan kelas ukuran yang sama. Tidak ada '
+    + 'penyedia yang menjual data funnel pesaing, jadi ini satu-satunya pembanding '
+    + 'yang bisa kita pertanggungjawabkan.',
+  trendYoy: 'jendela yang sama tahun lalu',
+  trendHorizon: '7 / 30 / 90 malam',
+  trendBlocked: 'tanpa malam yang diblokir',
+  trendRevpar: 'RevPAR',
+
   macro: {
     not_configured: 'Belum terhubung. Kedatangan, kurs dan musim baru menjadi sinyal untuk '
       + 'kamar INI bila komposisi asal tamu diketahui per objek — dan itu ada di '

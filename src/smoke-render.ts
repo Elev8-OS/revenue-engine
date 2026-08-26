@@ -36,11 +36,18 @@ const sig = (over: Partial<Signals> = {}): Signals => ({
   nbhdP25: 60, nbhdP50: 80, nbhdP75: 98, nbhdP90: 136, nbhdListings: 155,
   // The default is a portfolio with NO funnel read yet, because that is the state
   // every listing was in for weeks and the page has to be right in it.
+  adjustedOccupancy: null, revpar: null,
+  stlyOccupancy: null, stlyAdr: null, stlyRevenue: null,
+  occupancy7: null, occupancy90: null,
   funnelBooking: null, funnelAirbnb: null, ...over,
 })
 const data = (over: Partial<DashboardData> = {}): DashboardData => ({
   lang: 'en', basis: 'revenue', openId: null, rows: [row()],
   counts: { entities: 1, open: 1, critical: 0, high: 0 },
+  // Empty by default: the page has to be right for a portfolio where none of
+  // this has been read yet, which is where every listing starts.
+  realised: new Map(), reviews: new Map(), promotions: new Map(),
+  accountPromotions: [], cohorts: new Map(),
   notAssessable: [], freshness: [], gate: [], evidence: [],
   signals: new Map([[ID, sig()]]), funnel: 'unread', demo: false, unprotected: false, ...over,
 })
@@ -210,6 +217,81 @@ check('no shapes at all is a sentence, not an empty page',
 // true this export is the page that leaks it, so the promise is asserted here.
 check('the header states the rule that makes this page safe to copy',
       shaped.includes('values are never recorded'))
+
+/* ------------------------------- what the archive already held, now on the page */
+
+const full = renderDashboard(data({
+  openId: ID,
+  funnel: 'read',
+  signals: new Map([[ID, sig({
+    occupancy: 26, occupancy7: 12, occupancy90: 38,
+    stlyOccupancy: 41, adjustedOccupancy: 22, revpar: 47,
+    funnelBooking: { axis: 'trailing', impressions: 99_014, views: 743,
+                     conversions: 12, nights: 0 },
+  })]]),
+  realised: new Map([[ID, {
+    revenue: 18_400, nights: 96, commission: 2_760, commissionRate: 0.15,
+    bookings: 22, currency: 'CHF',
+    channels: [{ name: 'booking', revenue: 12_880, share: 0.7 },
+               { name: 'airbnb', revenue: 5_520, share: 0.3 }],
+  }]]),
+  reviews: new Map([[ID, { booking: { score: 10, count: 1 }, airbnb: null }]]),
+  promotions: new Map([[ID, [
+    { kind: 'genius', active: true, discountPct: 10, endsOn: null },
+    { kind: 'preferred', active: null, discountPct: null, endsOn: null },
+  ]]]),
+  accountPromotions: [
+    { kind: 'visibility_booster', active: true, discountPct: 12, endsOn: '2026-09-30' },
+  ],
+  cohorts: new Map([[ID, { booking: { better: 9, of: 12, median: 0.011 }, airbnb: null }]]),
+}))
+
+// A single occupancy figure is not a finding. 26 against 41 last year is.
+check('the year-on-year figure appears, because 26% alone has no direction',
+      full.includes('41') && full.includes(en.trendYoy), '')
+check('the blocked-night figure appears beside it, so "full" and "closed" are separable',
+      full.includes(en.trendBlocked))
+check('and the shorter and longer horizons, so a trend is visible',
+      full.includes('12') && full.includes('38') && full.includes(en.trendHorizon))
+// booking_economics: eighteen columns, 541 measured rows, never read until now.
+check('the channel split is drawn from realised bookings',
+      full.includes('booking') && full.includes('airbnb') && full.includes('70'), '')
+check('the commission is shown as money AND as a share',
+      full.includes('15') && full.includes(en.realisedCommission))
+check('and it says commission rather than claiming to be the whole take rate',
+      full.includes('multiplicative'))
+// The case a pricing tool cannot see.
+check('a perfect score on one review carries its warning',
+      full.includes(en.reviewsThin(1)), '')
+check('a lever with no switch reads "not stated", never "off"',
+      full.includes(en.leverUnknown) && full.includes('preferred'))
+check('an account-wide lever is labelled as account-wide, not pinned to the room',
+      full.includes(en.leversAccount) && full.includes('visibility_booster'))
+check('the cohort rank names its own size, so third of three cannot read as third of forty',
+      full.includes(en.cohortRank(9, 12)), '')
+check('and the yardstick is named as ours, never as "the market"',
+      full.includes(en.cohortNote) && !/the market\b/.test(en.cohortNote))
+
+// A cohort too small to rank inside says so instead of producing a rank.
+const thin = renderDashboard(data({
+  openId: ID, funnel: 'read',
+  signals: new Map([[ID, sig({ funnelBooking: { axis: 'trailing', impressions: 100,
+    views: 4, conversions: 1, nights: 0 } })]]),
+  cohorts: new Map([[ID, { booking: { better: 1, of: 2, median: null }, airbnb: null }]]),
+}))
+check('a set of two is refused as a ranking basis',
+      thin.includes(en.cohortThin(2)) && !thin.includes(en.cohortRank(1, 2)), '')
+
+// The state every listing starts in: nothing read yet, and the page must say so
+// rather than render empty panels.
+const bare = renderDashboard(data({ openId: ID }))
+for (const [what, sentence] of [
+  ['no bookings', en.realisedNone(90)],
+  ['no reviews', en.reviewsNone],
+  ['no levers', en.leversNone],
+] as const) {
+  check(`${what}: the absence is named, not left blank`, bare.includes(sentence), '')
+}
 
 console.log(fails ? `\n${fails} FAILED` : '\nall green')
 process.exit(fails ? 1 : 0)

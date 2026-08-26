@@ -1011,7 +1011,8 @@ ${ep.note ? row('note', ep.note) : ''}
       : form.source === 'pricelabs' ? 'pricelabs'
       : form.source === 'checks' ? 'checks'
       : form.source === 'mdv-discover' ? 'mdv-discover'
-      : form.source === 'mdv-funnel' ? 'mdv-funnel' : 'mdv'
+      : form.source === 'mdv-funnel' ? 'mdv-funnel'
+      : form.source === 'mdv-reputation' ? 'mdv-reputation' : 'mdv'
     try {
       await startImport(pool, { startedBy: session.email || 'open', source })
     } catch (err) {
@@ -1076,6 +1077,11 @@ ${mdvReady ? '' : `<div class="card warn">${t.importNeedsMdv}</div>`}
 </form>
 <p class="sub">${esc(t.funnelNote)}</p>
 <form class="actions" method="post" action="/import?lang=${lang}">
+  <span class="label">${esc(t.reputationStart)}</span>
+  <button type="submit" name="source" value="mdv-reputation"${mdvReady && (!run || run.finishedAt) ? '' : ' disabled'}>${esc(t.reputationRun)}</button>
+</form>
+<p class="sub">${esc(t.reputationNote)}</p>
+<form class="actions" method="post" action="/import?lang=${lang}">
   <span class="label">${esc(t.checksStart)}</span>
   <button type="submit" name="source" value="checks"${!run || run.finishedAt ? '' : ' disabled'}>${esc(t.checksRun)}</button>
 </form>
@@ -1097,6 +1103,16 @@ ${funnelDetail(run?.report ?? null)}
         lang, basis, openId: open ? openId : null, rows,
         counts: await q.counts(c),
         signals: await q.signals(c),
+        realised: await q.realised(c),
+        reviews: await q.reviews(c),
+        // One query, two destinations: MDV's promotions report is team-wide, so
+        // a row that names no object stays account-level rather than being
+        // pinned to a listing it may not belong to.
+        ...await (async () => {
+          const p = await q.promotions(c)
+          return { promotions: p.byEntity, accountPromotions: p.account }
+        })(),
+        cohorts: await q.funnelCohorts(c),
         // The same measured state the checks use, so the macro block on a page
         // and the gate note inside a finding can never disagree.
         funnel: (await q.funnelState(c)).kind,

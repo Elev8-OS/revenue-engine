@@ -290,6 +290,23 @@ export interface Signals {
   /** How many listings the band rests on. Two and 155 are different claims. */
   nbhdListings: number | null
   /**
+   * Occupancy with owner-blocked nights taken out.
+   *
+   * The one that separates "full" from "closed". A room reading 100% with no
+   * revenue behind it is blocked, not sold, and the unadjusted figure cannot
+   * tell the difference.
+   */
+  adjustedOccupancy: number | null
+  /** Revenue per available night — the figure that survives a price/occupancy trade. */
+  revpar: number | null
+  /** The same window one year earlier. Without it, "26%" has no direction. */
+  stlyOccupancy: number | null
+  stlyAdr: number | null
+  stlyRevenue: number | null
+  /** The same measure at a shorter and a longer horizon, so a trend is visible. */
+  occupancy7: number | null
+  occupancy90: number | null
+  /**
    * The funnel, one side per CHANNEL.
    *
    * Split by source and not by metric name, which is the correction. Both
@@ -321,6 +338,9 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
   const { rows } = await client.query<{
     entity_id: string, occupancy: string | null, market_occupancy: string | null,
     mpi: string | null, adr: string | null, market_adr: string | null, revenue: string | null,
+    adj_occ: string | null, revpar: string | null, stly_occ: string | null,
+    stly_adr: string | null, stly_rev: string | null,
+    occ7: string | null, occ90: string | null,
     price_recommended: string | null, price_live: string | null, nights: number,
     currency: string | null, observed_at: Date | null, as_of: string | null,
     p25: string | null, p50: string | null, p75: string | null, p90: string | null,
@@ -346,6 +366,16 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
              max(s.value) filter (where s.metric = 'adr_next_30d')              as adr,
              max(s.value) filter (where s.metric = 'market_adr_next_30d')       as market_adr,
              max(s.value) filter (where s.metric = 'revenue_next_30d')           as revenue,
+             -- Written by the metrics adapter since the first PriceLabs pass and
+             -- read by nothing until now. Twelve measures over seven windows are
+             -- archived; six were on the page.
+             max(s.value) filter (where s.metric = 'adjusted_occupancy_next_30d')  as adj_occ,
+             max(s.value) filter (where s.metric = 'revpar_next_30d')              as revpar,
+             max(s.value) filter (where s.metric = 'stly_occupancy_next_30d')      as stly_occ,
+             max(s.value) filter (where s.metric = 'stly_adr_next_30d')            as stly_adr,
+             max(s.value) filter (where s.metric = 'stly_revenue_next_30d')        as stly_rev,
+             max(s.value) filter (where s.metric = 'occupancy_next_7d')            as occ7,
+             max(s.value) filter (where s.metric = 'occupancy_next_90d')           as occ90,
              max(s.as_of_date)::text as as_of
         from snapshot s
         join win_asof w on w.entity_id = s.entity_id and s.as_of_date = w.as_of
@@ -448,6 +478,8 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
     select e.id::text as entity_id,
            w.occupancy::text, w.market_occupancy::text, w.mpi::text,
            w.adr::text, w.market_adr::text, w.revenue::text,
+           w.adj_occ::text, w.revpar::text, w.stly_occ::text, w.stly_adr::text,
+           w.stly_rev::text, w.occ7::text, w.occ90::text,
            c.price_recommended::text, c.price_live::text,
            coalesce(c.nights, 0) as nights, c.currency, c.observed_at,
            w.as_of,
@@ -496,6 +528,10 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
     nights: r.nights, currency: r.currency, observedAt: r.observed_at, asOf: r.as_of,
     nbhdP25: num(r.p25), nbhdP50: num(r.p50), nbhdP75: num(r.p75), nbhdP90: num(r.p90),
     nbhdListings: num(r.listings),
+    adjustedOccupancy: num(r.adj_occ), revpar: num(r.revpar),
+    stlyOccupancy: num(r.stly_occ), stlyAdr: num(r.stly_adr),
+    stlyRevenue: num(r.stly_rev),
+    occupancy7: num(r.occ7), occupancy90: num(r.occ90),
     funnelBooking: side(num(r.b_t_impr), num(r.b_t_views), num(r.b_t_conv),
                         num(r.b_f_impr), num(r.b_f_views), num(r.b_f_conv), r.b_nights),
     funnelAirbnb: side(num(r.a_t_impr), num(r.a_t_views), num(r.a_t_conv),
@@ -538,4 +574,267 @@ export async function funnelState(db: PoolClient): Promise<FunnelState> {
     `select count(*)::int n from snapshot
       where source in ('mdv_booking', 'mdv_airbnb') limit 1`)
   return (seen[0]?.n ?? 0) > 0 ? { kind: 'read' } : { kind: 'unread' }
+}
+
+/* ------------------------------------------------------- realised bookings */
+
+/**
+ * What actually got sold, and what the OTAs took for it.
+ *
+ * This reads `booking_economics`, a table with eighteen columns that the
+ * dashboard has never touched — 541 to 555 rows measured on the live account,
+ * carrying the channel, the gross amount, the OTA commission, the city tax, the
+ * guest's country and the moment it was booked. Every per-channel figure and
+ * every margin statement the plan calls for was already sitting there.
+ *
+ * The window is arrivals in the last 90 days, and it is REPORTED rather than
+ * assumed: a channel mix over three bookings and a channel mix over sixty are
+ * different claims, and the count travels with the number.
+ */
+export interface Realised {
+  revenue: number
+  nights: number
+  commission: number
+  /**
+   * Commission over gross, as a fraction.
+   *
+   * Deliberately not called "the take rate". The full stack is multiplicative —
+   * promotions, then commissions, then fixed deductions — and this is only the
+   * commission layer. Naming it as the whole thing would understate what the
+   * host actually gives up.
+   */
+  commissionRate: number | null
+  bookings: number
+  channels: { name: string, revenue: number, share: number }[]
+  currency: string | null
+}
+
+const REALISED_DAYS = 90
+
+export async function realised(client: PoolClient): Promise<Map<string, Realised>> {
+  const { rows } = await client.query<{
+    entity_id: string, revenue: string | null, nights: string | null,
+    commission: string | null, bookings: number, currency: string | null
+  }>(`
+    select b.entity_id::text as entity_id,
+           sum(b.gross_amount)::text  as revenue,
+           sum(b.nights)::text        as nights,
+           sum(b.ota_commission)::text as commission,
+           count(*)::int              as bookings,
+           max(b.currency)            as currency
+      from booking_economics b
+      join entity e on e.id = b.entity_id and e.active
+     where b.arrival >= current_date - $1::int
+       and b.arrival <  current_date
+       -- A cancelled booking is not revenue. The column arrived with the
+       -- PriceLabs adapter precisely so this line could exist.
+       and coalesce(b.status, '') <> 'cancelled'
+     group by b.entity_id`, [REALISED_DAYS])
+
+  const { rows: ch } = await client.query<{
+    entity_id: string, channel: string, revenue: string | null
+  }>(`
+    select entity_id::text as entity_id, channel, sum(gross_amount)::text as revenue
+      from booking_economics
+     where arrival >= current_date - $1::int and arrival < current_date
+       and coalesce(status, '') <> 'cancelled'
+     group by entity_id, channel`, [REALISED_DAYS])
+
+  const byEntity = new Map<string, { name: string, revenue: number }[]>()
+  for (const r of ch) {
+    const list = byEntity.get(r.entity_id) ?? []
+    list.push({ name: r.channel, revenue: Number(r.revenue ?? 0) })
+    byEntity.set(r.entity_id, list)
+  }
+
+  const out = new Map<string, Realised>()
+  for (const r of rows) {
+    const revenue = Number(r.revenue ?? 0)
+    const commission = Number(r.commission ?? 0)
+    const channels = (byEntity.get(r.entity_id) ?? [])
+      .map(c => ({ ...c, share: revenue > 0 ? c.revenue / revenue : 0 }))
+      .sort((a, b) => b.revenue - a.revenue)
+    out.set(r.entity_id, {
+      revenue, nights: Number(r.nights ?? 0), commission,
+      // Guarded, because a window with no gross would otherwise divide by zero
+      // and render as a confident "0%".
+      commissionRate: revenue > 0 ? commission / revenue : null,
+      bookings: r.bookings, channels, currency: r.currency,
+    })
+  }
+  return out
+}
+
+export const realisedWindowDays = REALISED_DAYS
+
+/* --------------------------------------------------------------- reputation */
+
+export interface ReviewStanding { score: number | null, count: number | null }
+
+/**
+ * Review score and count per channel.
+ *
+ * Two numbers that decide which findings are even allowed to fire. MyDataValue's
+ * own ranking match weights the score at 18.4% and the count at 3.1%, so a
+ * listing with a perfect score from one review carries a structural handicap that
+ * no price change repairs — and a pricing tool pointed at it proposes prices
+ * forever.
+ */
+export async function reviews(
+  client: PoolClient,
+): Promise<Map<string, { booking: ReviewStanding | null, airbnb: ReviewStanding | null }>> {
+  const { rows } = await client.query<{
+    entity_id: string, metric: string, value: string
+  }>(`
+    select distinct on (entity_id, metric)
+           entity_id::text as entity_id, metric, value::text
+      from snapshot
+     where metric in ('reviews_booking_score', 'reviews_booking_count',
+                      'reviews_airbnb_score', 'reviews_airbnb_count')
+     order by entity_id, metric, as_of_date desc`)
+  const out = new Map<string, { booking: ReviewStanding | null, airbnb: ReviewStanding | null }>()
+  for (const r of rows) {
+    const side = r.metric.includes('booking') ? 'booking' : 'airbnb'
+    const field = r.metric.endsWith('score') ? 'score' : 'count'
+    const entry = out.get(r.entity_id) ?? { booking: null, airbnb: null }
+    const standing = entry[side] ?? { score: null, count: null }
+    standing[field] = Number(r.value)
+    entry[side] = standing
+    out.set(r.entity_id, entry)
+  }
+  return out
+}
+
+/* --------------------------------------------------------------- promotions */
+
+export interface Promotion {
+  kind: string
+  active: boolean | null
+  discountPct: number | null
+  endsOn: string | null
+}
+
+/**
+ * The commercial levers, per object and account-wide.
+ *
+ * Two maps, because MyDataValue's promotions report is documented as team-wide:
+ * some rows name an object and some are about the account. A row we cannot
+ * attribute is kept as account-level rather than pinned onto a listing — the
+ * take-rate stack is multiplicative, so attributing a discount to the wrong
+ * object misstates a margin rather than rounding it.
+ */
+export async function promotions(
+  client: PoolClient,
+): Promise<{ byEntity: Map<string, Promotion[]>, account: Promotion[] }> {
+  const { rows } = await client.query<{
+    entity_id: string | null, kind: string, active: boolean | null,
+    discount_pct: string | null, ends_on: Date | null
+  }>(`
+    with latest as (select max(as_of_date) as d from channel_promotion)
+    select entity_id::text as entity_id, kind, active, discount_pct::text, ends_on
+      from channel_promotion, latest
+     where as_of_date = latest.d
+     order by kind`)
+  const byEntity = new Map<string, Promotion[]>()
+  const account: Promotion[] = []
+  for (const r of rows) {
+    const p: Promotion = {
+      kind: r.kind, active: r.active,
+      discountPct: r.discount_pct === null ? null : Number(r.discount_pct),
+      endsOn: r.ends_on ? r.ends_on.toISOString().slice(0, 10) : null,
+    }
+    if (r.entity_id) {
+      const list = byEntity.get(r.entity_id) ?? []
+      list.push(p); byEntity.set(r.entity_id, list)
+    } else account.push(p)
+  }
+  return { byEntity, account }
+}
+
+/* ----------------------------------------------------- the cohort, our own */
+
+export interface CohortStanding {
+  /** How many listings in the cohort beat this one. */
+  better: number
+  /** How large the cohort is, including this listing. */
+  of: number
+  /** The cohort's own median, for context the rank alone does not give. */
+  median: number | null
+}
+
+/**
+ * Where a listing's funnel sits inside OUR OWN cohort — market × band × channel.
+ *
+ * This is the only honest comparison available, and it is worth being precise
+ * about why. No provider sells competitor funnel data: nobody can tell us what
+ * the apartment next door converts at. Published benchmarks exist, but they are
+ * vendor blog figures with unstated methodology and no control for market or
+ * size — and the sources themselves note that a luxury villa converts lower than
+ * a budget flat because a large booking involves more deliberation. Applying one
+ * industry number across Basel, Tauplitz and Canggu would produce a verdict about
+ * nothing.
+ *
+ * So the yardstick is the portfolio itself, and the page says so. "Nine of twelve
+ * 2BR listings in this market convert better on Booking" is a claim we can
+ * defend from our own measurements.
+ *
+ * The cohort size travels with the rank BECAUSE a rank without it is unreadable:
+ * being third of three and third of forty are opposite findings, and a cohort of
+ * two is not a distribution at all.
+ */
+export async function funnelCohorts(
+  client: PoolClient,
+): Promise<Map<string, { booking: CohortStanding | null, airbnb: CohortStanding | null }>> {
+  const { rows } = await client.query<{
+    entity_id: string, channel: string, better: number, of: number, median: string | null
+  }>(`
+    with latest as (
+      -- One rate per entity per channel, from the most recent pass that wrote it.
+      -- Both the trailing and the per-night name are accepted: which one an
+      -- account produces is a property of the payload, not of this query.
+      select distinct on (s.entity_id, s.metric)
+             s.entity_id, s.metric, s.value
+        from snapshot s
+       where s.metric in ('funnel_booking_view_rate_trailing', 'funnel_booking_view_rate',
+                          'funnel_airbnb_view_rate_trailing', 'funnel_airbnb_view_rate')
+       order by s.entity_id, s.metric, s.as_of_date desc
+    ),
+    keyed as (
+      select l.entity_id, l.value,
+             case when l.metric like 'funnel_booking%' then 'booking' else 'airbnb' end as channel,
+             e.market::text as market,
+             -- An unbanded room still has a market, and grouping it with the
+             -- other unbanded rooms is honest as long as the page says the band
+             -- is missing. Dropping it would make it invisible instead.
+             coalesce(e.band, '(no band)') as band
+        from latest l
+        join entity e on e.id = l.entity_id and e.active
+    ),
+    cohort as (
+      select market, band, channel,
+             count(*)::int as n,
+             -- An ordered-set aggregate, which is why it lives in its own
+             -- grouped query: percentile_cont cannot take an OVER clause.
+             percentile_cont(0.5) within group (order by value) as median
+        from keyed group by market, band, channel
+    )
+    select k.entity_id::text as entity_id, k.channel,
+           -- rank() minus one counts strictly better values only, so ties do not
+           -- count against either listing.
+           (rank() over (partition by k.market, k.band, k.channel
+                         order by k.value desc) - 1)::int as better,
+           c.n as of,
+           c.median::text as median
+      from keyed k
+      join cohort c on c.market = k.market and c.band = k.band and c.channel = k.channel`)
+  const out = new Map<string, { booking: CohortStanding | null, airbnb: CohortStanding | null }>()
+  for (const r of rows) {
+    const entry = out.get(r.entity_id) ?? { booking: null, airbnb: null }
+    entry[r.channel === 'booking' ? 'booking' : 'airbnb'] = {
+      better: r.better, of: r.of,
+      median: r.median === null ? null : Number(r.median),
+    }
+    out.set(r.entity_id, entry)
+  }
+  return out
 }

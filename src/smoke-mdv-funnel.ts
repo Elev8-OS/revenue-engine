@@ -17,8 +17,10 @@
 import { createServer } from 'node:http'
 import { Pool } from 'pg'
 import { MdvClient, seedRefreshToken } from './sources/mdv/client.js'
-import { importFunnel, resolveFields, rateUnit, countOf,
-         BOOKING_RANKING, AIRBNB_RANKING } from './sources/mdv/funnel.js'
+import { importFunnel, BOOKING_RANKING, AIRBNB_RANKING } from './sources/mdv/funnel.js'
+// The resolver now lives on its own: it stopped being about the funnel the moment
+// reviews and promotions needed the same trick.
+import { resolveFields, rateUnit, countOf } from './sources/mdv/fields.js'
 import { RateBudget } from './scheduler/budget.js'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL! })

@@ -14,6 +14,7 @@
 import type { Pool, PoolClient } from 'pg'
 import { MdvClient } from '../sources/mdv/client.js'
 import { importFunnel, type FunnelReport } from '../sources/mdv/funnel.js'
+import { importReputation, type ReputationReport } from '../sources/mdv/reputation.js'
 import { importObjects, type ImportReport } from '../sources/mdv/objects.js'
 import { Elev8Client } from '../sources/elev8/client.js'
 import { authFromEnv } from '../sources/elev8/auth.js'
@@ -35,7 +36,7 @@ import { clientCredentials } from '../sources/mdv/register.js'
  * unique to what it identifies.
  */
 export type AnyReport = ImportReport | Elev8ImportReport | PriceLabsImportReport | CheckReport
-  | DiscoverReport | FunnelReport
+  | DiscoverReport | FunnelReport | ReputationReport
 
 export interface RunRow {
   id: string
@@ -84,6 +85,9 @@ export const isDiscoverReport = (r: AnyReport | null): r is DiscoverReport =>
 
 export const isFunnelReport = (r: AnyReport | null): r is FunnelReport =>
   Boolean(r) && (r as FunnelReport).kind === 'mdv-funnel'
+
+export const isReputationReport = (r: AnyReport | null): r is ReputationReport =>
+  Boolean(r) && (r as ReputationReport).kind === 'mdv-reputation'
 
 /**
  * The funnel report inside a report, whatever shape carried it — by its own TAG,
@@ -166,6 +170,7 @@ async function run(pool: Pool, runId: string, source: string): Promise<void> {
       : source === 'checks' ? await runChecks(client)
       : source === 'mdv-discover' ? await runDiscover(client)
       : source === 'mdv-funnel' ? await runFunnel(client)
+      : source === 'mdv-reputation' ? await runReputation(client)
       : source === 'mdv' ? await runMdv(client)
       : (() => { throw new Error(`no importer for source ${source}`) })()
     await client.query(
@@ -282,7 +287,28 @@ async function runMdv(client: PoolClient): Promise<ImportReport> {
   } catch (err) {
     report.funnelError = (err as Error).message
   }
+  // Same reasoning, separately wrapped: reviews and promotions are their own
+  // permissions on MDV's side, and one report we are not granted must not cost
+  // us the two we are.
+  try {
+    report.reputation = await importReputation(client, mdv)
+  } catch (err) {
+    report.reputationError = (err as Error).message
+  }
   return report
+}
+
+/** Reviews and promotions on their own. */
+async function runReputation(client: PoolClient): Promise<ReputationReport> {
+  const creds = await clientCredentials(client)
+  if (!creds) {
+    throw new Error('no MDV client: none registered and MDV_CLIENT_ID is not set')
+  }
+  return importReputation(client, new MdvClient({
+    clientId: creds.clientId, clientSecret: creds.clientSecret ?? '',
+    base: process.env.MDV_BASE_URL ?? undefined,
+    tokenUrl: process.env.MDV_TOKEN_URL ?? undefined,
+  }))
 }
 
 /** The funnel on its own, for when the objects have not changed. */
@@ -360,6 +386,16 @@ export function reportCounts(r: AnyReport | null): {
     return {
       created: r.snapshotRows ?? 0,
       known: (r.endpoints ?? []).filter(e => e.snapshotRows > 0).length,
+      unresolved: (r.endpoints ?? []).reduce((n, e) => n + (e.unresolvedIds?.length ?? 0), 0),
+    }
+  }
+  if (isReputationReport(r)) {
+    // Rows written, endpoints that produced something, ids that matched nothing.
+    // Reviews and promotions place no objects either, so `created` counts what
+    // arrived rather than claiming a zero that would read as a failure.
+    return {
+      created: (r.reviewRows ?? 0) + (r.promotionRows ?? 0),
+      known: (r.endpoints ?? []).filter(e => e.stored > 0).length,
       unresolved: (r.endpoints ?? []).reduce((n, e) => n + (e.unresolvedIds?.length ?? 0), 0),
     }
   }

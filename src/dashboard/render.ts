@@ -8,6 +8,10 @@
  * an untranslated screen is a compile error rather than a surprise in Bali.
  */
 import type * as q from './query.js'
+// A value import alongside the type one: `realisedWindowDays` is a constant the
+// page must state rather than repeat, so the window it names cannot drift apart
+// from the window the query actually used.
+import { realisedWindowDays } from './query.js'
 import type { Basis, Row } from './query.js'
 import { type Lang, type Strings, stringsFor, otherLang } from '../i18n.js'
 import { head } from '../ui/theme.js'
@@ -50,6 +54,19 @@ export interface DashboardData {
   freshness: Array<{ source: string, dataset: string, age_minutes: number }>
   /** Measurements per entity, keyed by entity id. Empty until an import runs. */
   signals: Map<string, q.Signals>
+  /**
+   * What actually sold in the last 90 days, per entity, out of
+   * `booking_economics` — a table with the channel, the gross and the OTA
+   * commission on every reservation, which this page had never once read.
+   */
+  realised: Map<string, q.Realised>
+  /** Score and count per channel. Two numbers that decide which findings may fire. */
+  reviews: Map<string, { booking: q.ReviewStanding | null, airbnb: q.ReviewStanding | null }>
+  /** Commercial levers attributed to an object, and the account-wide ones. */
+  promotions: Map<string, q.Promotion[]>
+  accountPromotions: q.Promotion[]
+  /** Where each listing's funnel sits inside our OWN market × band × channel set. */
+  cohorts: Map<string, { booking: q.CohortStanding | null, airbnb: q.CohortStanding | null }>
   /**
    * Why the funnel is dark, MEASURED once per page rather than written into a
    * string. The macro block used to carry "whose grant is revoked" as a
@@ -182,15 +199,34 @@ export function pricePosition(
   return null
 }
 
+interface Detail {
+  sig: q.Signals | undefined
+  real: q.Realised | undefined
+  rev: { booking: q.ReviewStanding | null, airbnb: q.ReviewStanding | null } | undefined
+  promos: q.Promotion[] | undefined
+  accountPromos: q.Promotion[]
+  cohort: { booking: q.CohortStanding | null, airbnb: q.CohortStanding | null } | undefined
+}
+
+/** Everything the archive holds about one room, in the order a reader needs it. */
+function detailBlocks(r: Row, d: Detail, s: Strings): string {
+  return trendBlock(d.sig, s)
+    + realisedBlock(r, d.real, s)
+    + reviewsBlock(d.rev, s)
+    + leversBlock(d.promos, d.accountPromos, s)
+}
+
 function potential(
   r: Row, sig: q.Signals | undefined, s: Strings, funnel: q.FunnelState['kind'],
+  d?: Detail,
 ): string {
   const ours = sig?.occupancy ?? null
   const theirs = sig?.marketOccupancy ?? null
   // Nothing to draw is not nothing to say: the micro and macro blocks report
   // their own state, and an early return here used to swallow both.
   if (ours === null && r.atStake === null) {
-    return pricePositionBlock(sig, r, s) + macroBlock(s, funnel, sig)
+    return pricePositionBlock(sig, r, s) + macroBlock(s, funnel, sig, d?.cohort)
+      + (d ? detailBlocks(r, d, s) : '')
   }
 
   const W = 640, PAD = 96, TRACK = W - PAD - 16
@@ -272,7 +308,8 @@ function potential(
       aria-label="${e(s.potentialHeading)}">${parts.join('')}</svg>`
   return `<section class="panel"><h3>${e(s.potentialHeading)}</h3>${chart}</section>`
     + pricePositionBlock(sig, r, s)
-    + macroBlock(s, funnel, sig)
+    + macroBlock(s, funnel, sig, d?.cohort)
+    + (d ? detailBlocks(r, d, s) : '')
 }
 
 /**
@@ -389,6 +426,7 @@ function pricePositionBlock(sig: q.Signals | undefined, r: Row, s: Strings): str
  */
 function funnelChain(
   channel: string, s: Strings, sideOf: q.FunnelSide | null,
+  standing: q.CohortStanding | null = null,
 ): string {
   if (!sideOf) return ''
   const { impressions: seen, views, conversions: booked } = sideOf
@@ -406,7 +444,8 @@ function funnelChain(
   const stage = (value: number | null, name: string, of: number | null) =>
     `<div class="fstage"><div class="fnum">${n(value)}</div>
       <div class="flab">${e(name)}</div><div class="fsh">${share(value, of)}</div></div>`
-  return `<div class="fchain"><div class="flabel">${e(label)}</div>
+  return `<div class="fchain"><div class="flabel">${e(label)}${
+    cohortChip(standing, s)}</div>
     <div class="frow">${stage(seen, s.funnelImpressions, null)
       }<div class="farrow">&rsaquo;</div>${stage(views, s.funnelViews, seen)
       }<div class="farrow">&rsaquo;</div>${stage(booked, s.funnelBookings, views)}</div></div>`
@@ -421,15 +460,171 @@ function funnelChain(
  * is derived, and once real figures exist the sentence about their absence is not
  * merely wrong, it is contradicted by the numbers next to it.
  */
+/* ------------------------------------------------- what the archive already had */
+
+/**
+ * The trend line the archive has held all along.
+ *
+ * Twelve measures over seven windows have been written since the first PriceLabs
+ * pass; the page showed six numbers, all from one window. Occupancy at 26% is not
+ * a finding — 26% against 41% last year is, and 26% at seven nights against 38%
+ * at ninety is a different one again. The numbers were never missing; nothing
+ * asked for them.
+ */
+function trendBlock(sig: q.Signals | undefined, s: Strings): string {
+  if (!sig) return ''
+  const pp = (v: number | null) => v === null ? null : pct(v, s.numberLocale)
+  const line = (label: string, cells: Array<string | null>) =>
+    cells.every(c => c === null) ? '' : `<div class="trow">
+      <div class="tlab">${e(label)}</div>
+      <div class="tval">${cells.map(c =>
+        `<span>${c === null ? '<i class="mut">—</i>' : e(c)}</span>`).join('')}</div></div>`
+  const body = line(s.trendHorizon,
+      [pp(sig.occupancy7), pp(sig.occupancy), pp(sig.occupancy90)])
+    + line(s.trendYoy, [pp(sig.stlyOccupancy)])
+    + line(s.trendBlocked, [pp(sig.adjustedOccupancy)])
+    + line(s.trendRevpar, [sig.revpar === null ? null
+        : money(sig.revpar, sig.currency, s.numberLocale)])
+  if (!body) return ''
+  return `<section class="panel"><h3>${e(s.occupancy30)}</h3>
+    <div class="trend">${body}</div></section>`
+}
+
+/**
+ * What actually sold, and what the channels took for it.
+ *
+ * `booking_economics` has eighteen columns and 541 measured rows on this account.
+ * The dashboard query referenced it exactly zero times, which is why every
+ * per-channel figure in the plan read as "not built" when it was "not asked for".
+ */
+function realisedBlock(r: Row, real: q.Realised | undefined, s: Strings): string {
+  if (!real || !real.bookings) {
+    return `<section class="panel"><h3>${e(s.realisedHeading)}</h3>
+      <p class="mut" style="margin:0;font-size:.86rem">${
+        e(s.realisedNone(realisedWindowDays))}</p></section>`
+  }
+  const cur = real.currency ?? r.currency
+  const stat = (label: string, value: string) =>
+    `<div class="rstat"><div class="rnum">${e(value)}</div>
+      <div class="rlab">${e(label)}</div></div>`
+  const bars = real.channels.map(c => `<div class="crow">
+      <div class="cname">${e(c.name)}</div>
+      <div class="ctrack"><span style="width:${(c.share * 100).toFixed(1)}%"></span></div>
+      <div class="cval">${e(pct(c.share * 100, s.numberLocale))}</div>
+      <div class="cmon mut">${e(money(c.revenue, cur, s.numberLocale))}</div>
+    </div>`).join('')
+  return `<section class="panel"><h3>${e(s.realisedHeading)}</h3>
+    <p class="mut" style="margin:0 0 .6rem;font-size:.78rem">${
+      e(s.realisedWindow(realisedWindowDays, real.bookings))}</p>
+    <div class="rstats">
+      ${stat(s.realisedRevenue, money(real.revenue, cur, s.numberLocale))}
+      ${stat(s.realisedNights, count(real.nights, s.numberLocale))}
+      ${stat(s.realisedCommission, real.commissionRate === null
+        ? money(real.commission, cur, s.numberLocale)
+        : `${money(real.commission, cur, s.numberLocale)} · ${
+            pct(real.commissionRate * 100, s.numberLocale)}`)}
+    </div>
+    ${bars ? `<div class="chan">${bars}</div>` : ''}
+    <p class="mut" style="margin:.55rem 0 0;font-size:.76rem">${
+      e(s.realisedCommissionNote)}</p></section>`
+}
+
+/**
+ * Reviews, and the handicap a thin one carries.
+ *
+ * MyDataValue's own ranking match weights the score at 18.4% and the count at
+ * 3.1%. A perfect score from one review therefore loses in search, and no price
+ * change repairs it — which is exactly the case a pricing tool cannot see and
+ * proposes prices against forever. So the count is never shown without the
+ * sentence when it is thin.
+ */
+const THIN_REVIEWS = 5
+
+function reviewsBlock(
+  st: { booking: q.ReviewStanding | null, airbnb: q.ReviewStanding | null } | undefined,
+  s: Strings,
+): string {
+  const side = (channel: string, v: q.ReviewStanding | null) => {
+    if (!v || (v.score === null && v.count === null)) return ''
+    const thin = v.count !== null && v.count <= THIN_REVIEWS
+    return `<div class="rvside">
+      <div class="flabel">${e(channel)}</div>
+      <div class="rvnums">
+        <span class="rvscore">${v.score === null ? '<i class="mut">—</i>'
+          : e(new Intl.NumberFormat(s.numberLocale,
+              { maximumFractionDigits: 1 }).format(v.score))}</span>
+        <span class="mut">${e(s.reviewsScore)}</span>
+        <span class="rvcount${thin ? ' thin' : ''}">${v.count === null ? '—'
+          : e(count(v.count, s.numberLocale))}</span>
+        <span class="mut">${e(s.reviewsCount)}</span>
+      </div>
+      ${thin && v.count !== null
+        ? `<p class="warnline">${e(s.reviewsThin(v.count))}</p>` : ''}</div>`
+  }
+  const body = side(s.funnelChannelBooking, st?.booking ?? null)
+    + side(s.funnelChannelAirbnb, st?.airbnb ?? null)
+  return `<section class="panel"><h3>${e(s.reviewsHeading)}</h3>
+    ${body || `<p class="mut" style="margin:0;font-size:.86rem">${e(s.reviewsNone)}</p>`}
+    </section>`
+}
+
+/** The commercial levers, as the provider names them. Never renamed by us. */
+function leversBlock(
+  own: q.Promotion[] | undefined, account: q.Promotion[], s: Strings,
+): string {
+  const chip = (p: q.Promotion) => {
+    const state = p.active === null ? 'unk' : p.active ? 'on' : 'off'
+    const word = p.active === null ? s.leverUnknown : p.active ? s.leverOn : s.leverOff
+    return `<span class="lever ${state}"><b>${e(p.kind)}</b> ${e(word)}${
+      p.discountPct !== null ? ` · ${e(pct(p.discountPct, s.numberLocale))}` : ''}${
+      p.endsOn ? ` · ${e(s.leverUntil(p.endsOn))}` : ''}</span>`
+  }
+  const mine = (own ?? []).map(chip).join('')
+  const acct = account.map(chip).join('')
+  if (!mine && !acct) {
+    return `<section class="panel"><h3>${e(s.leversHeading)}</h3>
+      <p class="mut" style="margin:0;font-size:.86rem">${e(s.leversNone)}</p></section>`
+  }
+  return `<section class="panel"><h3>${e(s.leversHeading)}</h3>
+    ${mine ? `<div class="levers">${mine}</div>` : ''}
+    ${acct ? `<p class="mut" style="margin:${mine ? '.6rem' : '0'} 0 .35rem;font-size:.76rem">${
+      e(s.leversAccount)}</p><div class="levers">${acct}</div>` : ''}</section>`
+}
+
+/**
+ * Where this listing stands against OUR OWN set.
+ *
+ * Published conversion benchmarks are vendor figures with unstated methodology
+ * and no control for market or size — the sources themselves note that a luxury
+ * villa converts lower than a budget flat because a larger booking involves more
+ * deliberation. One industry number across Basel, Tauplitz and Canggu would be a
+ * verdict about nothing.
+ *
+ * The cohort size is never omitted: third of three and third of forty are
+ * opposite findings, and below a floor there is no distribution to rank inside at
+ * all, so the page says that instead of showing a rank.
+ */
+const COHORT_FLOOR = 4
+
+function cohortChip(st: q.CohortStanding | null, s: Strings): string {
+  if (!st) return ''
+  if (st.of < COHORT_FLOOR) return `<span class="cchip thin">${e(s.cohortThin(st.of))}</span>`
+  return `<span class="cchip">${e(st.better === 0 ? s.cohortBest(st.of)
+    : s.cohortRank(st.better, st.of))}</span>`
+}
+
 function macroBlock(
   s: Strings, funnel: q.FunnelState['kind'], sig?: q.Signals,
+  cohort?: { booking: q.CohortStanding | null, airbnb: q.CohortStanding | null },
 ): string {
-  const chains = funnelChain(s.funnelChannelBooking, s, sig?.funnelBooking ?? null)
-    + funnelChain(s.funnelChannelAirbnb, s, sig?.funnelAirbnb ?? null)
+  const chains = funnelChain(s.funnelChannelBooking, s, sig?.funnelBooking ?? null,
+                             cohort?.booking ?? null)
+    + funnelChain(s.funnelChannelAirbnb, s, sig?.funnelAirbnb ?? null,
+                  cohort?.airbnb ?? null)
   return `<section class="panel"><h3>${e(s.macroHeading)}</h3>
     ${chains
       ? chains + `<p class="mut" style="margin:.5rem 0 0;font-size:.78rem">${
-          e(s.funnelChainNote)}</p>`
+          e(s.funnelChainNote)} ${e(s.cohortNote)}</p>`
       : `<p class="mut" style="margin:0;font-size:.86rem">${e(s.macro[funnel])}</p>`}
     </section>`
 }
@@ -491,7 +686,14 @@ export function renderDashboard(d: DashboardData): string {
     const detail = isOpen ? `<tr class="detail"><td colspan="6">
         ${r.headline ? `<p class="head">${e(r.headline)}</p>`
                      : `<p class="mut">${e(s.noOpenFinding)}</p>`}
-        ${potential(r, d.signals.get(r.entityId), s, d.funnel)}
+        ${potential(r, d.signals.get(r.entityId), s, d.funnel, {
+          sig: d.signals.get(r.entityId),
+          real: d.realised.get(r.entityId),
+          rev: d.reviews.get(r.entityId),
+          promos: d.promotions.get(r.entityId),
+          accountPromos: d.accountPromotions,
+          cohort: d.cohorts.get(r.entityId),
+        })}
         ${gateBlock(d, s)}
         ${evidenceBlock(d, s)}
       </td></tr>` : ''
