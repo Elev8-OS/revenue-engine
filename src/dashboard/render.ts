@@ -32,6 +32,13 @@ export interface DashboardData {
   freshness: Array<{ source: string, dataset: string, age_minutes: number }>
   /** Measurements per entity, keyed by entity id. Empty until an import runs. */
   signals: Map<string, q.Signals>
+  /**
+   * Why the funnel is dark, MEASURED once per page rather than written into a
+   * string. The macro block used to carry "whose grant is revoked" as a
+   * constant, so unlike the stored gate prose it did not even need a stale check
+   * run to be wrong — it was wrong on every render the moment the grant returned.
+   */
+  funnel: q.FunnelState['kind']
   gate: Array<{ stage: string, verdict: string, note: string | null }>
   evidence: Array<{ side: string, family: string, metric: string, claim: string, observed_at: string | null }>
   demo: boolean
@@ -157,13 +164,15 @@ export function pricePosition(
   return null
 }
 
-function potential(r: Row, sig: q.Signals | undefined, s: Strings): string {
+function potential(
+  r: Row, sig: q.Signals | undefined, s: Strings, funnel: q.FunnelState['kind'],
+): string {
   const ours = sig?.occupancy ?? null
   const theirs = sig?.marketOccupancy ?? null
   // Nothing to draw is not nothing to say: the micro and macro blocks report
   // their own state, and an early return here used to swallow both.
   if (ours === null && r.atStake === null) {
-    return pricePositionBlock(sig, r, s) + macroBlock(s)
+    return pricePositionBlock(sig, r, s) + macroBlock(s, funnel)
   }
 
   const W = 640, PAD = 96, TRACK = W - PAD - 16
@@ -245,7 +254,7 @@ function potential(r: Row, sig: q.Signals | undefined, s: Strings): string {
       aria-label="${e(s.potentialHeading)}">${parts.join('')}</svg>`
   return `<section class="panel"><h3>${e(s.potentialHeading)}</h3>${chart}</section>`
     + pricePositionBlock(sig, r, s)
-    + macroBlock(s)
+    + macroBlock(s, funnel)
 }
 
 /**
@@ -348,9 +357,9 @@ function pricePositionBlock(sig: q.Signals | undefined, r: Row, s: Strings): str
  * A layer that is missing has to be visible AS missing, and it must not be able
  * to disappear because a different layer is missing too.
  */
-function macroBlock(s: Strings): string {
+function macroBlock(s: Strings, funnel: q.FunnelState['kind']): string {
   return `<section class="panel"><h3>${e(s.macroHeading)}</h3>
-    <p class="mut" style="margin:0;font-size:.86rem">${e(s.macroBlocked)}</p></section>`
+    <p class="mut" style="margin:0;font-size:.86rem">${e(s.macro[funnel])}</p></section>`
 }
 
 function vsMarket(sig: q.Signals | undefined, s: Strings): string {
@@ -410,7 +419,7 @@ export function renderDashboard(d: DashboardData): string {
     const detail = isOpen ? `<tr class="detail"><td colspan="6">
         ${r.headline ? `<p class="head">${e(r.headline)}</p>`
                      : `<p class="mut">${e(s.noOpenFinding)}</p>`}
-        ${potential(r, d.signals.get(r.entityId), s)}
+        ${potential(r, d.signals.get(r.entityId), s, d.funnel)}
         ${gateBlock(d, s)}
         ${evidenceBlock(d, s)}
       </td></tr>` : ''

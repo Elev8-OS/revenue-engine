@@ -246,14 +246,27 @@ async function importBooking(
       report.unresolved++
       continue
     }
-    if (hit.direct) { report.alreadyKnown++; continue }
+    if (hit.direct) report.alreadyKnown++
+    else report.bookingAttached++
     const entityId = hit.entityId
 
+    /**
+     * The detail call is no longer optional for a known object, and that is a
+     * deliberate reversal.
+     *
+     * It used to be skipped for anything already linked, to save a request. That
+     * made sense when the call existed to decide a market and create an entity —
+     * facts that do not change. It stopped making sense the moment this importer
+     * stopped creating: the ONLY thing the detail response still gives us is the
+     * provider's own per-dataset freshness, and freshness that is written once
+     * and never again is not freshness. The first live pass proved it —
+     * `freshnessRows: 0` on 78 matched objects — which is exactly the state that
+     * makes the staleness gate decorative.
+     */
     const detail = await mdv.get<BookingDetail>(
       client, `/booking/properties/${p.property_id}/`)
     // It may have been undecidable on an earlier run; it is placed now.
     await clearUnresolved(client, input)
-    report.bookingAttached++
 
     // One row per dataset, because the account's datasets age at different
     // rates and a single "last synced" would hide the spread.
@@ -290,13 +303,16 @@ async function importAirbnb(
         report.unresolved++
         continue
       }
-      if (hit.direct) { report.alreadyKnown++; continue }
+      if (hit.direct) report.alreadyKnown++
+      else report.airbnbAttached++
       const entityId = hit.entityId
 
+      // Same reversal as the Booking side: the detail call now exists for the
+      // freshness stamp, so skipping it for a known object would leave the
+      // staleness gate reading a number from whenever the object first appeared.
       const detail = await mdv.get<AirbnbDetail>(
         client, `/airbnb/listings/${encodeURIComponent(l.listing_id)}/`)
       await clearUnresolved(client, input)
-      report.airbnbAttached++
       await recordFreshness(client, 'mdv_airbnb', 'listing_core', entityId,
                             detail.data_as_of ?? null,
                             detail.data_as_of ? 'ok' : 'unknown')

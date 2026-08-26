@@ -38,7 +38,7 @@ const data = (over: Partial<DashboardData> = {}): DashboardData => ({
   lang: 'en', basis: 'revenue', openId: null, rows: [row()],
   counts: { entities: 1, open: 1, critical: 0, high: 0 },
   notAssessable: [], freshness: [], gate: [], evidence: [],
-  signals: new Map([[ID, sig()]]), demo: false, unprotected: false, ...over,
+  signals: new Map([[ID, sig()]]), funnel: 'unread', demo: false, unprotected: false, ...over,
 })
 
 /* ------------------------------------------------------ 1 · the scroll position */
@@ -147,9 +147,27 @@ check('a room with no neighbourhood band draws no price-position block at all',
 
 // Absent, and SAID to be absent. A blank space would read as "nothing to see";
 // the sentence says why there is nothing and what would change it.
-check('the macro block states that it is not connected',
-      micro.includes('Not connected') && micro.includes('guest-origin mix'))
-check('and it names what blocks it', micro.includes('MyDataValue'))
+// The macro sentence is chosen by the MEASURED state, not written into a
+// constant. The constant version said "whose grant is revoked" and rendered on
+// every page load — so unlike the stored gate prose it did not even need a stale
+// check run to be wrong; it was wrong the moment the grant came back.
+check('the macro block explains the state it is actually in',
+      micro.includes('Connected, not read') && micro.includes('guest-origin mix'),
+      '')
+check('and does NOT claim a revocation when nothing is revoked',
+      !micro.includes('revoked'), '')
+const revokedPage = renderDashboard(data({ openId: ID, funnel: 'grant_revoked' }))
+check('a revoked grant is the one state that says revoked',
+      revokedPage.includes('revoked') && revokedPage.includes('new authorisation'))
+const stalePage = renderDashboard(data({ openId: ID, funnel: 'grant_stale' }))
+check('a stale token says it is behind, and names the variable that fixes it',
+      stalePage.includes('behind the chain')
+      && stalePage.includes('MDV_SEED_REFRESH_TOKEN')
+      && !stalePage.includes('revoked'), '')
+for (const k of ['not_configured', 'grant_revoked', 'grant_stale', 'unread', 'read'] as const) {
+  check(`${k}: the macro sentence exists in both languages`,
+        en.macro[k].length > 40 && id.macro[k].length > 40 && en.macro[k] !== id.macro[k])
+}
 
 console.log(fails ? `\n${fails} FAILED` : '\nall green')
 process.exit(fails ? 1 : 0)

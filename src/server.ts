@@ -877,6 +877,9 @@ ${mdvReady ? '' : `<div class="card warn">${t.importNeedsMdv}</div>`}
         lang, basis, openId: open ? openId : null, rows,
         counts: await q.counts(c),
         signals: await q.signals(c),
+        // The same measured state the checks use, so the macro block on a page
+        // and the gate note inside a finding can never disagree.
+        funnel: (await q.funnelState(c)).kind,
         notAssessable: await q.notAssessable(c, lang),
         freshness: await q.freshness(c),
         gate: open?.worstFindingId ? await q.gate(c, open.worstFindingId, lang) : [],

@@ -202,6 +202,13 @@ const second = await importObjects(c, mdv, { pageSize: 2 })
 check('a second run attaches nothing new',
       second.bookingAttached === 0 && second.airbnbAttached === 0,
       `${second.bookingAttached}/${second.airbnbAttached}`)
+// Freshness is re-read every run, and that is the point of the detail call now.
+// The first live pass reported `freshnessRows: 0` over 78 matched objects,
+// because the stamp was only written when an object first attached — which makes
+// the staleness gate read a number from whenever the room appeared.
+check('and it re-reads the provider\u2019s freshness for everything it matched',
+      second.freshnessRows === first.freshnessRows && second.freshnessRows > 0,
+      `${second.freshnessRows} vs ${first.freshnessRows}`)
 check('and needs no cross-kind detour, because the first run recorded the tuple',
       second.crossKind === 0, String(second.crossKind))
 check('it recognises the three it already linked', second.alreadyKnown === 3,
@@ -210,8 +217,10 @@ check('it recognises the three it already linked', second.alreadyKnown === 3,
 // channel mapping later, and then the object attaches with no human involved.
 check('the still-unmatched rows are re-probed', second.unresolved === 5,
       String(second.unresolved))
-check('no detail call was spent on anything already linked',
-      detailCalls - callsAfterFirst === 0, `${detailCalls - callsAfterFirst} detail calls`)
+// Three matched objects, three detail calls — one per stamp. The misses cost
+// nothing, because there is no room to hang a freshness row on.
+check('one detail call per matched object, and none for the misses',
+      detailCalls - callsAfterFirst === 3, `${detailCalls - callsAfterFirst} detail calls`)
 const stillFour = await c.query<{ n: number }>('select count(*)::int n from entity')
 check('so the object count is still unchanged', stillFour.rows[0]!.n === 4,
       String(stillFour.rows[0]!.n))

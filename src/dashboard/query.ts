@@ -13,6 +13,8 @@
  */
 import type { PoolClient } from 'pg'
 import { stringsFor, type Lang } from '../i18n.js'
+export type { FunnelState } from '../checks/occupancy-gap.js'
+import type { FunnelState } from '../checks/occupancy-gap.js'
 
 export type Basis = 'revenue' | 'margin'
 
@@ -374,4 +376,37 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
     nbhdP25: num(r.p25), nbhdP50: num(r.p50), nbhdP75: num(r.p75), nbhdP90: num(r.p90),
     nbhdListings: num(r.listings),
   }]))
+}
+
+/**
+ * Why the three funnel gates cannot be evaluated — established, not asserted.
+ *
+ * The check used to hardcode "the MyDataValue grant is revoked" into every gate
+ * note. That was stale within a day of the grant coming back, and it was never
+ * something the check had checked: it stated a cause for missing data without
+ * looking. Read once per run, so the sentence on every finding corrects itself.
+ *
+ * The order is the order a reader would fix things in. A missing credential
+ * beats a revoked grant beats a stale token beats "nothing reads it yet" — and
+ * that last one is the honest common case today, because the MDV importer
+ * attaches objects and records freshness and does not pull a single funnel
+ * signal. No adapter writes them, so no room can have them.
+ */
+export async function funnelState(db: PoolClient): Promise<FunnelState> {
+  if (!process.env.MDV_CLIENT_ID || !process.env.MDV_CLIENT_SECRET) {
+    return { kind: 'not_configured' }
+  }
+  const { rows } = await db.query<{ revoked_at: Date | null, stale_since: Date | null }>(
+    `select revoked_at, stale_since from oauth_token where provider = 'mdv'`)
+  const grant = rows[0]
+  if (!grant) return { kind: 'not_configured' }
+  if (grant.revoked_at) return { kind: 'grant_revoked' }
+  if (grant.stale_since) return { kind: 'grant_stale' }
+  // Has ANY funnel signal ever been archived? If not, the reason is that nothing
+  // reads them — which stops being true on its own the day the adapter lands,
+  // with no line here to remember to change.
+  const { rows: seen } = await db.query<{ n: number }>(
+    `select count(*)::int n from snapshot
+      where source in ('mdv_booking', 'mdv_airbnb') limit 1`)
+  return (seen[0]?.n ?? 0) > 0 ? { kind: 'read' } : { kind: 'unread' }
 }

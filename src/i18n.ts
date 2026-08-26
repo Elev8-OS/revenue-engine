@@ -100,7 +100,16 @@ export interface Strings {
   pricePos: Record<'belowP25' | 'p25p50' | 'p50p75' | 'p75p90' | 'aboveP90', string>
   /** The macro layer, and why it is not here. */
   macroHeading: string
-  macroBlocked: string
+  /**
+   * One sentence per measured state — NOT one constant.
+   *
+   * `macroBlocked` was a single string with "whose grant is revoked" written into
+   * it. It rendered on every page load, so unlike the stored gate prose it did
+   * not even need a stale check run to be wrong: it was wrong the moment the
+   * grant came back, and it stayed wrong on every screen. The identical mistake
+   * as the gate notes, made twice in the same afternoon.
+   */
+  macro: Record<'not_configured' | 'grant_revoked' | 'grant_stale' | 'unread' | 'read', string>
   findingCount: (n: number, severity: string) => string
   noneOpen: string
   notRated: string
@@ -325,11 +334,25 @@ export const en: Strings = {
     aboveP90: 'above the top tenth of the neighbourhood',
   },
   macroHeading: 'Macro',
-  macroBlocked: 'Not connected. Arrivals, exchange rates and season only become a signal for '
-    + 'THIS room once the guest-origin mix is known per object — and that lives in '
-    + 'MyDataValue, whose grant is revoked. Until then nothing macro is shown here, '
-    + 'because a market-wide number applied to one room without its origin mix is a '
-    + 'decoration, not evidence.',
+  macro: {
+    not_configured: 'Not connected. Arrivals, exchange rates and season only become a signal '
+      + 'for THIS room once the guest-origin mix is known per object — and that lives in '
+      + 'MyDataValue, which is not configured. A market-wide number applied to one room '
+      + 'without its origin mix is a decoration, not evidence.',
+    grant_revoked: 'Not connected. The guest-origin mix per object is what turns arrivals, '
+      + 'exchange rates and season into a signal for THIS room, and it lives in MyDataValue '
+      + '— whose grant is revoked and needs a new authorisation.',
+    grant_stale: 'Not connected. The guest-origin mix per object is what turns arrivals, '
+      + 'exchange rates and season into a signal for THIS room. MyDataValue is reachable and '
+      + 'the stored token is behind the chain; one current token in '
+      + 'MDV_SEED_REFRESH_TOKEN fixes it.',
+    unread: 'Connected, not read. MyDataValue holds the guest-origin mix per object — the '
+      + 'thing that turns arrivals, exchange rates and season into a signal for THIS room — '
+      + 'and nothing pulls it yet. Until it does, a market-wide number applied to one room '
+      + 'without its origin mix would be a decoration, not evidence.',
+    read: 'No macro signal for this room yet. The guest-origin mix is being read, but none '
+      + 'has been recorded against this room in this window.',
+  },
   findingCount: (n, s) => `${n}× ${s}`,
   noneOpen: 'none open',
   notRated: 'not assessed',
@@ -570,11 +593,24 @@ export const id: Strings = {
     aboveP90: 'di atas sepersepuluh teratas lingkungan',
   },
   macroHeading: 'Makro',
-  macroBlocked: 'Belum terhubung. Kedatangan, kurs dan musim baru menjadi sinyal untuk kamar '
-    + 'INI bila komposisi asal tamu diketahui per objek — dan itu ada di MyDataValue, yang '
-    + 'izinnya dicabut. Sampai saat itu tidak ada angka makro di sini, karena angka '
-    + 'sepasar yang ditempel pada satu kamar tanpa komposisi asalnya adalah hiasan, '
-    + 'bukan bukti.',
+  macro: {
+    not_configured: 'Belum terhubung. Kedatangan, kurs dan musim baru menjadi sinyal untuk '
+      + 'kamar INI bila komposisi asal tamu diketahui per objek — dan itu ada di '
+      + 'MyDataValue, yang belum dikonfigurasi.',
+    grant_revoked: 'Belum terhubung. Komposisi asal tamu per objek adalah yang mengubah '
+      + 'kedatangan, kurs dan musim menjadi sinyal untuk kamar INI, dan itu ada di '
+      + 'MyDataValue — yang izinnya dicabut dan perlu otorisasi baru.',
+    grant_stale: 'Belum terhubung. Komposisi asal tamu per objek adalah yang mengubah '
+      + 'kedatangan, kurs dan musim menjadi sinyal untuk kamar INI. MyDataValue terjangkau '
+      + 'dan token yang tersimpan tertinggal; satu token terkini di '
+      + 'MDV_SEED_REFRESH_TOKEN memperbaikinya.',
+    unread: 'Terhubung, belum dibaca. MyDataValue menyimpan komposisi asal tamu per objek — '
+      + 'yang mengubah kedatangan, kurs dan musim menjadi sinyal untuk kamar INI — dan belum '
+      + 'ada yang menariknya. Sampai itu terjadi, angka sepasar yang ditempel pada satu '
+      + 'kamar tanpa komposisi asalnya hanyalah hiasan, bukan bukti.',
+    read: 'Belum ada sinyal makro untuk kamar ini. Komposisi asal tamu sudah dibaca, tetapi '
+      + 'belum ada yang tercatat untuk kamar ini pada jendela ini.',
+  },
   findingCount: (n, s) => `${n}× ${s}`,
   noneOpen: 'tidak ada',
   notRated: 'belum dinilai',
