@@ -9,8 +9,9 @@
 import { createServer } from 'node:http'
 import { Pool } from 'pg'
 import { startImport, latestRun, releaseAbandoned, ImportBusyError,
-  isElev8Report, isPriceLabsReport, isCheckReport, isDiscoverReport,
-  reportCounts } from './import/run.js'
+  isElev8Report, isPriceLabsReport, isCheckReport, isDiscoverReport, isFunnelReport,
+  reportCounts, type AnyReport } from './import/run.js'
+import type { ImportReport as MdvImportReport } from './sources/mdv/objects.js'
 import { seedRefreshToken } from './sources/mdv/client.js'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL! })
@@ -85,11 +86,14 @@ check('the run finishes and records its report', done?.finishedAt !== null && !d
 // or, once PriceLabs arrived and brought its own `listings` object, a PriceLabs
 // report as an Elev8 one.
 const stored = done?.report ?? null
-check('the stored report is recognisably the MDV shape',
-      !isElev8Report(stored) && !isPriceLabsReport(stored) && !isCheckReport(stored)
-      && !isDiscoverReport(stored))
-const asMdv = !isElev8Report(stored) && !isPriceLabsReport(stored) && !isCheckReport(stored)
-  && !isDiscoverReport(stored) ? stored : null
+// The funnel report joined the union and carries its own tag, so the MDV shape is
+// still "none of the tagged ones" — and it now nests a funnel report INSIDE
+// itself rather than replacing itself with one, which is what keeps that true.
+const notTagged = (r: AnyReport | null): r is MdvImportReport =>
+  !isElev8Report(r) && !isPriceLabsReport(r) && !isCheckReport(r)
+  && !isDiscoverReport(r) && !isFunnelReport(r)
+check('the stored report is recognisably the MDV shape', notTagged(stored))
+const asMdv = notTagged(stored) ? stored : null
 // One Booking object arrived and no room in this fixture carries its id, so the
 // honest outcome is one unresolved row and no new object. That changed when MDV
 // stopped creating entities: Elev8 is the authority for what exists.

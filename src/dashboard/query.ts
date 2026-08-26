@@ -12,6 +12,7 @@
  *     has to state the gate rather than a label somebody typed.
  */
 import type { PoolClient } from 'pg'
+import { clientCredentials } from '../sources/mdv/register.js'
 import { stringsFor, type Lang } from '../i18n.js'
 export type { FunnelState } from '../checks/occupancy-gap.js'
 import type { FunnelState } from '../checks/occupancy-gap.js'
@@ -288,6 +289,23 @@ export interface Signals {
   nbhdP90: number | null
   /** How many listings the band rests on. Two and 155 are different claims. */
   nbhdListings: number | null
+  /**
+   * The funnel, kept in TWO sets on purpose.
+   *
+   * Booking reports trailing over a window it does not name; Airbnb reports
+   * forward per stay date. Summing them into one "impressions" would add a
+   * figure about the past to a figure about the future and produce a number
+   * about nothing. An apartment listed on both channels legitimately has both,
+   * and the page says which is which.
+   */
+  funnelTrailingImpressions: number | null
+  funnelTrailingViews: number | null
+  funnelTrailingConversions: number | null
+  funnelForwardImpressions: number | null
+  funnelForwardViews: number | null
+  funnelForwardConversions: number | null
+  /** Nights the forward figures rest on. Three and ninety are different claims. */
+  funnelForwardNights: number
 }
 
 export async function signals(client: PoolClient): Promise<Map<string, Signals>> {
@@ -297,7 +315,10 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
     price_recommended: string | null, price_live: string | null, nights: number,
     currency: string | null, observed_at: Date | null, as_of: string | null,
     p25: string | null, p50: string | null, p75: string | null, p90: string | null,
-    listings: string | null
+    listings: string | null,
+    ft_impressions: string | null, ft_views: string | null, ft_conversions: string | null,
+    ff_impressions: string | null, ff_views: string | null, ff_conversions: string | null,
+    ff_nights: number
   }>(`
     -- Per entity, the most recent pass. Not a global max: a listing PriceLabs
     -- refused today must show yesterday's number as yesterday's, not vanish.
@@ -353,6 +374,40 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
        where s.metric in ('price_recommended', 'price_current')
          and s.stay_date >= p.as_of and s.stay_date < p.as_of + 30
        group by s.entity_id
+    ),
+    -- The funnel, trailing: one figure per object over a window the provider does
+    -- not name, which is why the metric is suffixed _trailing and not a day count.
+    fn_t_asof as (
+      select entity_id, max(as_of_date) as as_of
+        from snapshot where metric = 'funnel_impressions_trailing' group by entity_id
+    ),
+    fn_t as (
+      select s.entity_id,
+             max(s.value) filter (where s.metric = 'funnel_impressions_trailing') as impressions,
+             max(s.value) filter (where s.metric = 'funnel_views_trailing')       as views,
+             max(s.value) filter (where s.metric = 'funnel_conversions_trailing') as conversions
+        from snapshot s
+        join fn_t_asof a on a.entity_id = s.entity_id and s.as_of_date = a.as_of
+       group by s.entity_id
+    ),
+    -- The funnel, forward: per stay date, so the window is a SUM over the same
+    -- thirty nights the occupancy figure above covers. Rates are computed from
+    -- these sums rather than averaged over nights: averaging would weight a night
+    -- with three impressions the same as a night with three thousand.
+    fn_f_asof as (
+      select entity_id, max(as_of_date) as as_of
+        from snapshot where metric = 'funnel_impressions' group by entity_id
+    ),
+    fn_f as (
+      select s.entity_id,
+             sum(s.value) filter (where s.metric = 'funnel_impressions') as impressions,
+             sum(s.value) filter (where s.metric = 'funnel_views')       as views,
+             sum(s.value) filter (where s.metric = 'funnel_conversions') as conversions,
+             count(*) filter (where s.metric = 'funnel_impressions')::int as nights
+        from snapshot s
+        join fn_f_asof a on a.entity_id = s.entity_id and s.as_of_date = a.as_of
+       where s.stay_date >= a.as_of and s.stay_date < a.as_of + 30
+       group by s.entity_id
     )
     select e.id::text as entity_id,
            w.occupancy::text, w.market_occupancy::text, w.mpi::text,
@@ -360,11 +415,17 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
            c.price_recommended::text, c.price_live::text,
            coalesce(c.nights, 0) as nights, c.currency, c.observed_at,
            w.as_of,
-           nb.p25::text, nb.p50::text, nb.p75::text, nb.p90::text, nb.listings::text
+           nb.p25::text, nb.p50::text, nb.p75::text, nb.p90::text, nb.listings::text,
+           ft.impressions::text as ft_impressions, ft.views::text as ft_views,
+           ft.conversions::text as ft_conversions,
+           ff.impressions::text as ff_impressions, ff.views::text as ff_views,
+           ff.conversions::text as ff_conversions, coalesce(ff.nights, 0) as ff_nights
       from entity e
       left join win w on w.entity_id = e.id
       left join cal c on c.entity_id = e.id
       left join nb on nb.entity_id = e.id
+      left join fn_t ft on ft.entity_id = e.id
+      left join fn_f ff on ff.entity_id = e.id
      where e.active`)
 
   const num = (v: string | null) => v === null ? null : Number(v)
@@ -375,6 +436,13 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
     nights: r.nights, currency: r.currency, observedAt: r.observed_at, asOf: r.as_of,
     nbhdP25: num(r.p25), nbhdP50: num(r.p50), nbhdP75: num(r.p75), nbhdP90: num(r.p90),
     nbhdListings: num(r.listings),
+    funnelTrailingImpressions: num(r.ft_impressions),
+    funnelTrailingViews: num(r.ft_views),
+    funnelTrailingConversions: num(r.ft_conversions),
+    funnelForwardImpressions: num(r.ff_impressions),
+    funnelForwardViews: num(r.ff_views),
+    funnelForwardConversions: num(r.ff_conversions),
+    funnelForwardNights: r.ff_nights,
   }]))
 }
 
@@ -393,9 +461,13 @@ export async function signals(client: PoolClient): Promise<Map<string, Signals>>
  * signal. No adapter writes them, so no room can have them.
  */
 export async function funnelState(db: PoolClient): Promise<FunnelState> {
-  if (!process.env.MDV_CLIENT_ID || !process.env.MDV_CLIENT_SECRET) {
-    return { kind: 'not_configured' }
-  }
+  /**
+   * A REGISTERED client counts as configured, and reading the variables alone did
+   * not. This is the same defect `runMdv` had: once the service registered its own
+   * client the variables became optional, so a fully working grant would have gone
+   * on reporting "not configured" — a sentence contradicted by the data beside it.
+   */
+  if (!await clientCredentials(db)) return { kind: 'not_configured' }
   const { rows } = await db.query<{ revoked_at: Date | null, stale_since: Date | null }>(
     `select revoked_at, stale_since from oauth_token where provider = 'mdv'`)
   const grant = rows[0]

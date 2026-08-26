@@ -160,3 +160,79 @@ export function pickField(
   const best = present[0]!
   return { path: best.path, filled: best.filled, total: best.total }
 }
+
+/**
+ * Every recorded shape for a source, newest per endpoint, in one result.
+ *
+ * `latestShape` answers about one endpoint, which is right for a page a person
+ * clicks through. It is wrong for the case this was added for: a mapper has to
+ * be written against ELEVEN endpoints at once, and reading them one page at a
+ * time — or worse, off a screenshot — reintroduces exactly the transcription
+ * step that recording shapes was meant to remove. A field name that arrives via
+ * my eyes instead of via the wire is a guess wearing a measurement's clothes.
+ */
+export async function allShapes(
+  client: PoolClient, source?: string,
+): Promise<{ source: string, endpoint: string, observedAt: Date, sampleCount: number,
+             note?: string, shape: ShapeEntry[] }[]> {
+  const { rows } = await client.query<{
+    source: string, endpoint: string, observed_at: Date, sample_count: number,
+    note: string | null, shape: ShapeEntry[]
+  }>(`select distinct on (source, endpoint)
+             source, endpoint, observed_at, sample_count, note, shape
+        from api_shape
+       where ($1::text is null or source = $1)
+       order by source, endpoint, observed_at desc`, [source ?? null])
+  return rows.map(r => ({
+    source: r.source, endpoint: r.endpoint, observedAt: r.observed_at,
+    sampleCount: r.sample_count, note: r.note ?? undefined, shape: r.shape,
+  }))
+}
+
+export interface RecordedShape {
+  source: string
+  endpoint: string
+  observedAt: Date
+  sampleCount: number
+  note?: string
+  shape: ShapeEntry[]
+}
+
+/**
+ * Renders recorded shapes as plain text meant to be copied.
+ *
+ * A pure function on purpose. What this produces is the input to writing a
+ * mapper, so the one property that matters is that a field name comes out
+ * BYTE-IDENTICAL to what the provider sent — no escaping, no ellipsis, no column
+ * that silently truncates a long path. That is a property worth a test, and it
+ * cannot have one while it lives inside an HTTP handler.
+ */
+export function renderShapesText(
+  recorded: RecordedShape[], opts: { source?: string, now?: Date } = {},
+): string {
+  if (!recorded.length) {
+    return `no shapes recorded${opts.source ? ` for source ${opts.source}` : ''}.`
+         + ` run an import first.\n`
+  }
+  const stamp = (d: Date) => d.toISOString().slice(0, 19) + 'Z'
+  const out: string[] = [
+    `# api response shapes${opts.source ? ` \u2014 source ${opts.source}` : ''}`,
+    `# generated ${stamp(opts.now ?? new Date())}`,
+    `# columns: path | json types | non-empty / occurrences`,
+    `# values are never recorded. a shape is safe to keep; a sample of live data is not.`,
+  ]
+  for (const r of recorded) {
+    out.push('', `## ${r.source} ${r.endpoint}`)
+    out.push(`   observed ${stamp(r.observedAt)} \u00b7 ${r.sampleCount} sample(s)`
+             + (r.note ? ` \u00b7 ${r.note}` : ''))
+    if (!r.shape.length) { out.push('   (no paths \u2014 the response was empty)'); continue }
+    // Padded to the LONGEST path, never to a fixed ceiling. A 90-character path
+    // would otherwise be cut exactly where the interesting part is.
+    const w = Math.max(...r.shape.map(e => e.path.length))
+    const t = Math.max(...r.shape.map(e => e.types.join('|').length))
+    for (const e of r.shape) {
+      out.push(`   ${e.path.padEnd(w)}  ${e.types.join('|').padEnd(t)}  ${e.filled}/${e.total}`)
+    }
+  }
+  return out.join('\n') + '\n'
+}

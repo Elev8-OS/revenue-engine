@@ -14,6 +14,7 @@
  */
 import { renderDashboard, pricePosition, type DashboardData } from './dashboard/render.js'
 import type { Row, Signals } from './dashboard/query.js'
+import { renderShapesText } from './sources/elev8/shape.js'
 import { en, id, LANGS, stringsFor } from './i18n.js'
 
 let fails = 0
@@ -32,7 +33,12 @@ const sig = (over: Partial<Signals> = {}): Signals => ({
   occupancy: 26, marketOccupancy: 48, mpi: 1.31, adr: null, marketAdr: null, revenue: 900,
   priceRecommended: 165, priceLive: 180, nights: 30, currency: 'CHF',
   observedAt: null, asOf: '2026-08-25',
-  nbhdP25: 60, nbhdP50: 80, nbhdP75: 98, nbhdP90: 136, nbhdListings: 155, ...over,
+  nbhdP25: 60, nbhdP50: 80, nbhdP75: 98, nbhdP90: 136, nbhdListings: 155,
+  // The default is a portfolio with NO funnel read yet, because that is the state
+  // every listing was in for weeks and the page has to be right in it.
+  funnelTrailingImpressions: null, funnelTrailingViews: null, funnelTrailingConversions: null,
+  funnelForwardImpressions: null, funnelForwardViews: null, funnelForwardConversions: null,
+  funnelForwardNights: 0, ...over,
 })
 const data = (over: Partial<DashboardData> = {}): DashboardData => ({
   lang: 'en', basis: 'revenue', openId: null, rows: [row()],
@@ -168,6 +174,44 @@ for (const k of ['not_configured', 'grant_revoked', 'grant_stale', 'unread', 're
   check(`${k}: the macro sentence exists in both languages`,
         en.macro[k].length > 40 && id.macro[k].length > 40 && en.macro[k] !== id.macro[k])
 }
+
+/* ------------------------------------------------ the shapes text export */
+
+// This is the input to writing a mapper against eleven MDV endpoints, so the
+// property under test is exactness: what the provider called a field must come
+// out byte-identical. The two field names below differ by one character and are
+// the exact class of mistake that reading a rendered page off a screenshot
+// cannot catch.
+const shaped = renderShapesText([
+  { source: 'mdv', endpoint: 'GET /airbnb/ranking/', observedAt: new Date('2026-08-26T04:15:00Z'),
+    sampleCount: 3, note: 'rows under results',
+    shape: [
+      { path: 'results[].search_to_view_rate', types: ['number'], filled: 3, total: 3 },
+      { path: 'results[].listing_id', types: ['string'], filled: 3, total: 3 },
+      { path: 'results[].impressions', types: ['number', 'null'], filled: 1, total: 3 },
+    ] },
+  { source: 'mdv', endpoint: 'GET /booking/pricing/', observedAt: new Date('2026-08-26T04:15:00Z'),
+    sampleCount: 0, shape: [] },
+], { source: 'mdv', now: new Date('2026-08-26T09:00:00Z') })
+
+check('every recorded field name appears verbatim, unescaped and uncut',
+      shaped.includes('results[].search_to_view_rate')
+      && !shaped.includes('search_to_views_rate')
+      && shaped.includes('results[].listing_id'), '')
+check('the fill count travels with the name, because a field that exists and is empty is the failure mode',
+      /impressions\s+number\|null\s+1\/3/.test(shaped), '')
+check('the longest path sets the column, so nothing is truncated to fit',
+      shaped.split('\n').every(l => l.length < 200)
+      && shaped.includes('results[].impressions      '), '')
+check('an endpoint that answered with nothing says so rather than being omitted',
+      shaped.includes('GET /booking/pricing/')
+      && shaped.includes('the response was empty'), '')
+check('no shapes at all is a sentence, not an empty page',
+      renderShapesText([], { source: 'mdv' }).includes('run an import first'))
+// A shape is safe to keep BECAUSE it holds no values. If that ever stops being
+// true this export is the page that leaks it, so the promise is asserted here.
+check('the header states the rule that makes this page safe to copy',
+      shaped.includes('values are never recorded'))
 
 console.log(fails ? `\n${fails} FAILED` : '\nall green')
 process.exit(fails ? 1 : 0)

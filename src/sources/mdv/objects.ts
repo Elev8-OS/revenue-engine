@@ -20,6 +20,7 @@
  */
 import type { PoolClient } from 'pg'
 import type { MdvClient } from './client.js'
+import type { FunnelReport } from './funnel.js'
 import { lookupAlias, link, recordUnresolved, clearUnresolved }
   from '../../entity/resolve.js'
 import { recordFreshness } from '../../snapshot/write.js'
@@ -136,6 +137,15 @@ export interface ImportReport {
    */
   crossKind: number
   freshnessRows: number
+  /**
+   * The funnel pass that ran alongside, when it ran. Nested rather than merged so
+   * the narrowing in `import/run.ts` keeps working: the MDV report is identified
+   * by being none of the tagged shapes, and a `kind` at the top level here would
+   * make it collide with the funnel report's own tag.
+   */
+  funnel?: FunnelReport
+  /** Why it did not run. Separate permissions, so this is an ordinary outcome. */
+  funnelError?: string
 }
 
 const empty = (): ImportReport => ({

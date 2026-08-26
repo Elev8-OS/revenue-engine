@@ -13,6 +13,7 @@
  */
 import type { Pool, PoolClient } from 'pg'
 import { MdvClient } from '../sources/mdv/client.js'
+import { importFunnel, type FunnelReport } from '../sources/mdv/funnel.js'
 import { importObjects, type ImportReport } from '../sources/mdv/objects.js'
 import { Elev8Client } from '../sources/elev8/client.js'
 import { authFromEnv } from '../sources/elev8/auth.js'
@@ -34,7 +35,7 @@ import { clientCredentials } from '../sources/mdv/register.js'
  * unique to what it identifies.
  */
 export type AnyReport = ImportReport | Elev8ImportReport | PriceLabsImportReport | CheckReport
-  | DiscoverReport
+  | DiscoverReport | FunnelReport
 
 export interface RunRow {
   id: string
@@ -80,6 +81,9 @@ export const isCheckReport = (r: AnyReport | null): r is CheckReport =>
 
 export const isDiscoverReport = (r: AnyReport | null): r is DiscoverReport =>
   Boolean(r) && (r as DiscoverReport).kind === 'mdv-discover'
+
+export const isFunnelReport = (r: AnyReport | null): r is FunnelReport =>
+  Boolean(r) && (r as FunnelReport).kind === 'mdv-funnel'
 
 export class ImportBusyError extends Error {
   constructor() { super('an import is already running') }
@@ -138,6 +142,7 @@ async function run(pool: Pool, runId: string, source: string): Promise<void> {
       : source === 'pricelabs' ? await runPriceLabs(client)
       : source === 'checks' ? await runChecks(client)
       : source === 'mdv-discover' ? await runDiscover(client)
+      : source === 'mdv-funnel' ? await runFunnel(client)
       : source === 'mdv' ? await runMdv(client)
       : (() => { throw new Error(`no importer for source ${source}`) })()
     await client.query(
@@ -238,7 +243,37 @@ async function runMdv(client: PoolClient): Promise<ImportReport> {
     // with a portfolio.
     tokenUrl: process.env.MDV_TOKEN_URL ?? undefined,
   })
-  return importObjects(client, mdv)
+  const report = await importObjects(client, mdv)
+  /**
+   * The funnel rides on the object pass, in this order, on purpose: it resolves
+   * channel ids through the aliases the pass just refreshed, so a listing that
+   * only became joinable a second ago is already readable.
+   *
+   * Wrapped, because the three funnel endpoints are separate permissions on
+   * MDV's side. A portfolio import that failed because one report was not
+   * granted would be a regression dressed as a feature — the objects are the
+   * part nothing else can replace.
+   */
+  try {
+    report.funnel = await importFunnel(client, mdv)
+  } catch (err) {
+    report.funnelError = (err as Error).message
+  }
+  return report
+}
+
+/** The funnel on its own, for when the objects have not changed. */
+async function runFunnel(client: PoolClient): Promise<FunnelReport> {
+  const creds = await clientCredentials(client)
+  if (!creds) {
+    throw new Error('no MDV client: none registered and MDV_CLIENT_ID is not set')
+  }
+  const mdv = new MdvClient({
+    clientId: creds.clientId, clientSecret: creds.clientSecret ?? '',
+    base: process.env.MDV_BASE_URL ?? undefined,
+    tokenUrl: process.env.MDV_TOKEN_URL ?? undefined,
+  })
+  return importFunnel(client, mdv)
 }
 
 /**
@@ -286,6 +321,16 @@ export function reportCounts(r: AnyReport | null): {
       // that WAS placed. Counting it here would inflate "not assessable" with
       // rows that are fine.
       unresolved: r.listings.noMarket,
+    }
+  }
+  if (isFunnelReport(r)) {
+    // A funnel pass places no objects at all, and saying "0 created" about a run
+    // that stored four thousand measurements would read as a failure. What it
+    // brought in is rows; what it could not place is ids that matched nothing.
+    return {
+      created: r.snapshotRows,
+      known: r.endpoints.filter(e => e.snapshotRows > 0).length,
+      unresolved: r.endpoints.reduce((n, e) => n + e.unresolvedIds.length, 0),
     }
   }
   return {

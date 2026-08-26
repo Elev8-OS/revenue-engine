@@ -133,6 +133,20 @@ code{
 }
 .card{padding:1.1rem 1.25rem;margin-bottom:.8rem;overflow-x:auto}
 .panel{padding:.9rem 1.1rem;margin-bottom:.7rem}
+
+/* The funnel chain. Three stages, each a count with the share that reached it.
+   Wrapped rather than scrolled: on a phone the stages stack, and a chain that
+   ran off the side would hide the booking stage — the one that matters most. */
+.fchain{margin:.35rem 0 .1rem}
+.fchain+.fchain{margin-top:.8rem;padding-top:.7rem;border-top:1px solid var(--bor)}
+.flabel{font-size:.74rem;letter-spacing:.02em;text-transform:uppercase;color:var(--mut);
+  margin-bottom:.35rem}
+.frow{display:flex;align-items:flex-start;gap:.4rem;flex-wrap:wrap}
+.fstage{min-width:5.5rem}
+.fnum{font-size:1.15rem;font-weight:650;line-height:1.15;font-variant-numeric:tabular-nums}
+.flab{font-size:.74rem;color:var(--mut);line-height:1.25}
+.fsh{font-size:.78rem;font-variant-numeric:tabular-nums}
+.farrow{color:var(--bor);font-size:1.3rem;line-height:1.1;padding:0 .1rem}
 .stat{padding:.9rem 1.1rem}
 .card > h1:first-child{margin-bottom:.5rem}
 

@@ -22,6 +22,24 @@ const money = (v: number | null, cur: string | null, locale: string) =>
         style: 'currency', currency: cur ?? 'CHF', maximumFractionDigits: 0,
       }).format(v)
 
+/** A count. Grouped, never abbreviated: 99'014 read as "99k" loses the precision
+ *  that makes it checkable against the provider's own report. */
+const count = (v: number, locale: string) =>
+  new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(v)
+
+/**
+ * A share, with the decimal it needs.
+ *
+ * Booking's measured search-to-view was 743 of 99'014 — 0.75%. Rounded to whole
+ * percent that is "1%", and the difference between 0.75 and 1 is a third of the
+ * traffic. Two decimals below one percent, one above.
+ */
+const pct = (v: number, locale: string) =>
+  new Intl.NumberFormat(locale, {
+    minimumFractionDigits: v < 1 ? 2 : v < 10 ? 1 : 0,
+    maximumFractionDigits: v < 1 ? 2 : v < 10 ? 1 : 0,
+  }).format(v) + '%'
+
 export interface DashboardData {
   lang: Lang
   basis: Basis
@@ -172,7 +190,7 @@ function potential(
   // Nothing to draw is not nothing to say: the micro and macro blocks report
   // their own state, and an early return here used to swallow both.
   if (ours === null && r.atStake === null) {
-    return pricePositionBlock(sig, r, s) + macroBlock(s, funnel)
+    return pricePositionBlock(sig, r, s) + macroBlock(s, funnel, sig)
   }
 
   const W = 640, PAD = 96, TRACK = W - PAD - 16
@@ -254,7 +272,7 @@ function potential(
       aria-label="${e(s.potentialHeading)}">${parts.join('')}</svg>`
   return `<section class="panel"><h3>${e(s.potentialHeading)}</h3>${chart}</section>`
     + pricePositionBlock(sig, r, s)
-    + macroBlock(s, funnel)
+    + macroBlock(s, funnel, sig)
 }
 
 /**
@@ -357,9 +375,62 @@ function pricePositionBlock(sig: q.Signals | undefined, r: Row, s: Strings): str
  * A layer that is missing has to be visible AS missing, and it must not be able
  * to disappear because a different layer is missing too.
  */
-function macroBlock(s: Strings, funnel: q.FunnelState['kind']): string {
+/**
+ * One funnel chain: how many saw it, how many opened it, how many booked.
+ *
+ * The two shares are computed HERE from the two counts either side of them, and
+ * never taken from the provider's own rate field. A rate arriving as `3.4` is
+ * 3.4% or 340% and the payload does not say which — so the adapter withholds it
+ * and this draws what cannot be misread.
+ *
+ * The chain is drawn as soon as ONE stage is known. A listing with impressions
+ * and no view count is still telling us something, and blanking the whole block
+ * for the missing stage would hide the stage we have.
+ */
+function funnelChain(
+  label: string, s: Strings,
+  seen: number | null, views: number | null, booked: number | null,
+): string {
+  if (seen === null && views === null && booked === null) return ''
+  const n = (v: number | null) =>
+    v === null ? '<span class="mut">—</span>' : e(count(v, s.numberLocale))
+  const share = (num: number | null, den: number | null) =>
+    num === null || den === null || den <= 0 ? ''
+      : `<span class="mut">${e(pct(100 * num / den, s.numberLocale))}</span>`
+  const stage = (value: number | null, name: string, of: number | null) =>
+    `<div class="fstage"><div class="fnum">${n(value)}</div>
+      <div class="flab">${e(name)}</div><div class="fsh">${share(value, of)}</div></div>`
+  return `<div class="fchain"><div class="flabel">${e(label)}</div>
+    <div class="frow">${stage(seen, s.funnelImpressions, null)
+      }<div class="farrow">&rsaquo;</div>${stage(views, s.funnelViews, seen)
+      }<div class="farrow">&rsaquo;</div>${stage(booked, s.funnelBookings, views)}</div></div>`
+}
+
+/**
+ * The macro block: either the measured funnel, or the reason there is none.
+ *
+ * The sentence and the numbers are mutually exclusive on purpose. This block has
+ * twice shipped a claim it could not evidence — "MyDataValue is revoked",
+ * rendered on every page load from a constant — and the lesson stuck: the state
+ * is derived, and once real figures exist the sentence about their absence is not
+ * merely wrong, it is contradicted by the numbers next to it.
+ */
+function macroBlock(
+  s: Strings, funnel: q.FunnelState['kind'], sig?: q.Signals,
+): string {
+  const trailing = funnelChain(s.funnelTrailingLabel, s,
+    sig?.funnelTrailingImpressions ?? null, sig?.funnelTrailingViews ?? null,
+    sig?.funnelTrailingConversions ?? null)
+  const forward = funnelChain(s.funnelForwardLabel(sig?.funnelForwardNights ?? 0), s,
+    sig?.funnelForwardImpressions ?? null, sig?.funnelForwardViews ?? null,
+    sig?.funnelForwardConversions ?? null)
+  const chains = trailing + forward
   return `<section class="panel"><h3>${e(s.macroHeading)}</h3>
-    <p class="mut" style="margin:0;font-size:.86rem">${e(s.macro[funnel])}</p></section>`
+    ${chains
+      ? chains + `<p class="mut" style="margin:.5rem 0 0;font-size:.78rem">${
+          e(s.funnelChainNote)}</p>`
+      : `<p class="mut" style="margin:0;font-size:.86rem">${e(s.macro[funnel])}</p>`}
+    </section>`
 }
 
 function vsMarket(sig: q.Signals | undefined, s: Strings): string {

@@ -30,14 +30,16 @@ import { begin as mdvBegin, complete as mdvComplete, sweepFlows, DEFAULT_SCOPES 
   from './sources/mdv/oauth.js'
 import { storeInitialToken } from './sources/mdv/auth.js'
 import { seedRefreshToken } from './sources/mdv/client.js'
-import { startImport, latestRun, releaseAbandoned, reportCounts, ImportBusyError }
-  from './import/run.js'
+import { startImport, latestRun, releaseAbandoned, reportCounts, ImportBusyError,
+  isFunnelReport, type AnyReport } from './import/run.js'
+import type { FunnelReport } from './sources/mdv/funnel.js'
 import { pickLang, stringsFor, otherLang, langCookie, langCookieMaxAge, type Lang }
   from './i18n.js'
 import { publicOrigin } from './public-origin.js'
 import { authFromEnv, sessionState as elev8Session } from './sources/elev8/auth.js'
 import { retire, verdictFor, candidates as retireCandidates } from './entity/retire.js'
-import { knownShapes, latestShape } from './sources/elev8/shape.js'
+import { knownShapes, latestShape, allShapes, renderShapesText }
+  from './sources/elev8/shape.js'
 import { registerClient, clientCredentials, clientState } from './sources/mdv/register.js'
 import { head, THEME_CSS } from './ui/theme.js'
 import * as q from './dashboard/query.js'
@@ -271,6 +273,16 @@ async function formBody(req: IncomingMessage): Promise<Record<string, string | u
 
 const html = (res: ServerResponse, body: string, status = 200) => {
   res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+  res.end(body)
+}
+
+/**
+ * Plain text, deliberately. Used by `/shapes.txt`, which exists to be COPIED —
+ * into a chat, into a diff, into a mapper — and every character of markup in the
+ * way is a character that has to be picked back out by hand.
+ */
+const plainText = (res: ServerResponse, body: string, status = 200) => {
+  res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
   res.end(body)
 }
 /**
@@ -840,6 +852,27 @@ deactivated rather than deleted, so the numbers behind it survive.</p></div>` : 
    * every language, and inventing Indonesian for `rooms[].bed_type_id` would
    * make it harder to match against the API, not easier.
    */
+  /**
+   * The same shapes as `/shapes`, as text, for every endpoint of a source at once.
+   *
+   * The HTML page shows one endpoint per click, which suits a person exploring.
+   * It does not suit the job that follows a discovery pass: writing one mapper
+   * against eleven endpoints, where the field names must arrive EXACTLY. Read off
+   * a rendered page, `search_to_view_rate` and `search_to_views_rate` look the
+   * same, and this project has already lost a deploy and a live run to precisely
+   * that class of error twice — once on an Elev8 field name, once on an assumed
+   * array orientation.
+   *
+   * So: no markup, no truncation, sorted, greppable. Still behind the sign-in
+   * gate, because which endpoints an account answers is itself account data.
+   */
+  if (path === '/shapes.txt') {
+    const src = url.searchParams.get('source') ?? undefined
+    const recorded = await withClient(c => allShapes(c, src)) ?? []
+    plainText(res, renderShapesText(recorded, { source: src }))
+    return
+  }
+
   if (path === '/shapes') {
     const rows = await withClient(c => knownShapes(c))
     const want = url.searchParams.get('endpoint')
@@ -853,7 +886,9 @@ deactivated rather than deleted, so the numbers behind it survive.</p></div>` : 
 <body><main><h1>API response shapes</h1>
 <p class="s">Paths, JSON types and how often each was non-empty. Values are never
 recorded — a shape is safe to keep, a sample of live data is not.
- · <a href="/status?lang=${lang}">${esc(t.readiness)}</a></p>
+ · <a href="/status?lang=${lang}">${esc(t.readiness)}</a>
+ · <a href="/shapes.txt">every endpoint as plain text</a>
+ · <a href="/shapes.txt?source=${encodeURIComponent(from)}">just <code>${esc(from)}</code></a></p>
 ${!rows?.length ? '<div class="card">Nothing observed yet. Run an import.</div>' : `
 <div class="card"><table><thead><tr><th>Source</th><th>Endpoint</th><th>Observed</th>
 <th>Samples</th><th>Paths</th></tr></thead><tbody>
@@ -880,6 +915,45 @@ ${detail.shape.map(e => {
     return
   }
 
+  /**
+   * What the funnel pass actually read, per endpoint.
+   *
+   * Untranslated, like `/shapes`, and for the same reason: these are field names
+   * off the wire, and the whole value of the block is that they can be compared
+   * character by character against the provider's own report.
+   *
+   * The three lines that matter are `used`, `missing` and `unclaimed`. `used`
+   * says which key fed which figure, so a number on the dashboard can be traced
+   * back to the field it came from. `unclaimed` says which keys were present that
+   * nothing asked for — which is the difference between "the funnel is empty" and
+   * "the funnel is there under a name we did not anticipate", and the only reason
+   * this build did not need another round trip to find out.
+   */
+  const funnelDetail = (report: AnyReport | null): string => {
+    const fr = isFunnelReport(report) ? report
+      : report && 'funnel' in report ? (report as { funnel?: FunnelReport }).funnel
+      : undefined
+    if (!fr) return ''
+    const row = (label: string, value: string) =>
+      `<tr><td class="mut">${esc(label)}</td><td><code>${esc(value)}</code></td></tr>`
+    return `<div class="card"><h2 style="margin-top:0">Funnel pass \u00b7 ${
+      esc(fr.asOf)}</h2>
+<p class="s">${fr.snapshotRows} value(s) stored across ${fr.endpoints.length} endpoint(s).</p>
+${fr.endpoints.map(ep => `<h3><code>${esc(ep.path)}</code></h3>
+<table><tbody>
+${row('status', String(ep.status))}
+${row('rows', `${ep.rows} under ${ep.envelope || 'n/a'}`)}
+${row('used', Object.entries(ep.resolution.used).map(([k, v]) => `${k}=${v}`).join('  ') || 'nothing matched')}
+${row('missing', ep.resolution.missing.join(', ') || 'none')}
+${row('unclaimed', ep.resolution.unclaimed.join(', ') || 'none')}
+${row('stored', `${ep.snapshotRows} row(s) over ${ep.matched} object(s)`)}
+${row('withheld', String(ep.withheld))}
+${row('rate scale', ep.rateUnit)}
+${ep.unresolvedIds.length ? row('ids matching nothing', ep.unresolvedIds.join(', ')) : ''}
+${ep.note ? row('note', ep.note) : ''}
+</tbody></table>`).join('')}</div>`
+  }
+
   /* ------------------------------------------------------------------ import */
 
   if (path === '/import' && req.method === 'POST') {
@@ -890,7 +964,8 @@ ${detail.shape.map(e => {
     const source = form.source === 'elev8' ? 'elev8'
       : form.source === 'pricelabs' ? 'pricelabs'
       : form.source === 'checks' ? 'checks'
-      : form.source === 'mdv-discover' ? 'mdv-discover' : 'mdv'
+      : form.source === 'mdv-discover' ? 'mdv-discover'
+      : form.source === 'mdv-funnel' ? 'mdv-funnel' : 'mdv'
     try {
       await startImport(pool, { startedBy: session.email || 'open', source })
     } catch (err) {
@@ -940,11 +1015,17 @@ ${mdvReady ? '' : `<div class="card warn">${t.importNeedsMdv}</div>`}
 </form>
 <p class="sub">${esc(t.discoverNote)}</p>
 <form class="actions" method="post" action="/import?lang=${lang}">
+  <span class="label">${esc(t.funnelStart)}</span>
+  <button type="submit" name="source" value="mdv-funnel"${mdvReady && (!run || run.finishedAt) ? '' : ' disabled'}>${esc(t.funnelRun)}</button>
+</form>
+<p class="sub">${esc(t.funnelNote)}</p>
+<form class="actions" method="post" action="/import?lang=${lang}">
   <span class="label">${esc(t.checksStart)}</span>
   <button type="submit" name="source" value="checks"${!run || run.finishedAt ? '' : ' disabled'}>${esc(t.checksRun)}</button>
 </form>
 <p class="sub">${esc(t.checksNote)}</p>
 <p class="sub">${run ? esc(t.lastRun(run.source)) : ''}</p></div>
+${funnelDetail(run?.report ?? null)}
 </main></body></html>`)
     return
   }

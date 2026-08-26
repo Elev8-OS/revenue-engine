@@ -76,6 +76,9 @@ export interface Strings {
   discoverStart: string
   discoverRun: string
   discoverNote: string
+  funnelStart: string
+  funnelRun: string
+  funnelNote: string
   checksStart: string
   checksRun: string
   checksNote: string
@@ -103,6 +106,12 @@ export interface Strings {
   pricePos: Record<'belowP25' | 'p25p50' | 'p50p75' | 'p75p90' | 'aboveP90', string>
   /** The macro layer, and why it is not here. */
   macroHeading: string
+  funnelTrailingLabel: string
+  funnelForwardLabel: (nights: number) => string
+  funnelImpressions: string
+  funnelViews: string
+  funnelBookings: string
+  funnelChainNote: string
   /**
    * One sentence per measured state — NOT one constant.
    *
@@ -284,6 +293,12 @@ export const en: Strings = {
   recommendLabel: 'recommended',
   occupancy30: 'occupancy, next 30 nights',
   nightsArchived: n => `${n} night${n === 1 ? '' : 's'}`,
+  funnelStart: 'Read the funnel',
+  funnelRun: 'Read visibility',
+  funnelNote: 'Reads impressions, views and conversions per listing from MyDataValue. '
+    + 'Field names are resolved against the payload rather than assumed, and the run '
+    + 'reports which name carried which figure — plus any key it found that nothing '
+    + 'asked for. A rate whose scale cannot be established is left unstored on purpose.',
   discoverStart: 'Ask MyDataValue what it has',
   discoverRun: 'Probe endpoints',
   discoverNote: 'Calls a list of candidate endpoints and records only the SHAPE of each '
@@ -352,6 +367,13 @@ export const en: Strings = {
     aboveP90: 'above the top tenth of the neighbourhood',
   },
   macroHeading: 'Macro',
+  funnelTrailingLabel: 'Booking.com · recent history',
+  funnelForwardLabel: n => `Airbnb · next 30 nights (${n} read)`,
+  funnelImpressions: 'seen in search',
+  funnelViews: 'opened the listing',
+  funnelBookings: 'booked',
+  funnelChainNote: 'Each share is computed from the two counts beside it, not taken '
+    + 'from the provider — a rate whose scale is unstated can be wrong by a hundredfold.',
   macro: {
     not_configured: 'Not connected. Arrivals, exchange rates and season only become a signal '
       + 'for THIS room once the guest-origin mix is known per object — and that lives in '
@@ -562,6 +584,12 @@ export const id: Strings = {
   recommendLabel: 'disarankan',
   occupancy30: 'okupansi, 30 malam berikutnya',
   nightsArchived: n => `${n} malam`,
+  funnelStart: 'Baca funnel',
+  funnelRun: 'Baca keterlihatan',
+  funnelNote: 'Membaca impresi, kunjungan dan konversi per listing dari MyDataValue. '
+    + 'Nama field dicocokkan pada muatan, bukan diasumsikan, dan proses ini melaporkan '
+    + 'nama mana yang membawa angka mana — beserta setiap kunci yang ditemukan tetapi '
+    + 'tidak diminta. Rasio yang skalanya tidak dapat dipastikan sengaja tidak disimpan.',
   discoverStart: 'Tanya MyDataValue apa yang ada',
   discoverRun: 'Sondir endpoint',
   discoverNote: 'Memanggil daftar endpoint kandidat dan mencatat hanya BENTUK setiap '
@@ -630,6 +658,13 @@ export const id: Strings = {
     aboveP90: 'di atas sepersepuluh teratas lingkungan',
   },
   macroHeading: 'Makro',
+  funnelTrailingLabel: 'Booking.com · riwayat terkini',
+  funnelForwardLabel: n => `Airbnb · 30 malam ke depan (${n} terbaca)`,
+  funnelImpressions: 'terlihat di pencarian',
+  funnelViews: 'membuka listing',
+  funnelBookings: 'memesan',
+  funnelChainNote: 'Setiap persentase dihitung dari dua angka di sebelahnya, bukan '
+    + 'diambil dari penyedia — rasio yang skalanya tidak dinyatakan bisa salah seratus kali.',
   macro: {
     not_configured: 'Belum terhubung. Kedatangan, kurs dan musim baru menjadi sinyal untuk '
       + 'kamar INI bila komposisi asal tamu diketahui per objek — dan itu ada di '
