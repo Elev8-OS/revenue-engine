@@ -303,8 +303,33 @@ const sessionCookie = (id: string) =>
   `${cookieName}=${encodeURIComponent(id)}; HttpOnly; SameSite=Lax; Path=/; `
   + `Max-Age=${sessionMaxAgeSeconds}${cookieSecure ? '; Secure' : ''}`
 
-const esc = (s: string) =>
-  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+/**
+ * Escapes for HTML — and survives a value that is not there.
+ *
+ * The parameter type stays `string`, so TypeScript still refuses a number or an
+ * object and every compile-time mistake is caught as before. The guard is for
+ * values that arrive at RUNTIME from outside the type system: JSON read back out
+ * of `import_run.report`, written by an older version of this code.
+ *
+ * It exists because /import answered a bare "error" for every request, and the
+ * whole log said `Cannot read properties of undefined (reading 'replace')` —
+ * one unguarded `.replace`, no path, no stack, no line. That message could have
+ * come from any of forty call sites on the page, and it took the page down
+ * completely rather than the one cell it belonged to.
+ *
+ * So: absence is NAMED, not swallowed. The cell renders empty, the page renders,
+ * and the log carries a stack that says exactly which template asked for a
+ * string that does not exist. Named absence, never silence — the name goes to
+ * the log, and the reader keeps their page.
+ */
+const esc = (s: string) => {
+  if (s === null || s === undefined) {
+    console.error('esc() was handed nothing — a template asked for a string that '
+      + 'does not exist. This is a bug, not a state:', new Error('esc(nullish)').stack)
+    return ''
+  }
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
 
 /** Small standalone page for the authorisation outcomes. */
 const notice = (lang: Lang, title: string, body: string) => `<!doctype html>
@@ -930,6 +955,28 @@ ${detail.shape.map(e => {
    * this build did not need another round trip to find out.
    */
   const funnelDetail = (report: AnyReport | null): string => {
+    try { return renderFunnelDetail(report) } catch (err) {
+      /**
+       * A stored report is JSON written by a PREVIOUS version of this code, so
+       * reading it is a compatibility surface and not an internal call — and I
+       * treated it as one. When the shape and the reader disagreed, the whole
+       * import page died and the operator got the word "error", losing the
+       * buttons as well as the block.
+       *
+       * The block is the newest and least-proven thing on the page. It has no
+       * business being able to take the page with it.
+       */
+      console.error(`the funnel block could not be rendered: ${(err as Error).message}\n${
+        (err as Error).stack ?? ''}`)
+      return `<div class="card warn"><b>The funnel report could not be displayed.</b>
+        The stored report does not match what this page knows how to read
+        \u2014 <code>${esc((err as Error).message)}</code>. Nothing is wrong with
+        the data; run the funnel again and this block is rewritten in the current
+        shape. The reason is in the deploy log with a stack.</div>`
+    }
+  }
+
+  const renderFunnelDetail = (report: AnyReport | null): string => {
     const fr = isFunnelReport(report) ? report
       : report && 'funnel' in report ? (report as { funnel?: FunnelReport }).funnel
       : undefined
@@ -993,9 +1040,19 @@ ${ep.note ? row('note', ep.note) : ''}
       : !run.finishedAt ? `<p>${esc(t.importRunningSince(when(run.startedAt)))}</p>`
       : run.error ? `<p class="no">${esc(t.importFailedWith(run.error))}</p>`
       : (() => {
-          const n = reportCounts(run.report)
-          return `<p><span class="ok">${esc(t.importFinishedAt(when(run.finishedAt)))}</span><br>`
-            + `${esc(t.importCounts(n.created, n.known, n.unresolved))}</p>`
+          const done = `<p><span class="ok">${
+            esc(t.importFinishedAt(when(run.finishedAt)))}</span><br>`
+          // Same compatibility surface as the funnel block: these three numbers
+          // are read out of a report an older build wrote, and "the run finished"
+          // is worth saying even when the counts cannot be derived.
+          try {
+            const n = reportCounts(run.report)
+            return done + `${esc(t.importCounts(n.created, n.known, n.unresolved))}</p>`
+          } catch (err) {
+            console.error(`report counts unreadable: ${(err as Error).message}`)
+            return done + `<span class="mut">the counts in this report could not be `
+              + `read \u2014 its shape predates this build</span></p>`
+          }
         })()
     html(res, `<!doctype html><html lang="${t.htmlLang}"><head>${head(`Revenue Engine — ${esc(t.importHeading)}`, { refresh: run && !run.finishedAt ? 5 : undefined })}</head>
 <body><main><h1>${esc(t.importHeading)}</h1>
@@ -1065,8 +1122,17 @@ await boot()
 
 const server = createServer((req, res) => {
   handle(req, res).catch(err => {
-    // Never leak an internal message to the browser; the log is where it goes.
-    console.error(`request failed: ${(err as Error).message}`)
+    /**
+     * Never leak an internal message to the browser; the log is where it goes —
+     * but the log has to be worth reading. The first version printed the message
+     * alone, so a failing page produced `Cannot read properties of undefined`
+     * with no path, no method and no stack: true, useless, and it cost a round
+     * trip through a deploy to narrow down. The request line and the stack are
+     * what turn a 500 into a fix.
+     */
+    const e = err as Error
+    console.error(`request failed: ${req.method} ${req.url} — ${e.message}\n${
+      e.stack ?? '(no stack)'}`)
     if (!res.headersSent) {
       res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
       res.end('error\n')

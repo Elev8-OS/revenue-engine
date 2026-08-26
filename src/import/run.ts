@@ -300,6 +300,13 @@ export function reportCounts(r: AnyReport | null): {
     // right column for findings — they are what this run brings into existence.
     return { created: r.findings, known: r.healthy, unresolved: r.notAssessable }
   }
+  /**
+   * From here down, every branch reads fields out of JSON that a PREVIOUS build
+   * wrote. `?? 0` is not defensive clutter: a report stored last week by a
+   * reader that had one fewer field is a normal thing to meet, and the page that
+   * shows "the run finished" must not die because a count moved. It is the same
+   * lesson the import page just taught, one layer down.
+   */
   if (isPriceLabsReport(r)) {
     // `created` is zero and stays zero. PriceLabs is a consumer of objects, not
     // a source of them: a listing that matches nothing we hold is a gap to
@@ -307,20 +314,20 @@ export function reportCounts(r: AnyReport | null): {
     // for this source would mean something had gone wrong.
     return {
       created: 0,
-      known: r.listings.resolved,
-      unresolved: r.listings.unresolved,
+      known: r.listings?.resolved ?? 0,
+      unresolved: r.listings?.unresolved ?? 0,
     }
   }
   if (isElev8Report(r)) {
     return {
-      created: r.listings.created,
-      known: r.listings.alreadyKnown,
+      created: r.listings?.created ?? 0,
+      known: r.listings?.alreadyKnown ?? 0,
       // Rows we saw and could not place. Only the market failure counts now: an
       // OTA channel without an id is not an unplaceable object, it is a channel
       // connection with nothing published behind it, and it belongs to a listing
       // that WAS placed. Counting it here would inflate "not assessable" with
       // rows that are fine.
-      unresolved: r.listings.noMarket,
+      unresolved: r.listings?.noMarket ?? 0,
     }
   }
   if (isFunnelReport(r)) {
@@ -328,9 +335,9 @@ export function reportCounts(r: AnyReport | null): {
     // that stored four thousand measurements would read as a failure. What it
     // brought in is rows; what it could not place is ids that matched nothing.
     return {
-      created: r.snapshotRows,
-      known: r.endpoints.filter(e => e.snapshotRows > 0).length,
-      unresolved: r.endpoints.reduce((n, e) => n + e.unresolvedIds.length, 0),
+      created: r.snapshotRows ?? 0,
+      known: (r.endpoints ?? []).filter(e => e.snapshotRows > 0).length,
+      unresolved: (r.endpoints ?? []).reduce((n, e) => n + (e.unresolvedIds?.length ?? 0), 0),
     }
   }
   return {
@@ -338,9 +345,9 @@ export function reportCounts(r: AnyReport | null): {
     // objects when Elev8 became the authority for what exists; the column means
     // "channel objects this run brought into the portfolio", and for MDV that is
     // an attachment to a room we already had.
-    created: r.bookingAttached + r.airbnbAttached,
-    known: r.alreadyKnown,
-    unresolved: r.unresolved,
+    created: (r.bookingAttached ?? 0) + (r.airbnbAttached ?? 0),
+    known: r.alreadyKnown ?? 0,
+    unresolved: r.unresolved ?? 0,
   }
 }
 

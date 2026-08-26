@@ -158,6 +158,34 @@ check('and records that it was abandoned rather than pretending it succeeded',
 check('after which an import can start again', Boolean(await startImport(pool)))
 await settle()
 
+/* --------------- 4 · a report an older build wrote must not kill the page */
+
+// This is the regression for a live outage. /import answered a bare "error" for
+// every request because one field read out of a stored report was absent and one
+// unguarded `.replace` took the whole page down — buttons, state, everything —
+// while the log said only "Cannot read properties of undefined".
+//
+// `import_run.report` is JSON written by a PREVIOUS version of this code. Reading
+// it is a compatibility surface, and it was treated as an internal call.
+const OLDER: Array<[string, unknown]> = [
+  ['an empty object', {}],
+  ['a funnel report with no endpoints', { kind: 'mdv-funnel', snapshotRows: 4 }],
+  ['a funnel endpoint with no ids', { kind: 'mdv-funnel', snapshotRows: 4,
+    endpoints: [{ path: '/a/', snapshotRows: 4 }] }],
+  ['an elev8 report whose listings block moved', { bedTypes: 3 }],
+  ['a pricelabs report whose listings block moved', { kind: 'pricelabs' }],
+  ['an mdv report with fields the writer did not have', { bookingSeen: 1 }],
+]
+for (const [what, report] of OLDER) {
+  let threw = ''
+  let counts = { created: -1, known: -1, unresolved: -1 }
+  try { counts = reportCounts(report as never) } catch (e) { threw = (e as Error).message }
+  check(`${what}: counting it does not throw`, threw === '', threw)
+  check(`${what}: and every count is a number, not NaN`,
+        [counts.created, counts.known, counts.unresolved].every(Number.isFinite),
+        JSON.stringify(counts))
+}
+
 srv.close(); c.release(); await pool.end()
 console.log(`\n${fails === 0 ? 'all green' : fails + ' FAILING'}`)
 process.exit(fails ? 1 : 0)
