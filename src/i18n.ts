@@ -177,6 +177,7 @@ export interface Strings {
   grantNone: string
   grantLive: (rotation: number) => string
   grantRevoked: string
+  grantStale: string
   authoriseNow: string
   grantReplace: string
   grantReplaceCaution: string
@@ -420,6 +421,8 @@ export const en: Strings = {
   grantNone: 'no grant stored yet',
   grantLive: r => `grant live, ${r} rotation${r === 1 ? '' : 's'} so far`,
   grantRevoked: 'grant revoked — a newly issued token is needed; re-seeding the old one cannot work',
+  grantStale: 'the stored token is behind the chain — the grant itself is live. A current '
+    + 'refresh token in MDV_SEED_REFRESH_TOKEN is adopted on the next boot.',
   authoriseNow: 'authorise now',
   grantReplace: 'replace this grant',
   grantReplaceCaution: 'Only needed if the grant dies. It starts a fresh authorisation and, if that succeeds, the new refresh token replaces the stored one — the current grant keeps working until then. It will fail with <code>invalid_redirect_uri</code> unless the redirect URI above is registered for this client, which it is not when the provider issued the grant directly.',
@@ -657,6 +660,8 @@ export const id: Strings = {
   grantNone: 'belum ada izin yang tersimpan',
   grantLive: r => `izin aktif, sudah ${r} kali rotasi`,
   grantRevoked: 'izin dicabut — diperlukan token yang baru diterbitkan; menanam ulang token lama tidak akan berhasil',
+  grantStale: 'token yang tersimpan tertinggal dari rantai — izinnya sendiri masih hidup. '
+    + 'Token refresh terkini di MDV_SEED_REFRESH_TOKEN akan diambil pada boot berikutnya.',
   authoriseNow: 'otorisasi sekarang',
   grantReplace: 'ganti izin ini',
   grantReplaceCaution: 'Hanya perlu jika izin mati. Ini memulai otorisasi baru dan, jika berhasil, refresh token baru menggantikan yang tersimpan — izin yang sekarang tetap berfungsi sampai saat itu. Akan gagal dengan <code>invalid_redirect_uri</code> kecuali redirect URI di atas terdaftar untuk klien ini, dan itu tidak terjadi jika penyedia menerbitkan izin secara langsung.',

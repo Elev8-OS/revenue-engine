@@ -100,6 +100,16 @@ export type SeedOutcome =
    * died with it. Presenting it again would fail identically.
    */
   | 'kept_revoked'
+  /**
+   * The stored token is BEHIND the chain and the variable holds a different one,
+   * so the operator has fetched a current token. Adopted.
+   */
+  | 'reseeded_stale'
+  /**
+   * The stored token is behind and the variable holds the same value, so it is
+   * the same stale token. Refused as futile, not as unsafe.
+   */
+  | 'kept_stale'
   | 'not_configured'
 
 /**
@@ -130,13 +140,44 @@ export async function seedRefreshToken(
 ): Promise<SeedOutcome> {
   const provider = opts.provider ?? 'mdv'
   if (!opts.refreshToken) return 'not_configured'
-  const { rows } = await client.query<{ revoked_at: Date | null, refresh_token: string }>(
-    'select revoked_at, refresh_token from oauth_token where provider = $1', [provider],
-  )
+  /**
+   * The SAME advisory lock the refresher uses, and it was missing.
+   *
+   * This function moves the row and resets the rotation counter. Without the
+   * lock it could do that while a refresh was mid-flight, which is precisely how
+   * the rotation guard in auth.ts came to match nothing — and the old guard then
+   * threw away a freshly minted token. Two writers, one row, one lock.
+   */
+  await client.query('select pg_advisory_lock($1)', [SEED_LOCK_KEY])
+  try {
+    return await seedUnderLock(client, provider, opts)
+  } finally {
+    await client.query('select pg_advisory_unlock($1)', [SEED_LOCK_KEY])
+  }
+}
+
+/** Same constant as auth.ts: one writer for the MDV token row, whoever it is. */
+const SEED_LOCK_KEY = 918_273_641
+
+async function seedUnderLock(
+  client: PoolClient, provider: string,
+  opts: { clientId: string, refreshToken: string | undefined, provider?: string },
+): Promise<SeedOutcome> {
+  const { rows } = await client.query<{
+    revoked_at: Date | null, stale_since: Date | null, refresh_token: string
+  }>('select revoked_at, stale_since, refresh_token from oauth_token where provider = $1',
+     [provider])
   const existing = rows[0]
   if (existing) {
-    if (!existing.revoked_at) return 'kept_existing'
-    if (existing.refresh_token === opts.refreshToken) return 'kept_revoked'
+    // A token that is merely BEHIND is now a reason to adopt a new one, and this
+    // is the third correction. With `invalid_grant` no longer mis-recorded as a
+    // revocation, a rule that only adopted on revocation would never adopt
+    // again — the operator would paste a current token into the variable and
+    // watch the service ignore it forever.
+    const bad = existing.revoked_at ?? existing.stale_since
+    if (!bad) return 'kept_existing'
+    const same = existing.refresh_token === opts.refreshToken!
+    if (same) return existing.revoked_at ? 'kept_revoked' : 'kept_stale'
     // Compared, never logged. Which token it is stays out of the audit trail;
     // that the operator supplied a new one is the whole entry.
     await client.query(
@@ -144,16 +185,19 @@ export async function seedRefreshToken(
           set client_id = $2, access_token = '', refresh_token = $3,
               access_expires_at = now() - interval '1 minute',
               rotation = 0, refreshed_at = now(),
-              revoked_at = null, revoked_reason = null
+              revoked_at = null, revoked_reason = null,
+              stale_since = null, stale_reason = null
         where provider = $1`,
       [provider, opts.clientId, opts.refreshToken],
     )
     await client.query(
       `insert into oauth_event (provider, event, rotation, detail)
-       values ($1, 'refreshed', 0, 'reseeded from configuration after revocation')`,
-      [provider],
+       values ($1, 'refreshed', 0, $2)`,
+      [provider, existing.revoked_at
+        ? 'reseeded from configuration after revocation'
+        : 'reseeded from configuration: the stored token was behind the chain'],
     )
-    return 'reseeded'
+    return existing.revoked_at ? 'reseeded' : 'reseeded_stale'
   }
 
   // access_expires_at in the past on purpose: we were given a refresh token and

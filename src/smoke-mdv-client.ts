@@ -1,17 +1,24 @@
 /**
  * The MDV transport, against a stand-in provider.
  *
- * What is actually being protected here: MDV rotates refresh tokens and treats a
- * spent one as stolen, revoking the whole grant. So the tests that matter are
- * not "does a GET work" but "can this code ever present a token twice", and
- * "does a restart with the seed variable still set re-seed a dead token".
+ * What is actually being protected here: MDV rotates refresh tokens on every
+ * use, so the tests that matter are not "does a GET work" but "can this code
+ * ever present a token twice", "does a restart with the seed variable still set
+ * overwrite a live chain", and — added after the provider explained it from
+ * their side — "is a token that is merely BEHIND ever mistaken for a grant that
+ * is gone".
+ *
+ * The last one had a wrong answer for weeks. `invalid_grant` was recorded as a
+ * revocation, so this service reported an unrecoverable state about a grant that
+ * was live throughout, and the tests here asserted that behaviour rather than
+ * catching it.
  */
 import { createServer, type IncomingMessage } from 'node:http'
 import { Pool } from 'pg'
 import {
   MdvClient, makeRefresh, seedRefreshToken, retryAfterMs, MdvError, GrantRevokedError,
 } from './sources/mdv/client.js'
-import { getAccessToken } from './sources/mdv/auth.js'
+import { getAccessToken, StaleTokenError } from './sources/mdv/auth.js'
 import { RateBudget } from './scheduler/budget.js'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL! })
@@ -54,7 +61,9 @@ const srv = createServer(async (req, res) => {
     const p = await body(req)
     presentedRefresh.push(p.get('refresh_token') ?? '')
     if (rejectRefreshWith) return json({ error: rejectRefreshWith }, 400)
-    // A spent token is a revoked grant, exactly as the provider describes.
+    // A token that is not the current one answers `invalid_grant` — which the
+    // provider has since made explicit: it means "you are a few rotations
+    // behind", not "the grant is gone".
     if (p.get('refresh_token') !== liveRefresh) return json({ error: 'invalid_grant' }, 400)
     rotation++
     liveRefresh = `rotated-${rotation}`
@@ -148,6 +157,46 @@ check('and it starts at rotation 0', seededRow.rows[0]!.rotation === 0)
 check('the live token survived the ignored variable',
       seededRow.rows[0]!.refresh_token === 'fresh-token-x')
 
+/*
+ * The STALE case, which is now the normal one — and which the previous rule
+ * could not leave.
+ *
+ * With `invalid_grant` correctly recorded as "our token is behind" rather than
+ * "the grant is dead", a seeding rule that only adopted on revocation would
+ * never adopt again: the operator pastes a current token into the variable and
+ * watches the service ignore it forever. Two outcomes, because the two states
+ * have two different messages for the operator.
+ */
+await reset()
+await seedRefreshToken(c, { clientId: CLIENT, refreshToken: 'seed-token-0' })
+await c.query(`update oauth_token set stale_since = now(), stale_reason = 'invalid_grant'
+                where provider = 'mdv'`)
+check('a stale grant is not re-seeded with the SAME token, which would fail identically',
+      await seedRefreshToken(c, { clientId: CLIENT, refreshToken: 'seed-token-0' }) === 'kept_stale')
+const stillBehind = await c.query<{ stale_since: Date | null, revoked_at: Date | null }>(
+  `select stale_since, revoked_at from oauth_token where provider = 'mdv'`)
+check('and the refusal leaves it behind rather than declaring it dead',
+      stillBehind.rows[0]!.stale_since !== null && stillBehind.rows[0]!.revoked_at === null)
+check('a stale grant IS adopted from a token the operator has just fetched',
+      await seedRefreshToken(c, { clientId: CLIENT, refreshToken: 'current-token-y' })
+        === 'reseeded_stale')
+const adopted = await c.query<{
+  stale_since: Date | null, rotation: number, refresh_token: string
+}>(`select stale_since, rotation, refresh_token from oauth_token where provider = 'mdv'`)
+check('the stale mark is cleared and the chain restarts at rotation 0',
+      adopted.rows[0]!.stale_since === null && adopted.rows[0]!.rotation === 0
+      && adopted.rows[0]!.refresh_token === 'current-token-y',
+      JSON.stringify(adopted.rows[0]))
+const seedTrail = await c.query<{ n: number }>(
+  `select count(*)::int n from oauth_event
+    where detail like '%behind the chain%'`)
+check('the audit trail says which of the two states it recovered from',
+      seedTrail.rows[0]!.n === 1)
+const seedLeak = await c.query<{ n: number }>(
+  `select count(*)::int n from oauth_event
+    where detail like '%token-0%' or detail like '%token-y%'`)
+check('and it still names no token value', seedLeak.rows[0]!.n === 0)
+
 /* -------------------------------------------------- 3 · Basic, encoded properly */
 
 await reset()
@@ -184,19 +233,26 @@ check('no token value appears in the audit trail',
       !details.includes('rotated-') && !details.includes('seed-token') && !details.includes(SECRET),
       details)
 
-/* -------------------------------------------------------- 6 · a dead grant stops */
+/* ------------------------------------------------ 6 · a spent token stops, but is not a funeral */
 
+// The provider answers `invalid_grant` to a token that is merely behind. This
+// used to be recorded as a revoked grant, which put "unrecoverable" on the
+// readiness page about a live grant and closed the one cheap way back.
 await reset()
 await seedRefreshToken(c, { clientId: CLIENT, refreshToken: 'a-spent-token' })
-let revoked = false
-try { await getAccessToken(c, refresh) } catch (e) { revoked = e instanceof GrantRevokedError }
-check('presenting a spent token surfaces as a revoked grant', revoked)
-const row = await c.query<{ revoked_at: Date | null }>(
-  `select revoked_at from oauth_token where provider = 'mdv'`)
-check('and the row is marked, so nothing retries it', row.rows[0]!.revoked_at !== null)
-let secondTry = false
-try { await getAccessToken(c, refresh) } catch (e) { secondTry = e instanceof GrantRevokedError }
-check('a later call fails fast instead of presenting it again', secondTry)
+let spent: unknown = null
+try { await getAccessToken(c, refresh) } catch (e) { spent = e }
+check('presenting a spent token surfaces as a STALE token, not a revoked grant',
+      spent instanceof StaleTokenError && !(spent instanceof GrantRevokedError), String(spent))
+const row = await c.query<{ revoked_at: Date | null, stale_since: Date | null }>(
+  `select revoked_at, stale_since from oauth_token where provider = 'mdv'`)
+check('and the row is marked BEHIND, so nothing retries it and nothing declares it dead',
+      row.rows[0]!.stale_since !== null && row.rows[0]!.revoked_at === null,
+      JSON.stringify(row.rows[0]))
+let secondTry: unknown = null
+try { await getAccessToken(c, refresh) } catch (e) { secondTry = e }
+check('a later call fails fast instead of presenting it again',
+      secondTry instanceof StaleTokenError)
 
 /* ------------------------------------------------------------- 7 · 429 and 401 */
 

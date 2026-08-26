@@ -209,15 +209,24 @@ async function boot(): Promise<void> {
         // Both branches that STORED the value leave it spent, and a spent
         // credential sitting in the deployment config is worth nothing and
         // risks everything.
-        if (outcome === 'seeded' || outcome === 'reseeded') {
+        if (outcome === 'seeded' || outcome === 'reseeded'
+            || outcome === 'reseeded_stale') {
           console.log('mdv grant: the seed value is now spent — clear '
             + 'MDV_SEED_REFRESH_TOKEN from the deployment config; it is a live '
             + 'credential and it is no longer read')
         }
         if (outcome === 'kept_revoked') {
-          console.log('mdv grant: REVOKED and unrecoverable as configured — the '
-            + 'variable still holds the token that died with it. A newly issued '
-            + 'refresh token in MDV_SEED_REFRESH_TOKEN is picked up on the next boot.')
+          console.log('mdv grant: REVOKED — the variable still holds the token that '
+            + 'died with it. A new authorisation is needed, not a new token.')
+        }
+        // Said differently from revoked on purpose. For weeks this line claimed
+        // "unrecoverable" about a grant the provider confirmed was live, because
+        // the code recorded `invalid_grant` as a revocation. It is a token that
+        // is behind, and the remedy is one variable.
+        if (outcome === 'kept_stale') {
+          console.log('mdv grant: the stored refresh token is BEHIND the chain — '
+            + 'the grant itself is live. MDV_SEED_REFRESH_TOKEN still holds the '
+            + 'same stale value; a current one is adopted on the next boot.')
         }
       }
     } finally { c.release() }
@@ -535,11 +544,16 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     // Reads the grant state, never the token. "Rotation 7" says everything a
     // human needs and is useless to anybody who steals it.
     const grant = await withClient(async db => (await db.query<{
-      rotation: number, revoked_at: Date | null
-    }>(`select rotation, revoked_at from oauth_token where provider = 'mdv'`)).rows[0])
+      rotation: number, revoked_at: Date | null, stale_since: Date | null
+    }>(`select rotation, revoked_at, stale_since from oauth_token
+          where provider = 'mdv'`)).rows[0])
     const elev8State = await withClient(c => elev8Session(c))
     const grantText = !grant ? `<span class="no">${esc(t.grantNone)}</span>`
       : grant.revoked_at ? `<span class="no">${esc(t.grantRevoked)}</span>`
+      // Its own state, in its own colour. "Behind" is amber because it is
+      // recoverable from one variable; red said "unrecoverable" about a live
+      // grant for weeks, which is the error this whole card now exists to avoid.
+      : grant.stale_since ? `<span class="part">${esc(t.grantStale)}</span>`
       : `<span class="ok">${esc(t.grantLive(grant.rotation))}</span>`
     html(res, `<!doctype html><html lang="${t.htmlLang}"><head>${head(`Revenue Engine — ${esc(t.readinessHeading)}`)}</head>
 <body><main><h1>${esc(t.readinessHeading)}</h1>
@@ -569,10 +583,10 @@ ${base.note
   : ''}</div>
 <div class="card"><b>MyDataValue</b> — ${grantText}<br>${esc(t.redirectUriLabel)}
 <code>${esc(mdvRedirectUri)}</code>${gateEnabled
-  ? ` · <a href="/auth/mdv?lang=${lang}">${esc(grant && !grant.revoked_at
+  ? ` · <a href="/auth/mdv?lang=${lang}">${esc(grant && !grant.revoked_at && !grant.stale_since
       ? t.grantReplace : t.authoriseNow)}</a>`
   : ` · ${esc(t.authBlockedNoAllowlist)}`}
-${gateEnabled && grant && !grant.revoked_at
+${gateEnabled && grant && !grant.revoked_at && !grant.stale_since
   // A live grant plus a prominent "authorise now" invites somebody to break a
   // working connection. Say what the link does before they find out — and only
   // where the link is actually shown, or the caution refers to nothing.
