@@ -21,7 +21,7 @@ import { resolve } from '../../entity/resolve.js'
 // Imported rather than restated. The band vocabulary ('2BR', '5BR+') has to be
 // identical across sources or the cohorts silently split in two, and a second
 // copy of the thresholds is exactly how that happens.
-import { bandFromRooms } from '../elev8/rooms.js'
+import { bandFromBedrooms } from '../elev8/rooms.js'
 import { recordShape } from '../elev8/shape.js'
 import { PriceLabsClient, plain, keepSpecimen } from './client.js'
 
@@ -64,10 +64,23 @@ export interface PriceLabsListingsReport {
   coordsWritten: number
   coordsRejected: number
   bandsWritten: number
-  /** Both sources have a bedroom count and they disagree. Never silently merged. */
-  bandDisagreements: Array<{ label: string, elev8: string, pricelabs: string }>
-  /** `no_of_bedrooms` absent or zero: unusable, and not assumed to be a studio. */
+  /** An occupancy band replaced by the stronger bedroom basis. */
+  bandsUpgraded: number
+  /** Two bedroom counts that disagree. Never silently merged. */
+  bandDisagreements: Array<{ label: string, held: string, pricelabs: string }>
+  /** `no_of_bedrooms` absent, zero or negative: unusable, and not a studio. */
   bedroomsUnusable: number
+  /**
+   * The listing NAME states a bedroom count and the field disagrees.
+   *
+   * Nine listings on this account say "5BR", "4BR", "3BR" or "2BR" in the name,
+   * and today all nine agree with `no_of_bedrooms`. That is why the check is
+   * worth having: it starts green, so anything it reports later is drift rather
+   * than noise. The name is a corroboration signal, never a source — parsing
+   * marketing copy for a cohort key is how you end up banding "2BR Pool w/
+   * Cinema for 4" by whichever digit came first.
+   */
+  nameDisagreements: Array<{ label: string, inName: number, inField: number }>
   currencies: string[]
   guardrailsSeen: number
   /** Present-but-empty is the failure reading documentation cannot catch. */
@@ -118,6 +131,26 @@ export function bedroomsOf(row: PriceLabsListingRow): number | null {
   return n !== null && n >= 1 ? Math.round(n) : null
 }
 
+/**
+ * The bedroom count a human wrote into the listing name, where there is one.
+ *
+ * Used only to CHECK the field, never to replace it. The pattern is deliberately
+ * narrow — a single digit immediately before "BR" — because the names in this
+ * portfolio also carry unit ranges ("APT 4 - 7"), capacities and street numbers,
+ * and a looser pattern would find one of those and call it a bedroom count.
+ *
+ * A name stating two different counts yields null rather than the first one: two
+ * claims in one string is not a reading.
+ */
+export function bedroomsInName(name: string | undefined): number | null {
+  if (!name) return null
+  const found = new Set<number>()
+  for (const m of name.matchAll(/(?<![\d.,])(\d)\s?BR\b/gi)) found.add(Number(m[1]))
+  if (found.size !== 1) return null
+  const [only] = found
+  return only && only >= 1 ? only : null
+}
+
 export async function importPriceLabsListings(
   db: PoolClient, api: PriceLabsClient,
 ): Promise<{ report: PriceLabsListingsReport, resolved: ResolvedListing[] }> {
@@ -129,7 +162,8 @@ export async function importPriceLabsListings(
   const report: PriceLabsListingsReport = {
     seen: rows.length, resolved: 0, unresolved: 0, foreignPms: [],
     hidden: 0, pushEnabled: 0, coordsWritten: 0, coordsRejected: 0,
-    bandsWritten: 0, bandDisagreements: [], bedroomsUnusable: 0,
+    bandsWritten: 0, bandsUpgraded: 0, bandDisagreements: [], bedroomsUnusable: 0,
+    nameDisagreements: [],
     currencies: [], guardrailsSeen: 0, channelDetailsWithId: 0, cleaningFeesSeen: 0,
   }
   const resolvedRows: ResolvedListing[] = []
@@ -174,30 +208,60 @@ export async function importPriceLabsListings(
       report.coordsRejected++
     }
 
+    /**
+     * THIS IS THE BEDROOM AUTHORITY on this account, and it is the only one.
+     *
+     * Elev8's room list counts separately bookable units, not bedrooms — see
+     * migration 024 and the header of `elev8/rooms.ts`. `no_of_bedrooms` is
+     * filled on 48 of 59 listings here and agrees with every bedroom count a
+     * human wrote into a listing name. Its unusable values are sentinels, not
+     * measurements: 0 on four listings and -1 on three, both refused above.
+     */
     const bedrooms = bedroomsOf(row)
-    const band = bandFromRooms(bedrooms)
+    const band = bandFromBedrooms(bedrooms)
     if (!bedrooms) report.bedroomsUnusable++
+
+    const stated = bedroomsInName(row.name)
+    if (stated !== null && bedrooms !== null && stated !== bedrooms) {
+      report.nameDisagreements.push(
+        { label: row.name?.trim() || id, inName: stated, inField: bedrooms })
+    }
 
     const current = await db.query<{ label: string, band: string | null, basis: string | null }>(
       `select label, band, band_basis as basis from entity where id = $1`, [hit.entityId])
     const held = current.rows[0]
 
+    // The count is stored whether or not it changes the band, so the band can be
+    // re-derived and audited rather than taken on trust.
+    if (bedrooms !== null && held) {
+      await db.query(
+        `update entity set bedrooms = $2, updated_at = now()
+          where id = $1 and bedrooms is distinct from $2::integer`,
+        [hit.entityId, bedrooms])
+    }
+
     if (band && held) {
       if (!held.band) {
-        // Basis 'bedrooms' because that is what it measures. The same basis
-        // Elev8's room pass writes, which is the point: two sources counting the
-        // same thing must land in one cohort, not two.
         await db.query(
           `update entity set band = $2, band_basis = 'bedrooms', updated_at = now()
             where id = $1`, [hit.entityId, band])
         report.bandsWritten++
-      } else if (held.band !== band && held.basis === 'bedrooms') {
-        // Two sources counting bedrooms and arriving at different numbers is a
-        // real disagreement about the object. Overwriting either way would pick
-        // a winner by import order; the held value stays and the conflict is
-        // reported so a human decides once.
+      } else if (held.basis === 'occupancy') {
+        // AN UPGRADE, not a collision. Bedrooms is the stronger basis: it says
+        // something about comparability, where a capacity band cannot separate
+        // a two-bedroom flat from a studio with a sofa bed. Elev8's pass writes
+        // capacity precisely so this can replace it — and it declines to
+        // overwrite in the other direction, so the two cannot fight.
+        await db.query(
+          `update entity set band = $2, band_basis = 'bedrooms', updated_at = now()
+            where id = $1`, [hit.entityId, band])
+        report.bandsUpgraded++
+      } else if (held.band !== band) {
+        // Two bedroom counts that disagree is a real disagreement about the
+        // object. Overwriting either way would pick a winner by import order;
+        // the held value stays and the conflict is reported so a human decides.
         report.bandDisagreements.push(
-          { label: held.label, elev8: held.band, pricelabs: band })
+          { label: held.label, held: held.band, pricelabs: band })
       }
     }
 

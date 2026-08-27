@@ -36,6 +36,14 @@ export interface Row {
   band: string | null
   /** What the band measures: 'bedrooms' or 'occupancy'. Never assume. */
   bandBasis: string | null
+  /**
+   * Separately bookable units under this listing, where Elev8's room feature is
+   * in use. NOT bedrooms — the two were confused for weeks and the page showed
+   * a villa let out room by room as a five-bedroom villa. Shown because it is
+   * the fact that explains the row: five units at CHF 45 and one five-bedroom
+   * villa at CHF 400 are different businesses.
+   */
+  units: number | null
   contract: string | null
   inHoldout: boolean
   atStake: number | null
@@ -82,6 +90,7 @@ export async function portfolio(
            e.market::text             as market,
            e.band                     as band,
            e.band_basis               as "bandBasis",
+           e.units                    as units,
            e.contract::text           as contract,
            e.in_holdout               as "inHoldout",
            -- largest single opportunity, never a sum

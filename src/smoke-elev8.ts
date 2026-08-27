@@ -19,7 +19,7 @@ import { Pool } from 'pg'
 import { getServiceToken, sessionState, authFromEnv, Elev8AuthError } from './sources/elev8/auth.js'
 import { Elev8Client, makeLogin, unwrap, Elev8Error } from './sources/elev8/client.js'
 import { describe, recordShape, latestShape, knownShapes, pickField } from './sources/elev8/shape.js'
-import { bandFromRooms, bandFromSleeps, readBedTypes, readRooms } from './sources/elev8/rooms.js'
+import { bandFromBedrooms, bandFromSleeps, readBedTypes, readRooms } from './sources/elev8/rooms.js'
 import { classify, linkOtaChannels, type OtaLinkCounts } from './sources/elev8/channels.js'
 import { keyOf, marketOf, labelOf, marketFromCountryName, isRentable, importListings }
   from './sources/elev8/listings.js'
@@ -237,12 +237,12 @@ check('pickField returns null when nothing is filled', pickField([
 
 /* -------------------------------------------------------------- 5 · the band */
 
-check('one room is 1BR', bandFromRooms(1) === '1BR')
-check('four rooms is 4BR', bandFromRooms(4) === '4BR')
-check('the tail collapses so a cohort can exist', bandFromRooms(9) === '5BR+')
+check('one room is 1BR', bandFromBedrooms(1) === '1BR')
+check('four rooms is 4BR', bandFromBedrooms(4) === '4BR')
+check('the tail collapses so a cohort can exist', bandFromBedrooms(9) === '5BR+')
 // THE central guard of this file.
-check('ZERO rooms is not a studio, it is unknown', bandFromRooms(0) === null)
-check('and null stays null', bandFromRooms(null) === null)
+check('ZERO rooms is not a studio, it is unknown', bandFromBedrooms(0) === null)
+check('and null stays null', bandFromBedrooms(null) === null)
 check('capacity bands are deliberately coarser', bandFromSleeps(4) === 'sleeps 3-4')
 check('zero capacity is unknown too', bandFromSleeps(0) === null)
 
@@ -258,14 +258,38 @@ roomsByListing['L1'] = [
   { id: 'r1', name: 'Master', bed_configurations: [{ bed_type_id: 'bt-double', quantity: 1 }] },
   { id: 'r2', name: 'Second', bed_configurations: [{ bed_type_id: 'bt-single', quantity: 2 }] },
 ]
+/**
+ * AN ELEV8 ROOM IS A BOOKABLE UNIT, NOT A BEDROOM.
+ *
+ * The checks these replace asserted the bug: "two rooms band as 2BR". Elev8's
+ * own hierarchy makes a Room the billing unit inside a Property, so the array
+ * length counts separately rentable units. Reto saw the result on the dashboard
+ * — The R Villa Merapi, five let-by-the-room units each sleeping two, shown as a
+ * five-bedroom villa.
+ */
 const r1 = await readRooms(c, keyClient(), 'L1', beds)
-check('two rooms band as 2BR', r1.rooms === 2 && r1.band === '2BR' && r1.basis === 'bedrooms')
+check('two units are reported as units, not as bedrooms',
+      r1.units === 2 && !/BR/.test(r1.band ?? ''), JSON.stringify(r1))
 check('and the capacity adds up', r1.sleeps === 4, String(r1.sleeps))
+check('the band it does produce is an occupancy band, named as one',
+      r1.band === 'sleeps 3-4' && r1.basis === 'occupancy', JSON.stringify(r1))
+
+// The exact live shape that made this visible. Five units, each a double: the
+// old rule called it 5BR. Nothing here may say five of anything about bedrooms.
+roomsByListing['MERAPI'] = [1, 2, 3, 4, 5].map(n =>
+  ({ id: `r${n}`, name: `Room ${n}`,
+     bed_configurations: [{ bed_type_id: 'bt-double', quantity: 1 }] }))
+const merapi = await readRooms(c, keyClient(), 'MERAPI', beds)
+check('a villa let out room by room is five UNITS and no bedroom claim',
+      merapi.units === 5 && merapi.band !== '5BR' && merapi.band !== '5BR+'
+        && merapi.basis !== 'bedrooms', JSON.stringify(merapi))
+check('its band comes from the capacity it actually sleeps',
+      merapi.band === 'sleeps 7+' && merapi.sleeps === 10, JSON.stringify(merapi))
 
 // The empty case, which is the likely case.
 roomsByListing['L2'] = []
 const r2 = await readRooms(c, keyClient(), 'L2', beds)
-check('an empty room list yields NO band', r2.band === null && r2.rooms === null)
+check('an empty room list yields NO band', r2.band === null && r2.units === null)
 check('and says the feature is unused rather than counting zero',
       r2.notes.some(n => n.includes('unused')), r2.notes.join(' | '))
 
@@ -276,10 +300,13 @@ roomsByListing['L3'] = [
 ]
 const r3 = await readRooms(c, keyClient(), 'L3', beds)
 check('an unknown bed type withholds sleeps rather than undercounting', r3.sleeps === null)
-check('and the band still stands on the room count', r3.band === '1BR')
+check('and withholding the capacity withholds the band too, because the unit '
+      + 'count was never a band', r3.band === null && r3.units === 1,
+      JSON.stringify(r3))
 check('the reason is recorded', r3.notes.some(n => n.includes('withheld')), r3.notes.join(' | '))
 
-// Bed types with no capacity field at all: sleeps is unknowable, band is not.
+// Bed types with no capacity field at all: sleeps is unknowable, and so is the
+// band — until the caller supplies Elev8's own stated maximum.
 await reset()
 bedTypes = [{ id: 'bt-double', name: 'Double Bed' }]
 const noCap = await readBedTypes(c, keyClient())
@@ -287,7 +314,8 @@ check('bed types without a capacity field are reported, not guessed',
       noCap.field === null && noCap.note.includes('no capacity field'), noCap.note)
 roomsByListing['L4'] = [{ id: 'r1', bed_configurations: [{ bed_type_id: 'bt-double', quantity: 1 }] }]
 const r4 = await readRooms(c, keyClient(), 'L4', noCap)
-check('the band survives without capacities', r4.band === '1BR' && r4.sleeps === null)
+check('with no capacities there is no band to claim', r4.band === null && r4.sleeps === null)
+check('but the unit count survives, because that much WAS measured', r4.units === 1)
 /* ------------------------------------------------- 7 · classifying a channel */
 
 // All that survives of the old channel machinery. `pickIdPaths`, `idForm` and
@@ -437,17 +465,24 @@ roomsByListing['2fc503c2770646468ece41df32adcd96'] = [
 roomsByListing['3fc503c2770646468ece41df32adcd97'] = []
 const full = await importElev8(c, keyClient())
 check('the pass imports, bands and links in one go',
-      full.listings.created === 2 && full.rooms.banded === 1 && full.listings.ota.linked === 1,
+      full.listings.created === 2 && full.rooms.banded === 2 && full.listings.ota.linked === 1,
       JSON.stringify({ l: full.listings, r: full.rooms }))
-check('the listing with rooms is banded on bedrooms',
-      (await c.query<{ band: string, band_basis: string }>(
-        `select band, band_basis from entity where label = 'Villa One'`)).rows[0]?.band_basis === 'bedrooms')
-// The fallback must be VISIBLE as a fallback, not silently equivalent.
-const fb = (await c.query<{ band: string, band_basis: string }>(
-  `select band, band_basis from entity where label = 'Chalet Two'`)).rows[0]
-check('the listing without rooms falls back to capacity, and says so',
-      fb?.band === 'sleeps 3-4' && fb.band_basis === 'occupancy', JSON.stringify(fb))
-check('the fallback is counted', full.rooms.fellBackToOccupancy === 1)
+// Both listings band, and BOTH on occupancy: this pass can no longer see a
+// bedroom count, so it can no longer claim one. That is the fix.
+const banded = (await c.query<{ label: string, band: string, basis: string, units: number | null }>(
+  `select label, band, band_basis as basis, units from entity order by label`)).rows
+check('nothing this pass writes is banded on bedrooms',
+      banded.every(r => r.basis !== 'bedrooms'), JSON.stringify(banded))
+check('the listing with units records the unit count as units',
+      banded.find(r => r.label === 'Villa One')?.units === 2, JSON.stringify(banded))
+// The two capacity sources must stay distinguishable: a summed bed list is a
+// measurement, a stated maximum is the vendor's claim about itself.
+const fb = banded.find(r => r.label === 'Chalet Two')
+check('the listing without units still gets a band from its stated capacity',
+      fb?.band === 'sleeps 3-4' && fb.basis === 'occupancy', JSON.stringify(fb))
+check('and that route is counted separately from a summed bed list',
+      full.rooms.fellBackToOccupancy === 1 && full.rooms.withSleeps === 1,
+      JSON.stringify(full.rooms))
 check('no stage silently failed', full.stageErrors.length === 0, full.stageErrors.join(' | '))
 check('the bed-type finding is carried in the report',
       full.bedTypes.includes('capacity'), full.bedTypes)
@@ -463,7 +498,7 @@ check('and it therefore sees the bed configuration at all',
       Boolean(roomShape?.shape.some(e => e.path === 'bed_configurations[].bed_type_id')),
       roomShape?.shape.map(e => e.path).join(' | '))
 check('the note says how many listings it covers and how many were empty',
-      Boolean(roomShape?.note?.includes('2 listing')) && Boolean(roomShape?.note?.includes('1 had no rooms')),
+      Boolean(roomShape?.note?.includes('2 listing')) && Boolean(roomShape?.note?.includes('1 had no units')),
       roomShape?.note ?? '')
 const shapes = await knownShapes(c, 'elev8')
 check('one shape row per endpoint, not one per listing',

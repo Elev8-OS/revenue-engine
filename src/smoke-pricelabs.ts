@@ -26,7 +26,8 @@ import { createServer, type IncomingMessage } from 'node:http'
 import { Pool } from 'pg'
 import { PriceLabsClient, plain, PriceLabsBlockedError, PriceLabsError }
   from './sources/pricelabs/client.js'
-import { coordsOf, bedroomsOf, importPriceLabsListings } from './sources/pricelabs/listings.js'
+import { coordsOf, bedroomsOf, bedroomsInName, importPriceLabsListings }
+  from './sources/pricelabs/listings.js'
 import { rowsFor, dayPlus, importPriceLabsPrices } from './sources/pricelabs/prices.js'
 import { isDayOffset, gridRows, importPriceLabsMetrics } from './sources/pricelabs/metrics.js'
 import { channelOf, nightsOf, importPriceLabsReservations }
@@ -138,6 +139,32 @@ async function main() {
 
   check('two bedrooms is two', bedroomsOf({ no_of_bedrooms: 2 }) === 2)
   check('zero bedrooms is NOT read as a studio', bedroomsOf({ no_of_bedrooms: 0 }) === null)
+  // Live values on this account: 0 on four listings, -1 on three. Both are the
+  // channel manager saying nothing, and -1 is the one that would have arrived as
+  // a number and been rounded into a cohort.
+  check('minus one is a sentinel, not a bedroom count',
+        bedroomsOf({ no_of_bedrooms: -1 }) === null)
+
+  /**
+   * The name as a CHECK on the field, never as a source.
+   *
+   * Nine listings on this account state a bedroom count in the name and all nine
+   * agree with `no_of_bedrooms` today — so this starts green and anything it
+   * reports later is drift. The names it must not misread are the real ones:
+   * "APT 4 - 7 -- (4 units)" is a unit range, and "Otilia Nr. 2" is a door
+   * number.
+   */
+  check('a stated bedroom count is read from the name',
+        bedroomsInName('Modern 2BR the R Villa Swantika w/Pool - Pererenan') === 2)
+  check('with or without the space', bedroomsInName('The R Villa Samalas | 4BR Retreat') === 4)
+  check('a unit range is not a bedroom count',
+        bedroomsInName('The R Apartments Studio walk to the Beach - ID - APT 4 - 7 -- (4 units)') === null)
+  check('nor is a door number',
+        bedroomsInName('Luxurious Renovated Apartment in Basel - CH - Otilia Nr. 2') === null)
+  check('a name is silent when it says nothing',
+        bedroomsInName('The R Villa Merapi - ID - MERAPI| ROOM 1 -4 -- (4 units)') === null)
+  check('two different counts in one name is not a reading',
+        bedroomsInName('2BR upstairs, 3BR downstairs') === null)
   check('an absent count is nothing', bedroomsOf({}) === null)
   check('a bedroom band yields a number to ask the estimator with',
         bedroomsFromBand('2BR') === 2)
@@ -199,15 +226,21 @@ async function main() {
   check('and the entity keeps no coordinate for it', geo.rows[0]?.latitude === null)
   check('a band that disagrees with the one we hold is reported, not overwritten',
         stage1.report.bandDisagreements.length === 1
-        && stage1.report.bandDisagreements[0]?.elev8 === '2BR'
+        && stage1.report.bandDisagreements[0]?.held === '2BR'
         && stage1.report.bandDisagreements[0]?.pricelabs === '3BR',
         JSON.stringify(stage1.report.bandDisagreements))
   const kept = await c.query<{ band: string }>(`select band from entity where id = $1`, [room14])
   check('and the held band survives the disagreement', kept.rows[0]?.band === '2BR')
-  const filled = await c.query<{ band: string, basis: string }>(
-    `select band, band_basis as basis from entity where id = $1`, [solo])
+  const filled = await c.query<{ band: string, basis: string, bedrooms: number | null }>(
+    `select band, band_basis as basis, bedrooms from entity where id = $1`, [solo])
   check('a band is written where we had none', filled.rows[0]?.band === '2BR'
     && filled.rows[0]?.basis === 'bedrooms', JSON.stringify(filled.rows[0]))
+  // The count is stored beside the band it produced, so the band can be
+  // re-derived and audited rather than taken on trust.
+  check('and the count behind it is stored, not just the label',
+        filled.rows[0]?.bedrooms === 2, JSON.stringify(filled.rows[0]))
+
+
   check('the currency is normalised and reported',
         stage1.report.currencies.join(',') === 'CHF', JSON.stringify(stage1.report.currencies))
   check('a hidden listing is counted', stage1.report.hidden === 1)
@@ -221,6 +254,43 @@ async function main() {
     `select count(*)::int n from api_shape where source = 'pricelabs'
       and endpoint = 'GET /v1/listings'`)
   check('the response shape is recorded', shape1.rows[0]?.n === 1)
+
+  /* --------------------------------- 5b · bedrooms outrank a capacity band */
+
+  /**
+   * A CAPACITY BAND IS REPLACED BY A BEDROOM BAND. The other direction refuses.
+   *
+   * Before the basis was ranked, whichever import ran last decided the cohort.
+   * That is how a unit count survived as "5BR": it won by arriving, not by being
+   * better. Elev8 writes capacity precisely so this can upgrade it.
+   */
+  const { rows: capRow } = await c.query<{ id: string }>(
+    `insert into entity (label, market, band, band_basis, sleeps, pms_property_id)
+     values ('Capacity Only', 'ch', 'sleeps 3-4', 'occupancy', 4, 'building-3')
+     returning id`)
+  const capId = capRow[0]!.id
+  await link(c, { source: 'channex', kind: 'room', externalId: 'room-cap' }, capId, 'test')
+  listingsBody = { listings: [
+    { id: 'building-3___room-cap', pms: 'channex', name: 'Capacity Only',
+      currency: 'CHF', no_of_bedrooms: 2 },
+    // The name says three and the field says two. Reported, never merged.
+    { id: 'building-1___room-a', pms: 'channex', name: 'Merapi 3BR Room 1-4',
+      currency: 'CHF', no_of_bedrooms: 2 },
+  ] }
+  const stage1b = await importPriceLabsListings(c, client())
+  const upgraded = await c.query<{ band: string, basis: string }>(
+    `select band, band_basis as basis from entity where id = $1`, [capId])
+  check('a bedroom count replaces a capacity band, because it is the stronger basis',
+        upgraded.rows[0]?.band === '2BR' && upgraded.rows[0]?.basis === 'bedrooms',
+        JSON.stringify(upgraded.rows[0]))
+  check('and the upgrade is counted separately from a first write',
+        stage1b.report.bandsUpgraded === 1 && stage1b.report.bandsWritten === 0,
+        JSON.stringify(stage1b.report))
+  check('a name that contradicts the field is reported rather than merged',
+        stage1b.report.nameDisagreements.length === 1
+        && stage1b.report.nameDisagreements[0]?.inName === 3
+        && stage1b.report.nameDisagreements[0]?.inField === 2,
+        JSON.stringify(stage1b.report.nameDisagreements))
 
   /* ------------------------------------------------- 6 · the price calendar */
 

@@ -28,7 +28,7 @@ const uid = (n: number) =>
   `${String(n).repeat(8)}-2222-3333-4444-555555555555`.slice(0, 36)
 const blankKpi = () => ({ value: null, against: null, basis: 0, verdict: 'unknown' as const })
 const row = (over: Partial<Row> = {}): Row => ({
-  entityId: ID, label: 'ID - APT 2', market: 'bali', band: '2BR', bandBasis: 'bedrooms',
+  entityId: ID, label: 'ID - APT 2', market: 'bali', band: '2BR', bandBasis: 'bedrooms', units: null,
   contract: null, inHoldout: false, atStake: 1089, bandLow: 1089, bandHigh: 1188,
   currency: 'CHF', findings: 1, worstSeverity: 'medium', firstFailing: 'price',
   headline: '22 points below the market.', worstFindingId: 'f-1', ...over,
@@ -204,6 +204,35 @@ for (const k of ['not_configured', 'grant_revoked', 'grant_stale', 'unread', 're
   check(`${k}: the macro sentence exists in both languages`,
         en.macro[k].length > 40 && id.macro[k].length > 40 && en.macro[k] !== id.macro[k])
 }
+
+/* --------------------------------------- units are not bedrooms, on the page */
+
+/**
+ * The R Villa Merapi, as the page showed it and as it must show it now.
+ *
+ * Five separately let rooms, each sleeping two, banded by Elev8's room count as
+ * a five-bedroom villa. Reto spotted it on the dashboard. The row now carries
+ * the unit count as units and the band on the basis that was actually measured.
+ */
+const merapi = renderDashboard(data({
+  rows: [row({ label: 'ID - Villa Merapi', band: 'sleeps 1-2',
+               bandBasis: 'occupancy', units: 5 })],
+}))
+// Scoped to the ROW's sub-line: the page header has one too, and a global
+// scrape found "Readiness" and asserted nothing. Same trap as the action-panel
+// order check.
+const rowStart = merapi.indexOf(`id="row-${ID}"`)
+const subAt = merapi.indexOf('class="sub"', rowStart)
+const subline = merapi.slice(subAt, merapi.indexOf('</div>', subAt))
+check('a villa let room by room says how many units, not how many bedrooms',
+      subline.includes(en.unitsLet(5)) && !/\dBR/.test(subline), subline)
+check('and the band beside it names the basis it was measured on',
+      subline.includes('sleeps 1-2'), subline)
+// A single-unit listing says nothing: "1 unit let separately" is noise on the
+// forty rows where it is the only possibility.
+const one = renderDashboard(data({ rows: [row({ units: 1 })] }))
+check('a one-unit listing does not announce it',
+      !one.includes(en.unitsLet(1)), '')
 
 /* ------------------------------------------- a language table in a third language */
 

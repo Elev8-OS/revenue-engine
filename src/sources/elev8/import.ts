@@ -16,7 +16,7 @@
 import type { PoolClient } from 'pg'
 import type { Elev8Client } from './client.js'
 import { importListings, type ListingImportReport } from './listings.js'
-import { readBedTypes, readRooms, applyReading, applyOccupancyBand } from './rooms.js'
+import { readBedTypes, readRooms, applyReading } from './rooms.js'
 import { recordShape } from './shape.js'
 
 export interface Elev8ImportReport {
@@ -66,7 +66,11 @@ export async function importElev8(
 
   const rooms = {
     attempted: 0, banded: 0, noRooms: 0, withSleeps: 0,
-    fellBackToOccupancy: 0, failed: 0, firstNotes: [] as string[],
+    /** Banded from Elev8's stated maximum rather than from a summed bed list. */
+    fellBackToOccupancy: 0,
+    /** Held a bedroom band already, so this pass left the band alone. */
+    keptBedroomBand: 0,
+    failed: 0, firstNotes: [] as string[],
   }
 
   /**
@@ -88,22 +92,19 @@ export async function importElev8(
     rooms.attempted++
     try {
       const reading = await readRooms(db, api, t.listingId, beds, { collect: allRooms })
-      // The first listing that HAS rooms is the informative one; the notes from
+      // The first listing that HAS units is the informative one; the notes from
       // an empty list say only that it was empty.
-      if (!rooms.firstNotes.length && reading.rooms) rooms.firstNotes = reading.notes
-      if (reading.band) {
-        await applyReading(db, t.entityId, reading)
+      if (!rooms.firstNotes.length && reading.units) rooms.firstNotes = reading.notes
+      if (reading.units === null) rooms.noRooms++
+      // One write, whether or not there were units: `sleeps` from Elev8's stated
+      // maximum is worth storing on a listing whose room feature is unused, and
+      // the band is ranked inside applyReading so an occupancy band can never
+      // overwrite a bedroom one.
+      const applied = await applyReading(db, t.entityId, reading, t.sleeps)
+      if (applied.band) {
         rooms.banded++
-        if (reading.sleeps !== null) rooms.withSleeps++
-      } else {
-        rooms.noRooms++
-        // The documented fallback. Capacity bands are a weaker claim about
-        // comparability than bedroom bands, which is exactly why the basis is
-        // stored beside the band rather than being implied by it.
-        if (t.sleeps && t.sleeps > 0) {
-          const band = await applyOccupancyBand(db, t.entityId, t.sleeps)
-          if (band) rooms.fellBackToOccupancy++
-        }
+        if (applied.from === 'bed configuration') rooms.withSleeps++
+        else rooms.fellBackToOccupancy++
       }
     } catch (err) {
       rooms.failed++
@@ -117,7 +118,7 @@ export async function importElev8(
   if (rooms.attempted) {
     try {
       await recordShape(db, 'elev8', 'GET /api/v1/listing/:id/room', allRooms,
-        `aggregated over ${rooms.attempted} listing(s); ${rooms.noRooms} had no rooms`)
+        `aggregated over ${rooms.attempted} listing(s); ${rooms.noRooms} had no units`)
     } catch (err) {
       stageErrors.push(`room shape: ${(err as Error).message}`)
     }

@@ -1487,7 +1487,8 @@ export function renderDashboard(d: DashboardData): string {
       <td><a class="rowlink" href="${e(href)}"><span class="rail"
         aria-hidden="true"></span>${e(r.label)}<span class="chev">${
         isOpen ? e(s.closeRoom) : e(s.openRoom)}</span></a>
-        <div class="sub">${e(r.market)}${r.band ? ` · ${e(r.band)}` : ''}
+        <div class="sub">${e(r.market)}${r.band ? ` · ${e(r.band)}` : ''}${
+          r.units && r.units > 1 ? ` · ${e(s.unitsLet(r.units))}` : ''}
           ${r.contract ? `<span class="tag">${e(s.contract[r.contract] ?? r.contract)}</span>` : ''}
           ${r.inHoldout ? '<span class="tag hold">Holdout</span>' : ''}</div></td>
       <td class="num">${cash(r.atStake, r.currency)}</td>

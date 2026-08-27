@@ -137,6 +137,8 @@ export interface Strings {
   todayLead: string
   todayEmpty: string
   todayInRoom: string
+  /** Separately bookable units under one listing. Never a bedroom count. */
+  unitsLet: (n: number) => string
   roomsHeading: string
   shownOf: (shown: number, total: number) => string
   /** A collapsed worklist line names two rooms and counts the rest. */
@@ -528,6 +530,7 @@ export const en: Strings = {
   todayEmpty: 'Nothing proposed. Either the portfolio is in good shape or the '
     + 'measurements are not in yet — the tiles above say which.',
   todayInRoom: 'open the room',
+  unitsLet: n => `${n} units let separately`,
   roomsHeading: 'Rooms',
   shownOf: (a, b) => a === b ? `${b}` : `${a} of ${b}`,
   andMoreRooms: n => `and ${n} more room${n === 1 ? '' : 's'}`,
@@ -1017,6 +1020,7 @@ export const id: Strings = {
   todayEmpty: 'Tidak ada usulan. Entah portofolio dalam kondisi baik atau '
     + 'pengukurannya belum masuk — kartu di atas mengatakan mana.',
   todayInRoom: 'buka unit',
+  unitsLet: n => `${n} unit disewakan terpisah`,
   roomsHeading: 'Unit',
   shownOf: (a, b) => a === b ? `${b}` : `${a} dari ${b}`,
   andMoreRooms: n => `dan ${n} unit lainnya`,

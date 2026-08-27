@@ -1,25 +1,37 @@
 /**
- * Rooms and beds from Elev8, turned into the cohort band.
+ * Units and beds from Elev8.
  *
- * This is the field the whole diagnosis waited on. Without a band there is no
- * cohort, without a cohort there is no comparison, and every finding reads
- * "not assessable" — which is correct behaviour and useless output.
+ * WHAT THIS FILE GOT WRONG, AND WHY IT MATTERS MORE THAN THE FIX.
  *
- * MDV cannot supply it: Airbnb `bedrooms` is null on all 50 listings and Booking
- * carries no room count. Channex carries occupancy, not rooms. Elev8 carries the
- * room LIST, each room with its bed configuration — which is strictly more than
- * a number, because it yields the count and the capacity from one read.
+ * It used to take the length of `/api/v1/listing/:id/room` and write it as a
+ * BEDROOM band. Elev8's hierarchy is Tenant → Property → Room → Listing, and a
+ * Room there is "a single bookable unit within a property" — the billing unit.
+ * The array length is therefore the number of separately rentable units, and
+ * calling it bedrooms turned The R Villa Merapi, five let-by-the-room units each
+ * sleeping two, into a five-bedroom villa. "4 - 7 Studio" became 4BR against a
+ * measured bedroom count of 1.
  *
- * Two decisions in here matter more than the code:
+ * The reasoning that produced it reads well and is still wrong: "the array
+ * length needs no field name, so it is the most robust extraction available."
+ * Robustly extracting the wrong quantity is not robustness. Nothing here had
+ * ever established what an Elev8 room IS — and 016's header, in this same
+ * repository, already said Merapi was one property with several rooms.
  *
- *   THE ROOM COUNT IS THE ARRAY LENGTH, not a field. No field name to guess, no
- *   name to be renamed under us. `data.length` is the most robust extraction
- *   available and it happens to be the one that answers the question.
+ * So this file no longer claims bedrooms at all. It reports:
  *
- *   AN EMPTY ROOM LIST IS NOT A STUDIO. Zero rooms means the feature is unused
- *   for that listing, and banding it as `0BR` would manufacture a cohort out of
- *   absent data — exactly the failure this project keeps finding in other
- *   people's fields. Empty yields null, and null surfaces as "not assessable".
+ *   UNITS      the array length, named for what it counts. Not a band on its
+ *              own: two units and four units say nothing about how comparable
+ *              the objects are, only about how the building is let.
+ *   SLEEPS     bed capacity, summed from the bed configuration where every bed
+ *              type carries a number. A partial sum is withheld — an understated
+ *              capacity puts an apartment in the wrong cohort rather than none.
+ *   BAND       from capacity only, basis 'occupancy', and only where nothing has
+ *              already banded the object by bedrooms. Bedrooms is the stronger
+ *              basis and comes from PriceLabs `no_of_bedrooms`.
+ *
+ * AN EMPTY ROOM LIST IS STILL NOT A STUDIO. Zero units means the feature is
+ * unused for that listing. Empty yields null, and null surfaces as
+ * "not assessable" rather than as a manufactured cohort.
  */
 import type { PoolClient } from 'pg'
 import type { Elev8Client } from './client.js'
@@ -38,10 +50,15 @@ const BED_CAPACITY = ['capacity', 'max_occupancy', 'maxOccupancy', 'occupancy',
 export type BandBasis = 'bedrooms' | 'occupancy'
 
 export interface RoomsReading {
-  /** Count of rooms, or null when the list came back empty. */
-  rooms: number | null
+  /**
+   * Separately bookable units under this listing, or null when the list came
+   * back empty. NOT a bedroom count — see the header. Named `units` so the next
+   * reader cannot make the mistake this field caused.
+   */
+  units: number | null
   /** Bed capacity, or null when the bed types carry no number to add up. */
   sleeps: number | null
+  /** Always an occupancy band, or null. This reader cannot see bedrooms. */
   band: string | null
   basis: BandBasis | null
   /** Why sleeps is null, or which paths were used. Auditable, not folklore. */
@@ -49,15 +66,20 @@ export interface RoomsReading {
 }
 
 /**
- * Bands from a room count.
+ * Bands from a BEDROOM count. The argument is bedrooms, not rooms, not units.
+ *
+ * The parameter name is load-bearing. This function was called with the length
+ * of Elev8's room array — a count of bookable units — and produced "5BR" for a
+ * villa let out room by room. Whatever is passed here must be a number of
+ * bedrooms established by a source that measures bedrooms.
  *
  * `5BR+` collapses the tail on purpose: a cohort of one six-bedroom villa
  * compared against itself is not a comparison, and the whole point of the band
  * is to produce a group big enough to say something about.
  */
-export function bandFromRooms(rooms: number | null): string | null {
-  if (rooms === null || rooms < 1) return null
-  return rooms >= 5 ? '5BR+' : `${rooms}BR`
+export function bandFromBedrooms(bedrooms: number | null): string | null {
+  if (bedrooms === null || bedrooms < 1) return null
+  return bedrooms >= 5 ? '5BR+' : `${bedrooms}BR`
 }
 
 /**
@@ -140,7 +162,7 @@ export async function readRooms(
   if (!rooms.length) {
     notes.push('room list is empty — the feature is unused for this listing, '
       + 'which is not a room count of zero')
-    return { rooms: null, sleeps: null, band: null, basis: null, notes }
+    return { units: null, sleeps: null, band: null, basis: null, notes }
   }
 
   const bedsPath = pickField(shape, BEDS_IN_ROOM)
@@ -177,11 +199,15 @@ export async function readRooms(
     }
   }
 
+  // The band comes from capacity, never from the unit count. `sleeps` is the
+  // measured bed capacity; where the bed types carried no number it is null and
+  // the caller falls back to Elev8's own `maximum_capacity`, which is filled on
+  // every listing on this account.
   return {
-    rooms: rooms.length,
+    units: rooms.length,
     sleeps,
-    band: bandFromRooms(rooms.length),
-    basis: 'bedrooms',
+    band: bandFromSleeps(sleeps),
+    basis: sleeps === null ? null : 'occupancy',
     notes,
   }
 }
@@ -189,31 +215,46 @@ export async function readRooms(
 /**
  * Applies a reading to an entity.
  *
- * Writes the measured inputs alongside the band on purpose. Storing only "2BR"
- * throws away the evidence: it cannot be re-derived, cannot be audited, and when
- * the banding rule changes there is nothing left to re-run it over.
+ * Writes the measured inputs alongside the band on purpose. Storing only
+ * "sleeps 3-4" throws away the evidence: it cannot be re-derived, cannot be
+ * audited, and when the banding rule changes there is nothing left to re-run it
+ * over.
+ *
+ * `capacityFallback` is Elev8's own `maximum_capacity`, used when the bed
+ * configuration carried no addable number. It is a weaker reading than a summed
+ * bed list — a stated maximum can include a sofa — so it is only reached for,
+ * never preferred, and the note says which one was used.
  */
 export async function applyReading(
   db: PoolClient, entityId: string, r: RoomsReading,
-): Promise<void> {
-  await db.query(
-    `update entity
-        set rooms = $2, sleeps = $3, band = $4, band_basis = $5, updated_at = now()
-      where id = $1`,
-    [entityId, r.rooms, r.sleeps, r.band, r.band ? r.basis : null],
-  )
-}
-
-/** The occupancy fallback, for when the room feature turns out to be unused. */
-export async function applyOccupancyBand(
-  db: PoolClient, entityId: string, capacity: number | null,
-): Promise<string | null> {
+  capacityFallback: number | null = null,
+): Promise<{ band: string | null, basis: BandBasis | null, from: string }> {
+  const measured = r.sleeps !== null && r.sleeps > 0
+  const capacity = measured ? r.sleeps
+    : capacityFallback && capacityFallback > 0 ? capacityFallback : null
   const band = bandFromSleeps(capacity)
+  const from = measured ? 'bed configuration'
+    : capacity === null ? 'no capacity available' : 'maximum_capacity'
+
+  /**
+   * THE BAND IS ONLY WRITTEN WHERE NOTHING STRONGER IS HELD.
+   *
+   * An occupancy band must never overwrite a bedroom band. Before the basis was
+   * ranked, whichever import ran last decided the cohort — which is how a wrong
+   * band survived: it won by arriving, not by being better. The rank is
+   * explicit here so import order stops being a silent input.
+   */
   await db.query(
     `update entity
-        set sleeps = $2, band = $3, band_basis = $4, updated_at = now()
+        set units = $2, sleeps = $3,
+            band = case when band_basis = 'bedrooms' then band
+                        else $4 end,
+            band_basis = case when band_basis = 'bedrooms' then band_basis
+                              when $4::text is null then null
+                              else 'occupancy' end,
+            updated_at = now()
       where id = $1`,
-    [entityId, capacity && capacity > 0 ? capacity : null, band, band ? 'occupancy' : null],
+    [entityId, r.units, capacity, band],
   )
-  return band
+  return { band, basis: band ? 'occupancy' : null, from }
 }
