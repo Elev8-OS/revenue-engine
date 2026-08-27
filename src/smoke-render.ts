@@ -17,6 +17,7 @@ import type * as q from './dashboard/query.js'
 import type { Row, Signals } from './dashboard/query.js'
 import { renderShapesText } from './sources/elev8/shape.js'
 import { en, id, LANGS, stringsFor } from './i18n.js'
+import { THEME_CSS } from './ui/theme.js'
 
 let fails = 0
 const check = (n: string, ok: boolean, extra = '') => {
@@ -53,6 +54,7 @@ const data = (over: Partial<DashboardData> = {}): DashboardData => ({
   realised: new Map(), reviews: new Map(), promotions: new Map(),
   accountPromotions: [], cohorts: new Map(), leverCoverage: [],
   priceGap: new Map(), demand: new Map(),
+  search: new Map(), rankTimeline: new Map(),
   // A portfolio where nothing has been measured yet. Every tile must read
   // "not measured" rather than a confident zero — this is where every account
   // starts, and it is the state the page is most often wrong in.
@@ -205,6 +207,126 @@ for (const k of ['not_configured', 'grant_revoked', 'grant_stale', 'unread', 're
         en.macro[k].length > 40 && id.macro[k].length > 40 && en.macro[k] !== id.macro[k])
 }
 
+/* -------------------------------------------- rank: the one figure where down is good */
+
+/**
+ * A rank is the only number on this page that reads better when it is smaller,
+ * so the direction can never be left to a colour or an arrow. Every check here
+ * is about the words.
+ */
+const ranked = (st: Partial<q.SearchStanding>) => renderDashboard(data({
+  openId: ID,
+  search: new Map([[ID, {
+    bookingRank: null, airbnbPosition: null, firstPage: null,
+    airbnbImpressions: null, ...st,
+  } as q.SearchStanding]]),
+}))
+
+const better = ranked({ bookingRank: { rank: 5, prior: 9, sinceFirst: -7 } })
+check('a rank is shown with its channel named', better.includes(en.rankChannelBooking))
+check('and the current position is the number that leads',
+      better.includes('>#5<'), '')
+check('a negative movement is spelled out as an IMPROVEMENT, never as a minus sign',
+      better.includes(en.rankBetter(7)) && !better.includes('-7'), '')
+check('the previous period is named as the previous period, not as last year',
+      better.includes(en.rankPrior(9)) && !/last year/i.test(en.rankPrior(9)), '')
+// Two different comparisons — since-first and prior-period — on two lines. Run
+// together they read as one sentence and mean nothing.
+check('and it sits on its own line, not glued to the since-first movement',
+      better.includes(`${en.rankBetter(7)}</b></div>`), '')
+
+/**
+ * A c1 line rendered with NO STROKE for as long as this chart existed: only the
+ * c2 class had a stroke rule, because the one older line chart happens to use
+ * c2. Label present, endpoint dot present, line invisible. Nothing errored, and
+ * no assertion on the markup could have seen it.
+ */
+check('every chart series class has a stroke, not just the one in use',
+      ['c1', 'c2', 'c3', 'c4'].every(c => THEME_CSS.includes(`.cx-line.${c}{stroke:`)),
+      '')
+
+const worse = ranked({ bookingRank: { rank: 22, prior: 14, sinceFirst: 8 } })
+check('and a positive movement is spelled out as worse',
+      worse.includes(en.rankWorse(8)), '')
+check('a rank that has not moved says so rather than showing a zero',
+      ranked({ bookingRank: { rank: 7, prior: 7, sinceFirst: 0 } })
+        .includes(en.rankUnmoved), '')
+// A rank with no movement recorded is still a position worth knowing.
+check('a rank with no movement recorded still shows the position',
+      ranked({ bookingRank: { rank: 3, prior: null, sinceFirst: null } })
+        .includes('>#3<'), '')
+
+// The channel that publishes nothing must say what it does not publish. A blank
+// cell reads as "we did not look".
+const none = ranked({})
+check('Booking with no rank says the channel sent none',
+      none.includes(en.rankNoneBooking), '')
+check('and Airbnb says it publishes no rank at all, which is a different fact',
+      none.includes(en.rankNoneAirbnb), '')
+check('the two channels are never merged into one visibility number',
+      en.rankChannelAirbnb.toLowerCase().includes('position')
+        && en.rankChannelBooking.toLowerCase().includes('rank'), '')
+
+// Airbnb's figure is a position, not a rank, and the label has to carry that.
+const pos = ranked({ airbnbPosition: 12 })
+check('an Airbnb position is labelled a position and not a rank',
+      pos.includes(en.rankPositionNote), '')
+
+// First-page impressions mean nothing without the total they came out of.
+// Scoped to the panel: the page is full of percentages, and a global scrape for
+// "%" would have passed on any of them.
+const panelOf = (html: string) =>
+  html.slice(html.indexOf('class="rkrow"'), html.indexOf('</section>',
+    html.indexOf('class="rkrow"')))
+const fp = panelOf(ranked({ firstPage: 410, airbnbImpressions: 8200 }))
+check('first-page impressions are shown as a share when the total is known',
+      fp.includes('5.0%') && fp.includes(en.rankFirstPageOf(410, 8200)), fp.slice(0, 80))
+const fpBare = panelOf(ranked({ firstPage: 410 }))
+check('and as a labelled raw count when it is not, rather than dividing by nothing',
+      fpBare.includes(en.rankFirstPageBare) && !fpBare.includes('%')
+        && fpBare.includes('410'), '')
+
+/* ---------------------------------- the account-level percentile over time */
+
+const tl = (pts: Array<[string, number]>, key = 'mdv_booking') => renderDashboard(data({
+  rankTimeline: new Map([[key, pts.map(([date, percentile]) => ({ date, percentile }))]]),
+}))
+
+const moving = tl([['2026-08-20', 41], ['2026-08-23', 52], ['2026-08-26', 63]])
+check('a moving percentile is drawn', moving.includes('class="cx-line'), '')
+check('and it says it is the whole account, not one room',
+      moving.includes(en.rankTimelineNote)
+        && /provider aggregates/.test(en.rankTimelineNote), '')
+// THE REFUSAL THIS CHART EXISTS TO MAKE. Nothing in the payload says which end
+// of the percentile is the better position, so the line carries no verdict.
+check('it refuses to say which direction is good, because the provider does not',
+      moving.includes(en.rankTimelineDirection), '')
+check('and no good or bad class touches the line',
+      !/class="cx-line [^"]*(good|bad)/.test(moving), '')
+check('every series carries a direct label, not a swatch',
+      moving.includes('class="cx-dl'), '')
+
+// One point is not a series. Drawing it would put a lone dot on an invented axis.
+check('a single reading is not drawn as a trend',
+      !tl([['2026-08-26', 50]]).includes('class="cx-line'), '')
+check('and no timeline at all draws nothing rather than an empty frame',
+      !renderDashboard(data()).includes(en.rankTimelineHeading), '')
+
+/**
+ * A FLAT SERIES MUST LOOK FLAT. Scaling the axis to the data's own range turns
+ * three readings of 50.1, 50.0 and 50.2 into a dramatic zigzag — every number
+ * correct, the picture a lie. The renderer widens the band instead when the
+ * spread is under one point, so the line stays near the middle.
+ */
+const flat = tl([['2026-08-20', 50.1], ['2026-08-23', 50.0], ['2026-08-26', 50.2]])
+const ys = [...flat.matchAll(/class="cx-line[^"]*"/g)].length
+check('a flat series is still drawn', ys === 1, String(ys))
+const path = /<path d="([^"]+)" class="cx-line/.exec(flat)?.[1] ?? ''
+const yVals = [...path.matchAll(/,(\d+\.\d)/g)].map(m => Number(m[1]))
+check('but it is not stretched to fill the box — rounding noise is not a trend',
+      yVals.length >= 3 && Math.max(...yVals) - Math.min(...yVals) < 30,
+      `spread ${(Math.max(...yVals) - Math.min(...yVals)).toFixed(1)}px`)
+
 /* ---------------------------------------------- the tenant's own grouping */
 
 /**
@@ -274,6 +396,15 @@ check('a count that stays account-wide says so when a group is selected',
 check('and says nothing extra when no group is selected',
       !renderDashboard(grouped({ leverCoverage: [{ kind: 'MOBILE_RATE', on: 31, of: 41 }] }))
         .includes('whole account'), '')
+
+// Under a group filter it must say it is NOT narrowed, since it cannot be.
+const tlGroup = renderDashboard(grouped({
+  group: 'Zermattstays',
+  rankTimeline: new Map([['mdv_booking',
+    [{ date: '2026-08-20', percentile: 40 }, { date: '2026-08-26', percentile: 55 }]]]),
+}))
+check('under a group filter it says it is not narrowed to that group',
+      tlGroup.includes(en.rankTimelineAccount('Zermattstays')), '')
 
 // An account with no group read yet must not grow an empty control.
 const ungrouped = renderDashboard(data())

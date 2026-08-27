@@ -96,6 +96,13 @@ export interface DashboardData {
   cockpit: q.Cockpit
   /** Night-by-night disagreement with the recommendation, and the minimum stay. */
   priceGap: Map<string, q.PriceGap>
+  /** Rank on Booking, position and first-page share on Airbnb, per room. */
+  search: Map<string, q.SearchStanding>
+  /**
+   * The channel's own daily percentile for the WHOLE account, per channel. Not
+   * narrowed by the group and not attributable to a room — the panel says both.
+   */
+  rankTimeline: Map<string, q.RankPoint[]>
   /** Lead time, stay length and guest origin, from our own realised bookings. */
   demand: Map<string, q.DemandShape>
   /** Where each listing's funnel sits inside our OWN market × band × channel set. */
@@ -256,6 +263,8 @@ interface Detail {
   gap: q.PriceGap | undefined
   demand: q.DemandShape | undefined
   coverage: Array<{ kind: string, on: number, of: number }>
+  /** Where this room stands in each channel's search. See query.searchStanding. */
+  search: q.SearchStanding | undefined
 }
 
 /** Everything the archive holds about one room, in the order a reader needs it. */
@@ -1168,6 +1177,193 @@ function scoreStrip(
   </svg>`
 }
 
+/* ================================================ rank and visibility ====== */
+
+/**
+ * Where this room stands in the channel's search, and which way it is moving.
+ *
+ * THE ONE FIGURE ON THIS PAGE WHERE DOWN IS GOOD. Every other number here reads
+ * better when it is larger; a rank reads better when it is smaller. So the
+ * direction is written in WORDS next to every movement rather than left to an
+ * arrow or a colour: "7 places better" cannot be misread, and a green -7 can.
+ *
+ * THE TWO CHANNELS ARE NOT MERGED. Booking.com sends a rank per property.
+ * Airbnb's performance endpoint sends no rank at all — what it sends is an
+ * average search position and a first-page impression count, a different measure
+ * of the same worry. Averaging a rank of 12 with a position of 12 would produce a
+ * figure neither channel would recognise, so each is labelled as its own thing
+ * and the channel that supplies nothing says so instead of showing a blank.
+ */
+function rankPanel(st: q.SearchStanding | undefined, s: Strings): string {
+  const lines: string[] = []
+
+  if (st?.bookingRank) {
+    const { rank, prior, sinceFirst } = st.bookingRank
+    // The movement, stated as a direction and a count of places. `sinceFirst` is
+    // signed with negative meaning better, so the words come from the sign and
+    // the absolute value is what gets printed.
+    const moved = sinceFirst === null ? null
+      : sinceFirst === 0 ? s.rankUnmoved
+      : sinceFirst < 0 ? s.rankBetter(Math.abs(sinceFirst))
+      : s.rankWorse(sinceFirst)
+    const cls = sinceFirst === null || sinceFirst === 0 ? 'mut'
+      : sinceFirst < 0 ? 'good' : 'bad'
+    lines.push(`<div class="rk">
+      <div class="rk-k">${e(s.rankChannelBooking)}</div>
+      <div class="rk-n">#${e(count(rank, s.numberLocale))}</div>
+      ${/* Two DIFFERENT comparisons, so they get two lines. Run together they
+             read as one sentence — "5 places better since first measured was #17
+             in the previous period" — which is the sort of sentence a reader
+             untangles once and then stops trusting. */ ''}
+      <div class="rk-m">${moved ? `<b class="${cls}">${e(moved)}</b>` : ''}</div>
+      ${prior !== null
+        ? `<div class="rk-m"><span class="mut">${e(s.rankPrior(prior))}</span></div>`
+        : ''}
+    </div>`)
+  } else {
+    lines.push(`<div class="rk none">
+      <div class="rk-k">${e(s.rankChannelBooking)}</div>
+      <div class="rk-n">&mdash;</div>
+      <div class="rk-m"><span class="mut">${e(s.rankNoneBooking)}</span></div>
+    </div>`)
+  }
+
+  if (st && st.airbnbPosition !== null) {
+    lines.push(`<div class="rk">
+      <div class="rk-k">${e(s.rankChannelAirbnb)}</div>
+      <div class="rk-n">${e(count(st.airbnbPosition, s.numberLocale))}</div>
+      <div class="rk-m"><span class="mut">${e(s.rankPositionNote)}</span></div>
+    </div>`)
+  } else {
+    lines.push(`<div class="rk none">
+      <div class="rk-k">${e(s.rankChannelAirbnb)}</div>
+      <div class="rk-n">&mdash;</div>
+      <div class="rk-m"><span class="mut">${e(s.rankNoneAirbnb)}</span></div>
+    </div>`)
+  }
+
+  /**
+   * First-page impressions as a SHARE where the total is known.
+   *
+   * 4'100 first-page impressions means nothing without the total it came out of,
+   * and the share is the number that answers "are we being found". Where the
+   * total is missing the raw count is shown and labelled as a raw count, rather
+   * than dividing by something we do not have.
+   */
+  if (st && st.firstPage !== null) {
+    const total = st.airbnbImpressions
+    const share = total !== null && total > 0 ? (st.firstPage / total) * 100 : null
+    lines.push(`<div class="rk">
+      <div class="rk-k">${e(s.rankFirstPage)}</div>
+      <div class="rk-n">${share === null
+        ? e(count(st.firstPage, s.numberLocale))
+        : e(pct(share, s.numberLocale))}</div>
+      <div class="rk-m"><span class="mut">${share === null
+        ? e(s.rankFirstPageBare)
+        : e(s.rankFirstPageOf(st.firstPage, total!))}</span></div>
+    </div>`)
+  }
+
+  return `<section class="panel">
+    <h3>${e(s.rankHeading)}</h3>
+    <p class="mut sub-lead">${e(s.rankLead)}</p>
+    <div class="rkrow">${lines.join('')}</div>
+  </section>`
+}
+
+/**
+ * The account's daily percentile in the channel's own ranking, per channel.
+ *
+ * TWO THINGS THIS PANEL REFUSES TO CLAIM, both of them things a line chart makes
+ * it very easy to imply:
+ *
+ *   IT IS NOT A ROOM'S RANK. The provider aggregates over the whole account, so
+ *   there is no per-room component — and no way to narrow it to a group either,
+ *   only to fake one. It sits with the other account-level panels and names whose
+ *   figure it is.
+ *
+ *   THE GOOD DIRECTION IS NOT STATED BY THE PROVIDER. Nothing in the payload says
+ *   whether a higher percentile is a better position or a worse one. So the line
+ *   carries no good/bad colour and no verdict: the MOVEMENT is the finding, and a
+ *   movement is legible without knowing which end is which. Choosing a direction
+ *   here would be a coin toss rendered as a fact.
+ */
+function rankTimelineChart(
+  series: Map<string, q.RankPoint[]>, s: Strings, group: string | null,
+): string {
+  const drawn = ([['mdv_booking', s.rankChannelBooking, 'c1'],
+                  ['mdv_airbnb', s.rankChannelAirbnb, 'c2']] as const)
+    .map(([key, label, cls]) => ({ label, cls, pts: series.get(key) ?? [] }))
+    .filter(x => x.pts.length >= 2)
+  if (!drawn.length) return ''
+
+  const W = 620, H = 156, L = 34, R = 14, T = 14, B = 28
+  const all = drawn.flatMap(x => x.pts)
+  const dates = [...new Set(all.map(p => p.date))].sort()
+  const lo = Math.min(...all.map(p => p.percentile))
+  const hi = Math.max(...all.map(p => p.percentile))
+  /**
+   * A flat series must not divide by zero, and must not be stretched to fill the
+   * box either. A line that never moved should look like one — stretching it
+   * turns rounding noise into a dramatic trend, which is the single easiest way
+   * to make a chart lie without any number being wrong.
+   */
+  const flat = hi - lo < 1
+  const span = flat ? 1 : hi - lo
+  const yLo = flat ? (hi + lo) / 2 - 0.5 : lo
+  const x = (d: string) =>
+    L + (dates.indexOf(d) / Math.max(1, dates.length - 1)) * (W - L - R)
+  const y = (v: number) => T + (1 - (v - yLo) / span) * (H - T - B)
+
+  const parts: string[] = []
+  for (const g of [yLo, yLo + span / 2, yLo + span]) {
+    parts.push(`<line x1="${L}" y1="${y(g).toFixed(1)}" x2="${W - R}" y2="${
+      y(g).toFixed(1)}" class="cx-grid"></line>`)
+    parts.push(`<text x="${L - 6}" y="${(y(g) + 4).toFixed(1)}" class="cx-ax"
+      text-anchor="end">${g.toFixed(0)}</text>`)
+  }
+  /**
+   * Labels are placed by RANK at the right edge, not at a fixed offset.
+   *
+   * The first version put every label nine pixels above its own endpoint. When
+   * the two series finished ten points apart, the labels overlapped each other
+   * and one of them sat on top of the other's line — legible in the source,
+   * unreadable on screen, and invisible to every test. Rendering it and looking
+   * is what found it. So: the series with the higher final value gets its label
+   * above, the lower one below, and both stop short of the dot.
+   */
+  const ends = drawn
+    .map(d => ({ ...d, pts: [...d.pts].sort((a, b) => a.date.localeCompare(b.date)) }))
+    .map(d => ({ ...d, last: d.pts[d.pts.length - 1]! }))
+    .sort((a, b) => b.last.percentile - a.last.percentile)
+
+  for (const [i, d] of ends.entries()) {
+    parts.push(`<path d="${d.pts.map((p, n) =>
+      `${n ? 'L' : 'M'}${x(p.date).toFixed(1)},${y(p.percentile).toFixed(1)}`)
+      .join(' ')}" class="cx-line ${d.cls}"></path>`)
+    parts.push(`<circle cx="${x(d.last.date).toFixed(1)}" cy="${
+      y(d.last.percentile).toFixed(1)}" r="3.5" class="cx-dot ${d.cls}"></circle>`)
+    // Every series carries a direct label. Blue and amber separate well, but
+    // identity is never colour alone anywhere on this page.
+    const above = i === 0 || ends.length === 1
+    parts.push(`<text x="${(x(d.last.date) - 8).toFixed(1)}" y="${
+      (y(d.last.percentile) + (above ? -10 : 17)).toFixed(1)}" class="cx-dl ${d.cls}"
+      text-anchor="end">${e(d.label)}</text>`)
+  }
+  parts.push(`<text x="${L}" y="${H - 7}" class="cx-ax">${e(dates[0]!)}</text>`)
+  parts.push(`<text x="${W - R}" y="${H - 7}" class="cx-ax" text-anchor="end">${
+    e(dates[dates.length - 1]!)}</text>`)
+
+  return `<section class="card">
+    <h2 class="ph">${e(s.rankTimelineHeading)}</h2>
+    <p class="mut sub-lead">${e(s.rankTimelineNote)}${
+      group ? ` ${e(s.rankTimelineAccount(group))}` : ''}</p>
+    <svg class="cx" viewBox="0 0 ${W} ${H}" role="img"
+      aria-label="${e(s.rankTimelineHeading)}">${parts.join('')}</svg>
+    <p class="mut caveat">${e(s.rankTimelineDirection)}</p>
+  </section>`
+}
+
 /* ------------------------------------------------- what the archive already had */
 
 /**
@@ -1512,6 +1708,7 @@ export function renderDashboard(d: DashboardData): string {
       gap: d.priceGap.get(r.entityId),
       demand: d.demand.get(r.entityId),
       coverage: d.leverCoverage,
+      search: d.search.get(r.entityId),
     }
     /**
      * THREE GROUPS, not ten panels.
@@ -1535,6 +1732,7 @@ export function renderDashboard(d: DashboardData): string {
           ${potentialChart(r, bundle.sig, s)}
           ${pricePositionBlock(bundle.sig, r, s)}
           ${macroBlock(s, d.funnel, bundle.sig, bundle.cohort)}
+          ${rankPanel(bundle.search, s)}
           ${gateBlock(d, s)}
         </div>
         <details class="rgroup rmore">
@@ -1612,6 +1810,7 @@ export function renderDashboard(d: DashboardData): string {
        coverage counts every active room on the account. Rendering it under a
        group-filtered table without saying so would let "31 of 41" read as a
        fact about Zermattstays. It says whose number it is instead. */ ''}
+  ${rankTimelineChart(d.rankTimeline, s, d.group)}
   ${d.leverCoverage.length ? `<section class="card">
     <h2 class="ph">${e(s.leversPortfolio)}</h2>
     <p class="mut" style="margin:.1rem 0 .8rem;font-size:.84rem">${

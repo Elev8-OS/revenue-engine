@@ -1146,6 +1146,11 @@ ${funnelDetail(run?.report ?? null)}
           return { promotions: p.byEntity, accountPromotions: p.account }
         })(),
         cohorts: await q.funnelCohorts(c),
+        search: await q.searchStanding(c),
+        // Account-level and NOT narrowed by the group: the provider aggregates
+        // the percentile itself, so a filtered version cannot be computed from
+        // what it sends. The panel says so rather than implying otherwise.
+        rankTimeline: await q.rankTimeline(c, group),
         leverCoverage: await q.leverCoverage(c),
         // The minimum-stay comparison needs BOTH the calendar and the realised
         // stay length, so the two are joined here rather than in either query —

@@ -1429,3 +1429,155 @@ export async function cockpit(
     notAssessable: na[0]?.n ?? 0,
   }
 }
+
+/* ============================================== rank and search visibility == */
+
+/**
+ * Where a listing stands in the channel's own search results.
+ *
+ * LOWER IS BETTER, and that fact has to survive every hop from here to the
+ * screen. A rank is the one figure on this page where the good direction is
+ * down, so the sign of a change means the opposite of what it means everywhere
+ * else: `rank_change_since_first = -7` is seven places BETTER. The adapter
+ * already stores it signed for exactly this reason — `countOf` would have
+ * refused it as a provider's -1 sentinel and dropped the good news.
+ *
+ * WHICH CHANNEL SUPPLIES WHAT, measured rather than assumed:
+ *
+ *   Booking.com   a true rank per property, with a comparison value and a change
+ *                 since the account was first measured. From
+ *                 /booking/performance/ → property_breakdown[].rank.
+ *   Airbnb        NO rank. Its performance endpoint carries `listing_breakdown`
+ *                 and no rank node at all, so nothing is stored and nothing may
+ *                 be shown. What it does carry is an average search POSITION on
+ *                 the ranking endpoint, and first-page impressions — a different
+ *                 measure of the same worry, and labelled as its own thing.
+ *
+ * The two are deliberately not merged into one "visibility" number. A rank of 12
+ * and an average position of 12 are not the same claim, and averaging them would
+ * produce a figure neither channel would recognise.
+ */
+export interface RankStanding {
+  /**
+   * Current rank. Lower is better.
+   *
+   * NOT nullable, and that is the invariant this type exists to carry: a
+   * standing is only constructed where a rank arrived. A prior value and a
+   * change with no current rank are a movement with nothing to attach it to.
+   */
+  rank: number
+  /** The provider's comparison value — prior period, not necessarily last year. */
+  prior: number | null
+  /**
+   * Places moved since the account was first measured. SIGNED: negative is an
+   * improvement, because for a rank the good direction is down.
+   */
+  sinceFirst: number | null
+}
+
+export interface SearchStanding {
+  /** Booking.com's rank, or null where the channel sent none. */
+  bookingRank: RankStanding | null
+  /** Airbnb's average search position. A position, not a rank — see above. */
+  airbnbPosition: number | null
+  /** Impressions that landed on the first page of results. */
+  firstPage: number | null
+  /** Total impressions on that channel, so the first-page share is derivable. */
+  airbnbImpressions: number | null
+}
+
+export async function searchStanding(
+  client: PoolClient,
+): Promise<Map<string, SearchStanding>> {
+  const { rows } = await client.query<{
+    entity_id: string, metric: string, value: string
+  }>(`
+    select distinct on (entity_id, metric)
+           entity_id::text as entity_id, metric, value::text
+      from snapshot
+     where metric in ('perf_booking_rank', 'perf_booking_rank_prior',
+                      'perf_booking_rank_change_since_first',
+                      'funnel_airbnb_position', 'funnel_airbnb_position_trailing',
+                      'funnel_airbnb_first_page_impressions_trailing',
+                      'funnel_airbnb_impressions', 'funnel_airbnb_impressions_trailing')
+     order by entity_id, metric, as_of_date desc`)
+
+  const out = new Map<string, SearchStanding>()
+  const held = new Map<string, Map<string, number>>()
+  for (const r of rows) {
+    const n = Number(r.value)
+    if (!Number.isFinite(n)) continue
+    const m = held.get(r.entity_id) ?? new Map<string, number>()
+    m.set(r.metric, n)
+    held.set(r.entity_id, m)
+  }
+
+  for (const [entityId, m] of held) {
+    // Both spellings are accepted for the axis-suffixed names, for the reason
+    // the funnel read does the same: the suffix is derived from whether the
+    // account's payload carries a stay date, so hardcoding one spelling would
+    // go blank the day the provider starts sending dates.
+    const either = (base: string) => m.get(base) ?? m.get(`${base}_trailing`) ?? null
+    const rank = m.get('perf_booking_rank') ?? null
+    const prior = m.get('perf_booking_rank_prior') ?? null
+    const since = m.get('perf_booking_rank_change_since_first') ?? null
+    out.set(entityId, {
+      // A standing exists only where a rank does. Prior and change alone are not
+      // a position — they are a movement with nothing to attach it to.
+      bookingRank: rank === null ? null : { rank, prior, sinceFirst: since },
+      airbnbPosition: either('funnel_airbnb_position'),
+      firstPage: m.get('funnel_airbnb_first_page_impressions_trailing') ?? null,
+      airbnbImpressions: either('funnel_airbnb_impressions'),
+    })
+  }
+  return out
+}
+
+/**
+ * The portfolio's rank percentile per day, per channel.
+ *
+ * ACCOUNT-LEVEL, and that is not a detail to gloss over. This is the channel's
+ * own statement about where the whole account sits in the distribution of
+ * comparable listings — not one room's rank. Drawing it inside a room would
+ * attribute a portfolio figure to a single object, which is the same class of
+ * error as showing a market average as a room's own occupancy.
+ *
+ * Kept per date rather than averaged because a percentile that MOVED is the
+ * finding, and a mean over thirty days hides precisely that.
+ */
+export interface RankPoint { date: string, percentile: number }
+
+export async function rankTimeline(
+  client: PoolClient, group: string | null = null,
+): Promise<Map<string, RankPoint[]>> {
+  /**
+   * The group cannot narrow this one, and the page has to say so rather than
+   * quietly showing an account figure under a group heading. The percentile is
+   * the provider's own aggregate over the whole account: there is no per-room
+   * component to re-aggregate, so a filtered version cannot be computed — only
+   * faked.
+   */
+  void group
+  const { rows } = await client.query<{
+    source: string, label: string, value: string, unit: string
+  }>(`
+    select source::text as source, label, value::text as value, unit
+      from channel_insight
+     where section = 'rank_timeline'
+       and value is not null
+     order by source, label`)
+
+  const out = new Map<string, RankPoint[]>()
+  for (const r of rows) {
+    // The unit is derived by the adapter, never assumed. A row that arrived
+    // without a decidable unit is stored and NOT charted — a number whose scale
+    // is unknown cannot be drawn on an axis.
+    if (r.unit !== 'percentile') continue
+    const p = Number(r.value)
+    if (!Number.isFinite(p)) continue
+    const list = out.get(r.source) ?? []
+    list.push({ date: r.label, percentile: p })
+    out.set(r.source, list)
+  }
+  return out
+}

@@ -1,5 +1,5 @@
 /**
- * The eight cockpit figures, against a real database.
+ * The dashboard's aggregate queries, against a real database.
  *
  * WHY THIS FILE EXISTS. `cockpit()` is eight separate SQL queries and, until
  * now, not one of them had ever been executed by a test. The only coverage was
@@ -27,7 +27,7 @@
  *      night", which is a claim; null reads as "not measured", which is true.
  */
 import { Pool } from 'pg'
-import { cockpit } from './dashboard/query.js'
+import { cockpit, rankTimeline, searchStanding } from './dashboard/query.js'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL! })
 let fails = 0
@@ -178,6 +178,86 @@ const bogus = await cockpit(c, 'revenue', 'No Such Group')
 check('an unknown group shows nothing, not everything',
       bogus.rooms === 0 && bogus.atStake === null,
       JSON.stringify({ rooms: bogus.rooms, atStake: bogus.atStake }))
+
+/* ============================================ rank and search visibility == */
+
+/**
+ * A rank is stored SIGNED for one reason: `-7` means seven places better, and a
+ * reader that refuses negatives as provider sentinels would drop exactly the
+ * good news. These checks pin down that the sign survives the round trip through
+ * Postgres and back.
+ */
+await put(z1, 'perf_booking_rank', 5)
+await put(z1, 'perf_booking_rank_prior', 9)
+await c.query(
+  `insert into snapshot (entity_id, source, metric, stay_date, as_of_date, value)
+   values ($1, 'mdv_booking', 'perf_booking_rank_change_since_first',
+           $2::date, $2::date, -7)
+   on conflict (entity_id, metric, stay_date, as_of_date) do update set value = excluded.value`,
+  [z1, TODAY])
+await put(z1, 'funnel_airbnb_position_trailing', 12)
+await put(z1, 'funnel_airbnb_first_page_impressions_trailing', 410)
+await put(z1, 'funnel_airbnb_impressions_trailing', 8200)
+// Z2 gets a prior and a change but NO current rank: a movement with nothing to
+// attach it to is not a position, and must not become one.
+await put(z2, 'perf_booking_rank_prior', 14)
+
+const st = await searchStanding(c)
+check('a rank comes back with its channel and its previous value',
+      st.get(z1)?.bookingRank?.rank === 5 && st.get(z1)?.bookingRank?.prior === 9,
+      JSON.stringify(st.get(z1)?.bookingRank))
+check('and the improvement survives as a NEGATIVE number, not as an absolute',
+      st.get(z1)?.bookingRank?.sinceFirst === -7,
+      String(st.get(z1)?.bookingRank?.sinceFirst))
+check('a prior with no current rank is not turned into a standing',
+      st.get(z2)?.bookingRank === null, JSON.stringify(st.get(z2)))
+check('the trailing spelling of the Airbnb position is accepted',
+      st.get(z1)?.airbnbPosition === 12, String(st.get(z1)?.airbnbPosition))
+check('and the first-page count arrives with the total it came out of',
+      st.get(z1)?.firstPage === 410 && st.get(z1)?.airbnbImpressions === 8200,
+      JSON.stringify(st.get(z1)))
+
+/**
+ * The account-level percentile. Two rows are a series; a row whose unit is not
+ * `percentile` is stored and NOT charted, because a number whose scale is
+ * unstated cannot be put on an axis.
+ */
+const ins = async (source: string, label: string, value: number, unit = 'percentile') =>
+  c.query(
+    `insert into channel_insight (source, section, label, value, unit, as_of_date)
+     values ($1, 'rank_timeline', $2, $3, $4, $5::date)
+     on conflict do nothing`, [source, label, value, unit, TODAY])
+/**
+ * Dates far in the future, deliberately.
+ *
+ * An earlier version of these three checks asserted the WHOLE series and failed,
+ * because `smoke-mdv-performance` had already written rows for the same channel
+ * on nearby dates. `channel_insight` is keyed on (source, section, label,
+ * as_of_date), so the only collision-proof fixture is a label nothing else uses.
+ */
+const D1 = '2099-01-01', D2 = '2099-01-02', DX = '2099-01-03'
+await ins('mdv_booking', D1, 41)
+await ins('mdv_booking', D2, 63)
+await ins('mdv_booking', DX, 55, 'undecidable')
+
+const tl = await rankTimeline(c)
+const mine = (tl.get('mdv_booking') ?? []).filter(p => p.date.startsWith('2099'))
+check('the percentile series comes back per channel, in date order',
+      mine.map(p => `${p.date}:${p.percentile}`).join(',')
+        === `${D1}:41,${D2}:63`, JSON.stringify(mine))
+// A number whose scale is unstated cannot be put on an axis. It stays stored.
+check('a reading whose unit is undecidable is never charted',
+      !mine.some(p => p.date === DX), JSON.stringify(mine))
+const stored = await c.query<{ n: number }>(
+  `select count(*)::int n from channel_insight
+    where section = 'rank_timeline' and label = $1 and unit = 'undecidable'`, [DX])
+check('but it is still in the archive, so nothing was thrown away',
+      stored.rows[0]?.n === 1, String(stored.rows[0]?.n))
+// The group cannot narrow a provider-side aggregate, and the query must not
+// pretend otherwise by returning an empty set for a valid group.
+check('a group does not silently empty the account-level series',
+      ((await rankTimeline(c, 'Zermattstays')).get('mdv_booking') ?? [])
+        .filter(p => p.date.startsWith('2099')).length === 2, '')
 
 await c.query('rollback')
 c.release()

@@ -484,17 +484,30 @@ tr:hover .chev,tr.open .chev{opacity:1}
 .cx-dl{font-size:11px;font-weight:600;font-variant-numeric:tabular-nums}
 .cx-dl.c1{fill:var(--c1)}
 .cx-dl.c2{fill:var(--c2)}
+.cx-dl.c3{fill:var(--c3)}
+.cx-dl.c4{fill:var(--c4)}
 .cx-dl.mut{fill:var(--mut);font-weight:500}
 .cx-grid{stroke:var(--line);stroke-width:1}
 /* Last year is a reference, not a series — dashed, so it cannot be misread as
    a fourth measurement. */
 .cx-ref{stroke:var(--mut);stroke-width:1.5;stroke-dasharray:3 3}
+/* ALL FOUR series classes get a stroke, not just the one in use.
+   Only c2 was ever defined, because the horizon chart is the only chart that had
+   drawn a line and it happens to use c2. The first chart to draw a c1 line
+   rendered it with no stroke at all: label present, dot present, line invisible.
+   Nothing errored and no test could see it — it was found by rendering the page
+   and looking at it. Defining the whole set is what stops the next one. */
 .cx-line{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.cx-line.c1{stroke:var(--c1)}
 .cx-line.c2{stroke:var(--c2)}
+.cx-line.c3{stroke:var(--c3)}
+.cx-line.c4{stroke:var(--c4)}
 /* A 2px surface ring, so an overlapping dot stays separable from its line. */
 .cx-dot{stroke:var(--surface);stroke-width:2}
 .cx-dot.c1{fill:var(--c1)}
 .cx-dot.c2{fill:var(--c2)}
+.cx-dot.c3{fill:var(--c3)}
+.cx-dot.c4{fill:var(--c4)}
 .cx-keys{display:flex;flex-wrap:wrap;gap:.3rem 1rem;margin-top:.45rem;
   font-size:.76rem;color:var(--mut)}
 .cx-key i{display:inline-block;width:.55rem;height:.55rem;border-radius:2px;
@@ -598,6 +611,27 @@ input{font:inherit;font-size:.9rem;padding:.55rem .7rem;border-radius:var(--r-ct
    literal and a backtick in a comment ends the string. Fifth time.) */
 #rooms{display:flex;align-items:baseline;justify-content:space-between;
   gap:1rem 1.4rem;flex-wrap:wrap}
+
+/* Rank. Three or four figures in a row, each with the channel above it and the
+   movement under it — so the direction is read as a sentence, not as a colour.
+   The good/bad classes exist, but they only ever tint a word that already says
+   "better" or "worse" in full. */
+.rkrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));
+  gap:1px;background:var(--line);border:1px solid var(--line);
+  border-radius:var(--r-ctl);overflow:hidden;margin-top:.6rem}
+.rk{background:var(--surface);padding:.7rem .85rem;display:grid;gap:.15rem}
+.rk.none{background:var(--sunk)}
+.rk-k{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--mut);font-weight:650}
+.rk-n{font-size:1.5rem;font-weight:700;letter-spacing:-.02em;line-height:1.1;
+  font-variant-numeric:tabular-nums}
+.rk.none .rk-n{color:var(--mut);font-weight:500}
+.rk-m{font-size:.76rem;line-height:1.4;color:var(--mut)}
+.rk-m b{font-weight:650}
+.rk-m .good{color:var(--teal)}
+.rk-m .bad{color:var(--rust)}
+.sub-lead{margin:.15rem 0 0;font-size:.84rem;max-width:52em}
+.caveat{margin:.45rem 0 0;font-size:.78rem;max-width:52em}
 
 .tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
 .tscroll>table{min-width:34rem}

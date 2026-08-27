@@ -141,6 +141,26 @@ export interface Strings {
   /** The tenant's own grouping, from PriceLabs. Not our market boxes. */
   /** Said only when a group is selected: this count is still account-wide. */
   leversWholeAccount: (group: string) => string
+  /* ---------------------------------------- rank and search visibility */
+  rankHeading: string
+  rankLead: string
+  rankChannelBooking: string
+  rankChannelAirbnb: string
+  /** The good direction is stated in words, never left to a colour or an arrow. */
+  rankBetter: (places: number) => string
+  rankWorse: (places: number) => string
+  rankUnmoved: string
+  rankPrior: (n: number) => string
+  rankNoneBooking: string
+  rankNoneAirbnb: string
+  rankPositionNote: string
+  rankFirstPage: string
+  rankFirstPageOf: (fp: number, total: number) => string
+  rankFirstPageBare: string
+  rankTimelineHeading: string
+  rankTimelineNote: string
+  rankTimelineAccount: (group: string) => string
+  rankTimelineDirection: string
   groupLabel: string
   groupAll: (n: number) => string
   groupApply: string
@@ -538,6 +558,34 @@ export const en: Strings = {
   todayInRoom: 'open the room',
   leversWholeAccount: g =>
     `Counted across the whole account, not just ${g}.`,
+  rankHeading: 'Where you show up in search',
+  rankLead: 'A rank is the one figure here where a smaller number is better, so '
+    + 'every movement says its direction in words.',
+  rankChannelBooking: 'Booking.com rank',
+  rankChannelAirbnb: 'Airbnb position',
+  rankBetter: n => `${n} place${n === 1 ? '' : 's'} better since first measured`,
+  rankWorse: n => `${n} place${n === 1 ? '' : 's'} worse since first measured`,
+  rankUnmoved: 'unchanged since first measured',
+  rankPrior: n => `was #${n} in the previous period`,
+  rankNoneBooking: 'Booking.com sent no rank for this property.',
+  rankNoneAirbnb: 'Airbnb publishes no rank — only an average position, and none '
+    + 'has arrived for this listing.',
+  rankPositionNote: 'average position in search, not a rank',
+  rankFirstPage: 'Found on page one',
+  rankFirstPageOf: (fp, total) =>
+    `${fp.toLocaleString('en-CH')} of ${total.toLocaleString('en-CH')} impressions `
+    + 'landed on the first page',
+  rankFirstPageBare: 'first-page impressions — the total is not measured, so this '
+    + 'is a count and not a share',
+  rankTimelineHeading: 'The account\u2019s position over time',
+  rankTimelineNote: 'The channel\u2019s own daily percentile for the whole '
+    + 'account. Not one room\u2019s rank: the provider aggregates it, so there '
+    + 'is no per-room figure to show.',
+  rankTimelineAccount: g => `It is not narrowed to ${g} either — a filtered `
+    + 'version cannot be computed from what the provider sends, only invented.',
+  rankTimelineDirection: 'Drawn without a good or bad direction on purpose: the '
+    + 'provider does not say which end of the percentile is the better position. '
+    + 'The movement is the finding.',
   groupLabel: 'Group',
   groupAll: n => `All groups (${n})`,
   groupApply: 'Show',
@@ -1033,6 +1081,34 @@ export const id: Strings = {
   todayInRoom: 'buka unit',
   leversWholeAccount: g =>
     `Dihitung di seluruh akun, bukan hanya ${g}.`,
+  rankHeading: 'Di mana Anda muncul dalam pencarian',
+  rankLead: 'Peringkat adalah satu-satunya angka di sini yang lebih baik bila '
+    + 'lebih kecil, jadi setiap pergerakan menyebutkan arahnya dengan kata.',
+  rankChannelBooking: 'Peringkat Booking.com',
+  rankChannelAirbnb: 'Posisi Airbnb',
+  rankBetter: n => `${n} peringkat lebih baik sejak pengukuran pertama`,
+  rankWorse: n => `${n} peringkat lebih buruk sejak pengukuran pertama`,
+  rankUnmoved: 'tidak berubah sejak pengukuran pertama',
+  rankPrior: n => `sebelumnya #${n} pada periode lalu`,
+  rankNoneBooking: 'Booking.com tidak mengirim peringkat untuk properti ini.',
+  rankNoneAirbnb: 'Airbnb tidak menerbitkan peringkat \u2014 hanya posisi '
+    + 'rata-rata, dan belum ada untuk listing ini.',
+  rankPositionNote: 'posisi rata-rata dalam pencarian, bukan peringkat',
+  rankFirstPage: 'Ditemukan di halaman satu',
+  rankFirstPageOf: (fp, total) =>
+    `${fp.toLocaleString('id-ID')} dari ${total.toLocaleString('id-ID')} tayangan `
+    + 'mendarat di halaman pertama',
+  rankFirstPageBare: 'tayangan halaman pertama \u2014 totalnya tidak terukur, '
+    + 'jadi ini jumlah dan bukan bagian',
+  rankTimelineHeading: 'Posisi akun sepanjang waktu',
+  rankTimelineNote: 'Persentil harian milik kanal untuk seluruh akun. Bukan '
+    + 'peringkat satu unit: penyedia yang mengagregasinya, jadi tidak ada angka '
+    + 'per unit untuk ditampilkan.',
+  rankTimelineAccount: g => `Juga tidak dipersempit ke ${g} \u2014 versi `
+    + 'tersaring tidak bisa dihitung dari apa yang penyedia kirim, hanya dikarang.',
+  rankTimelineDirection: 'Digambar tanpa arah baik atau buruk dengan sengaja: '
+    + 'penyedia tidak menyatakan ujung persentil mana yang posisinya lebih baik. '
+    + 'Pergerakannya adalah temuannya.',
   groupLabel: 'Grup',
   groupAll: n => `Semua grup (${n})`,
   groupApply: 'Tampilkan',
