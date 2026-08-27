@@ -60,6 +60,18 @@ export const PROMOTIONS: FieldSpec = {
   active: ['active', 'is_active', 'enabled', 'is_enabled', 'status'],
   discountPct: ['discount_percentage', 'discount_pct', 'discount', 'percentage',
                 'percent', 'rate', 'commission_pct'],
+  /**
+   * NESTED, and I had written down that they did not exist.
+   *
+   * The first pass reported no start or end date, and I concluded the payload
+   * carried none — and put that in a migration comment. The shape export shows
+   * `attributes.bookDates.dates.from` and `.to`, four levels down. The resolver
+   * only ever looked at top-level keys, so an absence at the top read as an
+   * absence altogether.
+   *
+   * The flat candidates stay: another account may well send them flat, and the
+   * nested read is a separate step rather than a replacement.
+   */
   startsOn: ['start_date', 'starts_on', 'valid_from', 'from_date', 'stay_start'],
   endsOn: ['end_date', 'ends_on', 'valid_to', 'to_date', 'stay_end'],
   observedAt: ['data_as_of', 'updated_at', 'created_at'],
@@ -152,6 +164,28 @@ const isoDate = (v: unknown): string | null => {
   const m = /^(\d{4}-\d{2}-\d{2})/.exec(v)
   return m ? m[1]! : null
 }
+
+/** Reads a dotted path, so a value four levels down is reachable. */
+function at(row: Record<string, unknown>, path: string): unknown {
+  let cur: unknown = row
+  for (const part of path.split('.')) {
+    if (!cur || typeof cur !== 'object') return undefined
+    cur = (cur as Record<string, unknown>)[part]
+  }
+  return cur
+}
+
+/**
+ * The booking window, flat or nested.
+ *
+ * Tried flat first because that is the documented-looking shape, then at the two
+ * nested places this account actually uses. Which one answered is reported, so
+ * the next account's shape is a one-line addition rather than a rediscovery.
+ */
+const NESTED_DATES: Array<[string, string]> = [
+  ['attributes.bookDates.dates.from', 'attributes.bookDates.dates.to'],
+  ['attributes.stayDates.dates.from', 'attributes.stayDates.dates.to'],
+]
 
 const today = (): string => new Date().toISOString().slice(0, 10)
 
@@ -304,6 +338,7 @@ async function readPromotions(
     Boolean(r) && typeof r === 'object')
   const idKey = resolution.used.propertyId
   const kinds = new Set<string>()
+  const dateSources = new Set<string>()
   const unresolved = new Set<string>()
   let unattributed = 0, stored = 0, withheld = 0
 
@@ -322,6 +357,16 @@ async function readPromotions(
     } else unattributed++
 
     const pct = resolution.used.discountPct ? countOf(row[resolution.used.discountPct]) : null
+    let startsOn = resolution.used.startsOn ? isoDate(row[resolution.used.startsOn]) : null
+    let endsOn = resolution.used.endsOn ? isoDate(row[resolution.used.endsOn]) : null
+    let dateSource = startsOn || endsOn ? 'flat' : ''
+    if (!startsOn && !endsOn) {
+      for (const [from, to] of NESTED_DATES) {
+        const a = isoDate(at(row, from)), b = isoDate(at(row, to))
+        if (a || b) { startsOn = a; endsOn = b; dateSource = from; break }
+      }
+    }
+    if (dateSource) dateSources.add(dateSource)
     const res = await client.query(
       `insert into channel_promotion
          (entity_id, source, external_id, kind, active, discount_pct,
@@ -344,8 +389,7 @@ async function readPromotions(
        kind,
        resolution.used.active ? switchOf(row[resolution.used.active]) : null,
        pct !== null && pct <= 100 ? pct : null,
-       resolution.used.startsOn ? isoDate(row[resolution.used.startsOn]) : null,
-       resolution.used.endsOn ? isoDate(row[resolution.used.endsOn]) : null,
+       startsOn, endsOn,
        resolution.used.observedAt
          && typeof row[resolution.used.observedAt] === 'string'
          ? row[resolution.used.observedAt] : null,
@@ -369,6 +413,9 @@ async function readPromotions(
     notes.push(`unclaimed keys present: ${resolution.unclaimed.join(', ')}`)
   }
   notes.push(`${pages + 1} page(s) read`)
+  notes.push(dateSources.size
+    ? `promotion window read from ${[...dateSources].join(', ')}`
+    : 'no promotion window found at any candidate path, flat or nested')
   if (o.truncated) {
     notes.push(`the page ceiling of ${MAX_PAGES} was reached, so there may be more`)
   }

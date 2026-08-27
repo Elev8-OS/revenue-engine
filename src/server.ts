@@ -1012,7 +1012,8 @@ ${ep.note ? row('note', ep.note) : ''}
       : form.source === 'checks' ? 'checks'
       : form.source === 'mdv-discover' ? 'mdv-discover'
       : form.source === 'mdv-funnel' ? 'mdv-funnel'
-      : form.source === 'mdv-reputation' ? 'mdv-reputation' : 'mdv'
+      : form.source === 'mdv-reputation' ? 'mdv-reputation'
+      : form.source === 'mdv-detail' ? 'mdv-detail' : 'mdv'
     try {
       await startImport(pool, { startedBy: session.email || 'open', source })
     } catch (err) {
@@ -1081,6 +1082,11 @@ ${mdvReady ? '' : `<div class="card warn">${t.importNeedsMdv}</div>`}
   <button type="submit" name="source" value="mdv-reputation"${mdvReady && (!run || run.finishedAt) ? '' : ' disabled'}>${esc(t.reputationRun)}</button>
 </form>
 <p class="sub">${esc(t.reputationNote)}</p>
+<form class="actions" method="post" action="/import?lang=${lang}">
+  <span class="label">${esc(t.detailStart)}</span>
+  <button type="submit" name="source" value="mdv-detail"${mdvReady && (!run || run.finishedAt) ? '' : ' disabled'}>${esc(t.detailRun)}</button>
+</form>
+<p class="sub">${esc(t.detailNote)}</p>
 <form class="actions" method="post" action="/import?lang=${lang}">
   <span class="label">${esc(t.checksStart)}</span>
   <button type="submit" name="source" value="checks"${!run || run.finishedAt ? '' : ' disabled'}>${esc(t.checksRun)}</button>

@@ -18,6 +18,7 @@ npx tsx src/smoke-mdv-register.ts
 npx tsx src/smoke-mdv-objects.ts
 npx tsx src/smoke-mdv-funnel.ts
 npx tsx src/smoke-mdv-reputation.ts
+npx tsx src/smoke-mdv-detail.ts
 npx tsx src/smoke-import.ts
 # Added because they were not in this list. Eleven suites existed and eight ran,
 # which meant three of them were only ever green on the machine that wrote them.

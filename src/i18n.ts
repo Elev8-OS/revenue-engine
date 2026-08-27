@@ -82,6 +82,9 @@ export interface Strings {
   reputationStart: string
   reputationRun: string
   reputationNote: string
+  detailStart: string
+  detailRun: string
+  detailNote: string
   checksStart: string
   checksRun: string
   checksNote: string
@@ -384,6 +387,13 @@ export const en: Strings = {
   recommendLabel: 'recommended',
   occupancy30: 'occupancy, next 30 nights',
   nightsArchived: n => `${n} night${n === 1 ? '' : 's'}`,
+  detailStart: 'Read what the calls already carry',
+  detailRun: 'Read the unread fields',
+  detailNote: 'Makes no new request. The two endpoints this uses are the same two '
+    + 'the object import already calls \u2014 they carry the whole commission stack, '
+    + 'the entire Airbnb funnel per listing including the comparable-set ADR, every '
+    + 'promotion with its window, and the levers the channel offers that nobody has '
+    + 'taken. All of it was unread, not unavailable.',
   reputationStart: 'Read reviews and levers',
   reputationRun: 'Read reputation',
   reputationNote: 'Reads review score and count per channel, and the promotions '
@@ -838,6 +848,12 @@ export const id: Strings = {
   recommendLabel: 'disarankan',
   occupancy30: 'okupansi, 30 malam berikutnya',
   nightsArchived: n => `${n} malam`,
+  detailStart: 'Baca yang sudah dibawa panggilan',
+  detailRun: 'Baca field yang belum terbaca',
+  detailNote: 'Tidak membuat permintaan baru. Dua endpoint yang dipakai sama dengan '
+    + 'yang sudah dipanggil impor objek \u2014 keduanya membawa seluruh tumpukan '
+    + 'komisi, funnel Airbnb per listing, setiap promosi dengan jendelanya, dan tuas '
+    + 'yang ditawarkan kanal tetapi belum diambil.',
   reputationStart: 'Baca ulasan dan tuas',
   reputationRun: 'Baca reputasi',
   reputationNote: 'Membaca skor dan jumlah ulasan per kanal, serta promosi yang '
