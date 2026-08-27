@@ -75,6 +75,8 @@ export interface DashboardData {
    * which lever is barely used — rather than a list of what exists.
    */
   leverCoverage: Array<{ kind: string, on: number, of: number }>
+  /** The eight figures a reader scans first. Everything else is their drilldown. */
+  cockpit: q.Cockpit
   /** Night-by-night disagreement with the recommendation, and the minimum stay. */
   priceGap: Map<string, q.PriceGap>
   /** Lead time, stay length and guest origin, from our own realised bookings. */
@@ -505,6 +507,105 @@ function funnelChain(
  * is derived, and once real figures exist the sentence about their absence is not
  * merely wrong, it is contradicted by the numbers next to it.
  */
+/* ============================================================ the cockpit == */
+
+/**
+ * Eight figures, each explaining itself.
+ *
+ * THE DESIGN CONSTRAINT THAT SHAPED THIS. Most people reading this page are not
+ * revenue managers. They have not met RevPAR, they do not know what MPI is, and —
+ * the part that decides whether the page is any use — they do not know which of
+ * these numbers moves their money and which is just a number. A grid of
+ * abbreviations and percentages hands them a spreadsheet and hopes.
+ *
+ * So every tile carries four things, in this order: the plain-language name, the
+ * figure, what it is being compared against, and one line on what it does to the
+ * money. The technical term is present but secondary — it is there so the reader
+ * recognises the word when a channel or a consultant uses it, not as the label.
+ *
+ * The verdict word comes from one shared rule in `query.ts`, never from the
+ * renderer, so two tiles can never disagree about the same size of gap. And
+ * `unknown` is a real verdict: a portfolio with no market data does not have good
+ * occupancy, it has occupancy nobody has compared — saying "on track" there would
+ * be the most comfortable lie on the page.
+ */
+function kpiTile(
+  key: 'revpar' | 'occupancy' | 'pace' | 'mpi' | 'take' | 'visibility' | 'reviews' | 'blocked',
+  k: q.Kpi, shown: string, againstShown: string | null, basisShown: string,
+  s: Strings, extra = '',
+): string {
+  const meta = s.kpi[key]
+  return `<article class="kpi v-${k.verdict}">
+    <header>
+      <h3>${e(meta.name)}</h3>
+      <span class="kpi-term" title="${e(meta.term)}">${e(meta.term)}</span>
+    </header>
+    <div class="kpi-fig">
+      <span class="kpi-n">${k.value === null
+        ? `<i class="kpi-none">${e(s.cockpitNoData)}</i>` : e(shown)}</span>
+      ${againstShown ? `<span class="kpi-vs">${e(againstShown)}</span>` : ''}
+    </div>
+    <div class="kpi-meta">
+      <span class="chip-v">${e(s.verdict[k.verdict])}</span>
+      <span class="kpi-basis">${e(basisShown)}</span>
+    </div>
+    ${extra}
+    <p class="kpi-money">${e(meta.money)}</p>
+  </article>`
+}
+
+function cockpitBlock(c: q.Cockpit, s: Strings): string {
+  const P = (v: number | null) => v === null ? '—' : pct(v, s.numberLocale)
+  const M = (v: number | null) => v === null ? '—' : money(v, c.currency, s.numberLocale)
+  const N = (v: number | null) => v === null ? '—' : count(v, s.numberLocale)
+  const vs = (label: string, v: string) => `${label}: ${v}`
+  const tiles = [
+    kpiTile('revpar', c.revpar, M(c.revpar.value),
+      c.revpar.against === null ? null : vs(s.kpi.revpar.against, M(c.revpar.against)),
+      s.cockpitBasisNights(c.revpar.basis), s),
+    kpiTile('occupancy', c.occupancy, P(c.occupancy.value),
+      c.occupancy.against === null ? null
+        : vs(s.kpi.occupancy.against, P(c.occupancy.against)),
+      s.cockpitBasisNights(c.occupancy.basis), s),
+    // Pace is a count of nights, not a rate, and it has nothing to compare
+    // against — the archive does not reach back a year. It says so.
+    kpiTile('pace', c.pace, N(c.pace.value), null,
+      s.cockpitBasisBookings(c.pace.basis), s),
+    kpiTile('mpi', c.mpi,
+      c.mpi.value === null ? '—'
+        : new Intl.NumberFormat(s.numberLocale,
+            { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(c.mpi.value),
+      // No `vs(...)` here: this figure's reference IS "1.00 is level", so
+      // appending the value produced "1.00 is level: 1.00".
+      s.kpi.mpi.against, s.cockpitBasisNights(c.mpi.basis), s),
+    kpiTile('take', c.takeRate,
+      c.takeRate.value === null ? '—' : pct(c.takeRate.value * 100, s.numberLocale),
+      null, s.cockpitBasisBookings(c.takeRate.basis), s),
+    kpiTile('visibility', c.visibility,
+      c.visibility.value === null ? '—' : pct(c.visibility.value * 100, s.numberLocale),
+      null, s.cockpitBasisRooms(c.visibility.basis), s),
+    kpiTile('reviews', c.reviewScore,
+      c.reviewScore.value === null ? '—'
+        : new Intl.NumberFormat(s.numberLocale,
+            { maximumFractionDigits: 1 }).format(c.reviewScore.value),
+      null, s.cockpitBasisRooms(c.reviewScore.basis), s,
+      // The count of thin-review rooms rides on this tile because the score alone
+      // hides them: an average of 8.6 says nothing about the room with one review.
+      c.thinReviews > 0
+        ? `<p class="kpi-flag">${e(s.reviewsThin(c.thinReviews))}</p>` : ''),
+    kpiTile('blocked', c.blocked,
+      c.blocked.value === null ? '—' : pct(c.blocked.value * 100, s.numberLocale),
+      null, s.cockpitBasisNights(c.blocked.basis), s),
+  ]
+  return `<section class="cockpit">
+    <div class="ck-head">
+      <h2 class="ph">${e(s.cockpitHeading)}</h2>
+      <p class="mut" style="margin:.1rem 0 0;font-size:.84rem">${e(s.cockpitLead)}</p>
+    </div>
+    <div class="ck-grid">${tiles.join('')}</div>
+  </section>`
+}
+
 /* ------------------------------------------------------ what to change ===== */
 
 /**
@@ -1172,6 +1273,7 @@ export function renderDashboard(d: DashboardData): string {
     <div class="stat"><div class="k">${e(s.notAssessable)}</div><div class="v">${d.notAssessable.length}</div>
       <div class="sub">${e(s.signalMissing)}</div></div>
   </div>
+  ${cockpitBlock(d.cockpit, s)}
   ${d.notAssessable.length ? `<div class="banner"><b>${e(s.roomsNotAssessable(d.notAssessable.length))}</b> — ${
       d.notAssessable.map(n => `${e(n.label)} <span class="mut">(${e(n.reason)})</span>`).join(' · ')
     }</div>` : ''}

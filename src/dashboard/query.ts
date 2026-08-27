@@ -1074,3 +1074,299 @@ export async function priceGap(
     minStayOver: 0, minStayMax: num(r.min_stay_max),
   }]))
 }
+
+/* ============================================================== the cockpit */
+
+export type Verdict = 'good' | 'watch' | 'act' | 'unknown'
+
+export interface Kpi {
+  /** The measured value, or null when it cannot be established. */
+  value: number | null
+  /** What to compare it against: the market, last year, our own cohort. */
+  against: number | null
+  /** How many rooms or nights the figure rests on. Never omitted. */
+  basis: number
+  verdict: Verdict
+}
+
+export interface Cockpit {
+  rooms: number
+  /** Revenue per available night, next 30, against the same window last year. */
+  revpar: Kpi
+  /** Occupancy, next 30. Nights-weighted, not a mean of percentages. */
+  occupancy: Kpi
+  /** Occupancy with owner-blocked nights removed — "full" against "closed". */
+  adjusted: Kpi
+  /** Nights booked in the LAST 7 days for arrivals in the next 30. */
+  pace: Kpi
+  /** Our asking price over the market's. 1.00 is level. */
+  mpi: Kpi
+  /** What the channels kept of the gross, over the realised window. */
+  takeRate: Kpi
+  /** Portfolio search-to-view, summed not averaged, against our own median. */
+  visibility: Kpi
+  /** Review score, and how many rooms carry a thin review count. */
+  reviewScore: Kpi
+  thinReviews: number
+  /** Share of the next 30 nights that are not sellable at all. */
+  blocked: Kpi
+  /** Sum of the largest SINGLE opportunity per room. Never a sum of findings. */
+  atStake: number | null
+  currency: string | null
+  /** Rooms a check could not reach. The number that stops a portfolio looking healthy. */
+  notAssessable: number
+}
+
+/** Fewer than this many reviews and the score is a handicap, not a rating. */
+const THIN_REVIEW_COUNT = 5
+/** Below this share of its own comparison, a figure needs acting on. */
+const ACT_BELOW = 0.85
+const WATCH_BELOW = 0.95
+
+/**
+ * A verdict, and the reason it is a function and not a colour written by hand.
+ *
+ * Every tile on the cockpit says good, watch or act. If those words were assigned
+ * per tile in the renderer, the thresholds would drift apart and two tiles could
+ * disagree about the same gap. So there is one rule: a figure is compared against
+ * its own reference, and the bands are the same everywhere.
+ *
+ * `unknown` is a real answer and the most important one. A portfolio with no
+ * market data does not have good occupancy; it has occupancy nobody has compared.
+ */
+function verdictOf(
+  value: number | null, against: number | null, higherIsBetter = true,
+): Verdict {
+  if (value === null || against === null || against === 0) return 'unknown'
+  const ratio = higherIsBetter ? value / against : against / value
+  if (ratio < ACT_BELOW) return 'act'
+  if (ratio < WATCH_BELOW) return 'watch'
+  return 'good'
+}
+
+/**
+ * The portfolio at a glance, from everything the archive holds.
+ *
+ * WHY THIS EXISTS AND WHAT IT IS FOR. Most people reading this page are not
+ * revenue managers. They do not know what RevPAR is, they have never heard of
+ * MPI, and — the part that matters — they do not know which of these numbers
+ * moves their money and which is just a number. A page that shows forty-one rooms
+ * and eighteen findings hands them a spreadsheet and hopes.
+ *
+ * So the cockpit is eight figures, each with the thing to compare it against, the
+ * count it rests on, and a verdict. Everything else on the page is the drilldown
+ * behind one of these eight.
+ *
+ * AVERAGING RULES, because they are where a portfolio figure goes wrong. Occupancy
+ * is weighted by archived nights, not a mean of percentages — a mean would let a
+ * room with three archived nights count as much as one with ninety. The take rate
+ * is total commission over total gross, not a mean of per-room rates, for the same
+ * reason. Visibility is total views over total impressions: a mean of view rates
+ * would let a listing with eleven impressions outvote one with ninety thousand.
+ */
+export async function cockpit(client: PoolClient, basis: Basis): Promise<Cockpit> {
+  const amount = AMOUNT[basis]
+  const { rows: agg } = await client.query<{
+    rooms: number, revpar: string | null, stly_revpar: string | null,
+    occ: string | null, market_occ: string | null, stly_occ: string | null,
+    adjusted: string | null, mpi: string | null, nights: number
+  }>(`
+    with asof as (
+      select entity_id, max(as_of_date) as d
+        from snapshot where metric = 'occupancy_next_30d' group by entity_id
+    ),
+    per as (
+      select s.entity_id,
+             max(s.value) filter (where s.metric = 'occupancy_next_30d')          as occ,
+             max(s.value) filter (where s.metric = 'market_occupancy_next_30d')   as market_occ,
+             max(s.value) filter (where s.metric = 'stly_occupancy_next_30d')     as stly_occ,
+             max(s.value) filter (where s.metric = 'adjusted_occupancy_next_30d') as adjusted,
+             max(s.value) filter (where s.metric = 'revpar_next_30d')             as revpar,
+             max(s.value) filter (where s.metric = 'stly_revenue_next_30d')       as stly_rev,
+             max(s.value) filter (where s.metric = 'mpi_next_30d')                as mpi
+        from snapshot s join asof a
+          on a.entity_id = s.entity_id and s.as_of_date = a.d
+        join entity e on e.id = s.entity_id and e.active
+       group by s.entity_id
+    ),
+    -- Nights actually archived per room, which is the weight. A room with three
+    -- stored nights must not count like one with ninety.
+    w as (
+      select s.entity_id, count(*)::int as nights
+        from snapshot s join asof a on a.entity_id = s.entity_id and s.as_of_date = a.d
+       where s.metric = 'price_recommended'
+         and s.stay_date >= a.d and s.stay_date < a.d + 30
+       group by s.entity_id
+    )
+    select count(*)::int as rooms,
+           -- Parenthesised before the cast. Without the brackets the ::text binds
+           -- to the divisor and Postgres refuses numeric / text — which it did.
+           ((sum(per.revpar * coalesce(w.nights, 1))
+             / nullif(sum(coalesce(w.nights, 1))
+                 filter (where per.revpar is not null), 0)))::text as revpar,
+           -- Last year's REVENUE over the same night count is last year's RevPAR.
+           (sum(per.stly_rev) / nullif(sum(coalesce(w.nights, 1))
+              filter (where per.stly_rev is not null), 0))::text as stly_revpar,
+           (sum(per.occ * coalesce(w.nights, 1))
+              / nullif(sum(coalesce(w.nights, 1)) filter (where per.occ is not null), 0))
+             ::text as occ,
+           (sum(per.market_occ * coalesce(w.nights, 1))
+              / nullif(sum(coalesce(w.nights, 1)) filter (where per.market_occ is not null), 0))
+             ::text as market_occ,
+           (sum(per.stly_occ * coalesce(w.nights, 1))
+              / nullif(sum(coalesce(w.nights, 1)) filter (where per.stly_occ is not null), 0))
+             ::text as stly_occ,
+           (sum(per.adjusted * coalesce(w.nights, 1))
+              / nullif(sum(coalesce(w.nights, 1)) filter (where per.adjusted is not null), 0))
+             ::text as adjusted,
+           (sum(per.mpi * coalesce(w.nights, 1))
+              / nullif(sum(coalesce(w.nights, 1)) filter (where per.mpi is not null), 0))
+             ::text as mpi,
+           coalesce(sum(w.nights), 0)::int as nights
+      from per left join w on w.entity_id = per.entity_id`)
+
+  /**
+   * Pace: nights booked in the LAST SEVEN DAYS for arrivals in the next thirty.
+   *
+   * The figure a revenue manager reaches for first and the one this page has never
+   * had. Occupancy says where we stand; pace says which way we are moving, and a
+   * room at 26% that took nine nights this week is a different situation from one
+   * at 26% that took none.
+   *
+   * No year-on-year comparison: the reservation archive does not reach back far
+   * enough to compute last year's same-week pickup, and inventing that comparison
+   * would be the most useful-looking wrong number on the page.
+   */
+  const { rows: pace } = await client.query<{ nights: string | null, bookings: number }>(`
+    select sum(nights)::text as nights, count(*)::int as bookings
+      from booking_economics
+     where booked_at >= now() - interval '7 days'
+       and arrival >= current_date and arrival < current_date + 30
+       and coalesce(status, '') <> 'cancelled'`)
+
+  const { rows: take } = await client.query<{
+    gross: string | null, commission: string | null, bookings: number, currency: string | null
+  }>(`
+    select sum(gross_amount)::text as gross, sum(ota_commission)::text as commission,
+           count(*)::int as bookings, max(currency) as currency
+      from booking_economics
+     where arrival >= current_date - $1::int and arrival < current_date
+       and coalesce(status, '') <> 'cancelled'`, [REALISED_DAYS])
+
+  /**
+   * Visibility for the whole portfolio: total views over total impressions.
+   *
+   * NOT a mean of per-room rates. A listing with eleven impressions and one view
+   * has a 9% view rate, and averaging it with one that had 99'014 impressions
+   * would let the small room outvote the large one by a factor of nine thousand.
+   */
+  const { rows: vis } = await client.query<{
+    impressions: string | null, views: string | null, rooms: number
+  }>(`
+    with latest as (
+      select distinct on (entity_id, metric) entity_id, metric, value
+        from snapshot
+       where metric in ('funnel_booking_impressions_trailing', 'funnel_booking_views_trailing',
+                        'funnel_airbnb_impressions_trailing', 'funnel_airbnb_views_trailing')
+       order by entity_id, metric, as_of_date desc
+    )
+    select sum(value) filter (where metric like '%impressions%')::text as impressions,
+           sum(value) filter (where metric like '%views%')::text as views,
+           count(distinct entity_id)::int as rooms
+      from latest`)
+
+  const { rows: rev } = await client.query<{
+    score: string | null, rooms: number, thin: number
+  }>(`
+    with latest as (
+      select distinct on (entity_id, metric) entity_id, metric, value
+        from snapshot
+       where metric in ('reviews_booking_score', 'reviews_booking_count',
+                        'reviews_airbnb_score', 'reviews_airbnb_count')
+       order by entity_id, metric, as_of_date desc
+    ),
+    per as (
+      select entity_id,
+             avg(value) filter (where metric like '%score') as score,
+             min(value) filter (where metric like '%count') as count
+        from latest group by entity_id
+    )
+    select (avg(score))::text as score, count(*)::int as rooms,
+           count(*) filter (where count is not null and count <= $1)::int as thin
+      from per`, [THIN_REVIEW_COUNT])
+
+  /**
+   * Nights that cannot be sold at all.
+   *
+   * `unbookable` has been archived per night since the first PriceLabs pass and
+   * read by nothing. It is the difference between a portfolio that is priced wrong
+   * and one that is partly closed — and without it a low occupancy figure gets
+   * blamed on the price every time.
+   */
+  const { rows: blk } = await client.query<{ blocked: string | null, nights: number }>(`
+    with asof as (
+      select entity_id, max(as_of_date) as d
+        from snapshot where metric = 'price_recommended' group by entity_id
+    )
+    select sum(s.value)::text as blocked, count(*)::int as nights
+      from snapshot s join asof a on a.entity_id = s.entity_id and s.as_of_date = a.d
+     where s.metric = 'unbookable'
+       and s.stay_date >= a.d and s.stay_date < a.d + 30`)
+
+  const { rows: stake } = await client.query<{ total: string | null, currency: string | null }>(`
+    with per as (
+      select f.entity_id, max(f.${amount}) as amount, max(f.currency) as currency
+        from finding f where f.state = 'open' group by f.entity_id
+    )
+    select sum(amount)::text as total, max(currency) as currency from per`)
+
+  const { rows: na } = await client.query<{ n: number }>(
+    `select count(*)::int n from not_assessable`)
+
+  const num = (v: string | null | undefined) =>
+    v === null || v === undefined ? null : Number(v)
+  const a = agg[0]
+  const nights = a?.nights ?? 0
+  const paceNights = num(pace[0]?.nights ?? null)
+  const grossTotal = num(take[0]?.gross ?? null)
+  const commissionTotal = num(take[0]?.commission ?? null)
+  const impressions = num(vis[0]?.impressions ?? null)
+  const views = num(vis[0]?.views ?? null)
+  const blocked = num(blk[0]?.blocked ?? null)
+  const blockedNights = blk[0]?.nights ?? 0
+  const viewRate = impressions && impressions > 0 && views !== null
+    ? views / impressions : null
+
+  const occ = num(a?.occ ?? null)
+  const marketOcc = num(a?.market_occ ?? null)
+  return {
+    rooms: a?.rooms ?? 0,
+    revpar: { value: num(a?.revpar ?? null), against: num(a?.stly_revpar ?? null),
+              basis: nights, verdict: verdictOf(num(a?.revpar ?? null),
+                                                num(a?.stly_revpar ?? null)) },
+    occupancy: { value: occ, against: marketOcc, basis: nights,
+                 verdict: verdictOf(occ, marketOcc) },
+    adjusted: { value: num(a?.adjusted ?? null), against: occ, basis: nights,
+                verdict: 'unknown' },
+    // Pace has nothing to compare against yet, so it says so rather than passing
+    // a verdict it cannot support.
+    pace: { value: paceNights, against: null, basis: pace[0]?.bookings ?? 0,
+            verdict: 'unknown' },
+    // Higher is WORSE for MPI: asking twice the market is not twice as good.
+    mpi: { value: num(a?.mpi ?? null), against: 1, basis: nights,
+           verdict: verdictOf(num(a?.mpi ?? null), 1, false) },
+    takeRate: { value: grossTotal && grossTotal > 0 && commissionTotal !== null
+                  ? commissionTotal / grossTotal : null,
+                against: null, basis: take[0]?.bookings ?? 0, verdict: 'unknown' },
+    visibility: { value: viewRate, against: null, basis: vis[0]?.rooms ?? 0,
+                  verdict: 'unknown' },
+    reviewScore: { value: num(rev[0]?.score ?? null), against: null,
+                   basis: rev[0]?.rooms ?? 0, verdict: 'unknown' },
+    thinReviews: rev[0]?.thin ?? 0,
+    blocked: { value: blockedNights > 0 && blocked !== null ? blocked / blockedNights : null,
+               against: null, basis: blockedNights, verdict: 'unknown' },
+    atStake: num(stake[0]?.total ?? null),
+    currency: take[0]?.currency ?? stake[0]?.currency ?? null,
+    notAssessable: na[0]?.n ?? 0,
+  }
+}

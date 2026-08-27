@@ -23,6 +23,7 @@ const check = (n: string, ok: boolean, extra = '') => {
 }
 
 const ID = '11111111-2222-3333-4444-555555555555'
+const blankKpi = () => ({ value: null, against: null, basis: 0, verdict: 'unknown' as const })
 const row = (over: Partial<Row> = {}): Row => ({
   entityId: ID, label: 'ID - APT 2', market: 'bali', band: '2BR', bandBasis: 'bedrooms',
   contract: null, inHoldout: false, atStake: 1089, bandLow: 1089, bandHigh: 1188,
@@ -49,6 +50,16 @@ const data = (over: Partial<DashboardData> = {}): DashboardData => ({
   realised: new Map(), reviews: new Map(), promotions: new Map(),
   accountPromotions: [], cohorts: new Map(), leverCoverage: [],
   priceGap: new Map(), demand: new Map(),
+  // A portfolio where nothing has been measured yet. Every tile must read
+  // "not measured" rather than a confident zero — this is where every account
+  // starts, and it is the state the page is most often wrong in.
+  cockpit: {
+    rooms: 0,
+    revpar: blankKpi(), occupancy: blankKpi(), adjusted: blankKpi(), pace: blankKpi(),
+    mpi: blankKpi(), takeRate: blankKpi(), visibility: blankKpi(),
+    reviewScore: blankKpi(), blocked: blankKpi(),
+    thinReviews: 0, atStake: null, currency: null, notAssessable: 0,
+  },
   notAssessable: [], freshness: [], gate: [], evidence: [],
   signals: new Map([[ID, sig()]]), funnel: 'unread', demo: false, unprotected: false, ...over,
 })
@@ -352,7 +363,11 @@ const acted = renderDashboard(data({
   leverCoverage: [{ kind: 'MOBILE_RATE', on: 31, of: 41 }],
   promotions: new Map([[ID, []]]),
 }))
-const panelOrder = [...acted.matchAll(/<h3>([^<]*)<\/h3>/g)].map(m => m[1])
+// Scoped to the opened row, because the cockpit tiles above the table are also
+// h3 — a global scrape found "Earnings per night you could sell" first and
+// reported a failure about the wrong part of the page.
+const detail = acted.slice(acted.indexOf('class="detail"'))
+const panelOrder = [...detail.matchAll(/<h3>([^<]*)<\/h3>/g)].map(m => m[1])
 check('the action panel is the FIRST panel in an opened row',
       panelOrder[0] === en.actionsHeading, panelOrder.slice(0, 4).join(' | '))
 // Matched on the digits, not on "CHF 180": Intl puts a NON-BREAKING space after
@@ -375,6 +390,57 @@ check('and the page says this is who booked, not who searched',
       acted.includes('who BOOKED') || acted.includes(en.demandOriginSearchNote), '')
 check('lead time is a spread, not a lone median',
       acted.includes('34') && acted.includes('8') && acted.includes('96'), '')
+
+/* --------------------------------------------------------------- the cockpit */
+
+// The design constraint behind this whole block: most readers are not revenue
+// managers. They have not met RevPAR, they do not know what MPI is, and they do
+// not know which of these numbers moves their money. So every tile is tested for
+// four things, and the plain-language name is one of them.
+const ck = renderDashboard(data({
+  cockpit: {
+    rooms: 41,
+    revpar: { value: 47, against: 61, basis: 1230, verdict: 'act' },
+    occupancy: { value: 26, against: 48, basis: 1230, verdict: 'act' },
+    adjusted: { value: 22, against: 26, basis: 1230, verdict: 'unknown' },
+    pace: { value: 9, against: null, basis: 4, verdict: 'unknown' },
+    mpi: { value: 1.31, against: 1, basis: 1230, verdict: 'act' },
+    takeRate: { value: 0.152, against: null, basis: 22, verdict: 'unknown' },
+    visibility: { value: 0.0075, against: null, basis: 39, verdict: 'unknown' },
+    reviewScore: { value: 8.6, against: null, basis: 39, verdict: 'unknown' },
+    blocked: { value: 0.18, against: null, basis: 1230, verdict: 'unknown' },
+    thinReviews: 4, atStake: 24_800, currency: 'CHF', notAssessable: 37,
+  },
+}))
+check('the plain-language name leads each tile, not the abbreviation',
+      ck.includes(en.kpi.revpar.name) && ck.indexOf(en.kpi.revpar.name)
+        < ck.indexOf(en.kpi.revpar.term), '')
+check('but the technical term is still there, so the word is recognisable elsewhere',
+      ck.includes('RevPAR') && ck.includes('MPI'), '')
+// The line that makes a tile teach instead of report.
+check('every tile says what the figure does to the money',
+      (['revpar', 'occupancy', 'pace', 'mpi', 'take', 'visibility', 'reviews', 'blocked'] as const)
+        .every(k => ck.includes(en.kpi[k].money.slice(0, 40))), '')
+check('a figure is shown with what it is compared against',
+      ck.includes(en.kpi.occupancy.against) && ck.includes(en.kpi.revpar.against), '')
+check('and with the count it rests on, because 3 nights and 1230 are different claims',
+      ck.includes(en.cockpitBasisNights(1230)) && ck.includes(en.cockpitBasisBookings(22)), '')
+// A verdict is a word, never a colour alone.
+check('the verdict is spelled out, not left to a hue',
+      ck.includes(en.verdict.act) && ck.includes(en.verdict.unknown), '')
+check('pace admits it has nothing to compare against rather than passing a verdict',
+      en.kpi.pace.against.includes('nothing yet'), '')
+// An average score hides the room with one review.
+check('the thin-review count rides on the score tile, which alone would hide it',
+      ck.includes(en.reviewsThin(4)), '')
+
+// The state every account starts in, and the one the page is most often wrong in.
+const empty = renderDashboard(data())
+check('an unmeasured portfolio says "not measured" on every tile, never a confident zero',
+      (empty.match(new RegExp(en.cockpitNoData, 'g')) ?? []).length >= 8,
+      String((empty.match(new RegExp(en.cockpitNoData, 'g')) ?? []).length))
+check('and no tile claims to be on track without a comparison',
+      !empty.includes(en.verdict.good), '')
 
 console.log(fails ? `\n${fails} FAILED` : '\nall green')
 process.exit(fails ? 1 : 0)

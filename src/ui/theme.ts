@@ -229,6 +229,47 @@ code{
 /* ---------------------------------------------------------------- charts */
 /* SVG text carries TEXT tokens, never a series colour: the mark beside a label
    carries identity, the label stays ink. */
+/* ------------------------------------------------------------- the cockpit */
+/* Eight tiles, each explaining itself. The verdict is a chip AND a word, never a
+   colour alone: a reader who cannot distinguish the hues must still be able to
+   tell "act" from "on track". */
+.cockpit{margin:1.4rem 0 1rem}
+.ck-head{margin-bottom:.7rem}
+.ck-grid{display:grid;gap:.6rem;grid-template-columns:repeat(auto-fit,minmax(15.5rem,1fr))}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-card);
+  padding:.85rem .95rem;box-shadow:var(--shadow);display:flex;flex-direction:column;
+  gap:.35rem;border-top:3px solid var(--line)}
+.kpi header{display:flex;align-items:baseline;justify-content:space-between;gap:.5rem}
+.kpi h3{font-size:.86rem;font-weight:600;margin:0;line-height:1.3;letter-spacing:-.005em}
+/* The technical term is present but secondary — there so the reader recognises
+   the word when a channel or a consultant uses it, not as the label. */
+.kpi-term{font-size:.66rem;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--mut);flex:none;white-space:nowrap}
+.kpi-fig{display:flex;align-items:baseline;gap:.55rem;flex-wrap:wrap}
+.kpi-n{font-size:1.75rem;font-weight:700;line-height:1.1;letter-spacing:-.02em;
+  font-variant-numeric:tabular-nums}
+.kpi-none{font-size:.95rem;font-weight:400;font-style:italic;color:var(--mut)}
+.kpi-vs{font-size:.76rem;color:var(--mut)}
+.kpi-meta{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.kpi-basis{font-size:.72rem;color:var(--mut)}
+.chip-v{font-size:.68rem;font-weight:650;letter-spacing:.05em;text-transform:uppercase;
+  padding:.16rem .4rem;border-radius:5px;border:1px solid var(--line);color:var(--mut)}
+/* Status colours, reserved: they are never used as a series hue anywhere else. */
+.v-good{border-top-color:#0E8A63}
+.v-good .chip-v{border-color:#0E8A63;color:#0E8A63}
+.v-watch{border-top-color:var(--brand)}
+.v-watch .chip-v{border-color:var(--brand);color:var(--brass)}
+.v-act{border-top-color:var(--rust)}
+.v-act .chip-v{border-color:var(--rust);color:var(--rust)}
+.v-unknown{border-top-style:dashed}
+/* The line that makes the tile teach rather than report. */
+.kpi-money{margin:.15rem 0 0;font-size:.76rem;line-height:1.45;color:var(--mut)}
+.kpi-flag{margin:.1rem 0 0;font-size:.74rem;color:var(--rust)}
+@media (prefers-color-scheme: dark){
+  .v-good{border-top-color:#0F9D74}
+  .v-good .chip-v{border-color:#0F9D74;color:#0F9D74}
+}
+
 /* The action list. It leads the opened row, so it carries the only accent border
    on the page — a reader scanning for "what do I do" should land here first. */
 .act-panel{border-left:3px solid var(--brand)}

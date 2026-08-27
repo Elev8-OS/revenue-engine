@@ -1102,6 +1102,7 @@ ${funnelDetail(run?.report ?? null)}
       return {
         lang, basis, openId: open ? openId : null, rows,
         counts: await q.counts(c),
+        cockpit: await q.cockpit(c, basis),
         signals: await q.signals(c),
         realised: await q.realised(c),
         reviews: await q.reviews(c),

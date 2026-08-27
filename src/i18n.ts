@@ -121,6 +121,23 @@ export interface Strings {
   funnelChartAria: string
   cohortNoScale: string
   /* --- the action list: the point of the whole thing */
+  /* --- the cockpit: eight figures, each explaining itself */
+  cockpitHeading: string
+  cockpitLead: string
+  cockpitBasisNights: (n: number) => string
+  cockpitBasisRooms: (n: number) => string
+  cockpitBasisBookings: (n: number) => string
+  cockpitNoData: string
+  verdict: Record<'good' | 'watch' | 'act' | 'unknown', string>
+  /**
+   * Per figure: the plain name people use, the technical name they will meet
+   * elsewhere, what it is compared against, and — the one that matters — what it
+   * does to the money. Most readers of this page are not revenue managers.
+   */
+  kpi: Record<'revpar' | 'occupancy' | 'pace' | 'mpi' | 'take' | 'visibility'
+              | 'reviews' | 'blocked',
+              { name: string, term: string, against: string, money: string }>
+  kpiDrill: string
   actionsHeading: string
   actionsLead: string
   actionsNone: string
@@ -458,6 +475,73 @@ export const en: Strings = {
   funnelChainNote: 'Each share is computed from the two counts beside it, not taken '
     + 'from the provider — a rate whose scale is unstated can be wrong by a hundredfold.',
   funnelChartAria: 'Funnel stages, each drawn as a share of the stage above it',
+  cockpitHeading: 'The portfolio right now',
+  cockpitLead: 'Eight figures. Everything else on this page is the detail behind '
+    + 'one of them — open a room to see it.',
+  cockpitBasisNights: n => `over ${n} archived night${n === 1 ? '' : 's'}`,
+  cockpitBasisRooms: n => `across ${n} room${n === 1 ? '' : 's'}`,
+  cockpitBasisBookings: n => `from ${n} booking${n === 1 ? '' : 's'}`,
+  cockpitNoData: 'not measured yet',
+  verdict: { good: 'on track', watch: 'watch', act: 'act', unknown: 'no comparison' },
+  kpi: {
+    revpar: {
+      name: 'Earnings per night you could sell',
+      term: 'RevPAR',
+      against: 'same window last year',
+      money: 'The only figure a price change cannot flatter. Raise the rate and '
+        + 'lose nights and this stays flat — it moves only when you actually earn more.',
+    },
+    occupancy: {
+      name: 'Nights sold, next 30',
+      term: 'Occupancy',
+      against: 'the market for these neighbourhoods',
+      money: 'Alone it says nothing: 100% at half price is worse than 60% at full. '
+        + 'It only becomes a finding beside the market and the price.',
+    },
+    pace: {
+      name: 'Booked in the last 7 days',
+      term: 'Pace / pickup',
+      against: 'nothing yet — the archive does not reach back a year',
+      money: 'Where you stand versus which way you are moving. A room at 26% that '
+        + 'took nine nights this week is healthy; one at 26% that took none is not.',
+    },
+    mpi: {
+      name: 'Your price against the market',
+      term: 'MPI',
+      against: '1.00 is level',
+      money: '1.31 means you ask a third more than the neighbourhood. That is fine '
+        + 'if people still book — and expensive if they do not.',
+    },
+    take: {
+      name: 'What the channels kept',
+      term: 'Commission share',
+      against: 'your own contract terms',
+      money: 'Off the top of every booking, before any cost of yours. The stack '
+        + 'multiplies: promotions first, then commission, then fixed deductions.',
+    },
+    visibility: {
+      name: 'Of those who saw you, how many opened it',
+      term: 'Search-to-view',
+      against: 'the median of your own comparable rooms',
+      money: 'This is the gate. Below it, a price cut buys nothing — nobody is '
+        + 'looking at the price yet.',
+    },
+    reviews: {
+      name: 'Guest rating',
+      term: 'Review score and count',
+      against: 'your own portfolio',
+      money: 'The channel ranks on it. A perfect score from one review still loses '
+        + 'in search, and no price change repairs that.',
+    },
+    blocked: {
+      name: 'Nights you cannot sell',
+      term: 'Blocked / unbookable',
+      against: 'the next 30 nights',
+      money: 'Occupancy is measured against sellable nights. Blocked nights make a '
+        + 'closed calendar look like a pricing problem.',
+    },
+  },
+  kpiDrill: 'show the rooms behind this',
   actionsHeading: 'What to change',
   actionsLead: 'Each line names a lever, what it is now, and what it would become. '
     + 'Anything that cannot be stated that way is an observation, not an action, '
@@ -843,6 +927,44 @@ export const id: Strings = {
   funnelChainNote: 'Setiap persentase dihitung dari dua angka di sebelahnya, bukan '
     + 'diambil dari penyedia — rasio yang skalanya tidak dinyatakan bisa salah seratus kali.',
   funnelChartAria: 'Tahapan funnel, masing-masing sebagai bagian dari tahap di atasnya',
+  cockpitHeading: 'Portofolio saat ini',
+  cockpitLead: 'Delapan angka. Semua lainnya di halaman ini adalah detail di balik '
+    + 'salah satunya — buka sebuah unit untuk melihatnya.',
+  cockpitBasisNights: n => `atas ${n} malam terarsip`,
+  cockpitBasisRooms: n => `atas ${n} unit`,
+  cockpitBasisBookings: n => `dari ${n} pemesanan`,
+  cockpitNoData: 'belum terukur',
+  verdict: { good: 'sesuai jalur', watch: 'perhatikan', act: 'bertindak',
+             unknown: 'tanpa pembanding' },
+  kpi: {
+    revpar: { name: 'Pendapatan per malam yang bisa dijual', term: 'RevPAR',
+      against: 'jendela yang sama tahun lalu',
+      money: 'Satu-satunya angka yang tidak bisa dipermanis perubahan harga. Naikkan '
+        + 'tarif lalu kehilangan malam, dan ini tetap datar.' },
+    occupancy: { name: 'Malam terjual, 30 ke depan', term: 'Okupansi',
+      against: 'pasar untuk lingkungan ini',
+      money: 'Sendirian tidak berarti apa-apa: 100% dengan setengah harga lebih buruk '
+        + 'dari 60% penuh.' },
+    pace: { name: 'Dipesan dalam 7 hari terakhir', term: 'Pace / pickup',
+      against: 'belum ada — arsip belum mencapai setahun',
+      money: 'Di mana Anda berdiri versus ke arah mana Anda bergerak.' },
+    mpi: { name: 'Harga Anda terhadap pasar', term: 'MPI', against: '1,00 berarti setara',
+      money: '1,31 berarti Anda meminta sepertiga lebih. Baik bila orang tetap memesan.' },
+    take: { name: 'Yang diambil kanal', term: 'Porsi komisi',
+      against: 'ketentuan kontrak Anda',
+      money: 'Dari atas setiap pemesanan, sebelum biaya Anda. Tumpukannya berlipat.' },
+    visibility: { name: 'Dari yang melihat, berapa yang membuka', term: 'Search-to-view',
+      against: 'median unit sebanding Anda sendiri',
+      money: 'Ini gerbangnya. Di bawahnya, potongan harga tidak membeli apa pun.' },
+    reviews: { name: 'Penilaian tamu', term: 'Skor dan jumlah ulasan',
+      against: 'portofolio Anda sendiri',
+      money: 'Kanal memberi peringkat berdasarkan ini. Skor sempurna dari satu ulasan '
+        + 'tetap kalah di pencarian.' },
+    blocked: { name: 'Malam yang tidak bisa dijual', term: 'Diblokir / unbookable',
+      against: '30 malam ke depan',
+      money: 'Okupansi diukur terhadap malam yang bisa dijual.' },
+  },
+  kpiDrill: 'tampilkan unit di baliknya',
   actionsHeading: 'Apa yang harus diubah',
   actionsLead: 'Setiap baris menyebut tuas, keadaan sekarang, dan menjadi apa. Yang '
     + 'tidak bisa dinyatakan begitu adalah observasi, bukan tindakan.',
