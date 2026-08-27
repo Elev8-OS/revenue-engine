@@ -16,6 +16,7 @@ import { MdvClient } from '../sources/mdv/client.js'
 import { importFunnel, type FunnelReport } from '../sources/mdv/funnel.js'
 import { importReputation, type ReputationReport } from '../sources/mdv/reputation.js'
 import { importDetail, type DetailReport } from '../sources/mdv/detail.js'
+import { importPerformance, type PerformanceReport } from '../sources/mdv/performance.js'
 import { importObjects, type ImportReport } from '../sources/mdv/objects.js'
 import { Elev8Client } from '../sources/elev8/client.js'
 import { authFromEnv } from '../sources/elev8/auth.js'
@@ -38,6 +39,7 @@ import { clientCredentials } from '../sources/mdv/register.js'
  */
 export type AnyReport = ImportReport | Elev8ImportReport | PriceLabsImportReport | CheckReport
   | DiscoverReport | FunnelReport | ReputationReport | DetailReport
+  | PerformanceReport
 
 export interface RunRow {
   id: string
@@ -92,6 +94,9 @@ export const isReputationReport = (r: AnyReport | null): r is ReputationReport =
 
 export const isDetailReport = (r: AnyReport | null): r is DetailReport =>
   Boolean(r) && (r as DetailReport).kind === 'mdv-detail'
+
+export const isPerformanceReport = (r: AnyReport | null): r is PerformanceReport =>
+  Boolean(r) && (r as PerformanceReport).kind === 'mdv-performance'
 
 /**
  * The funnel report inside a report, whatever shape carried it — by its own TAG,
@@ -176,6 +181,7 @@ async function run(pool: Pool, runId: string, source: string): Promise<void> {
       : source === 'mdv-funnel' ? await runFunnel(client)
       : source === 'mdv-reputation' ? await runReputation(client)
       : source === 'mdv-detail' ? await runDetail(client)
+      : source === 'mdv-performance' ? await runPerformance(client)
       : source === 'mdv' ? await runMdv(client)
       : (() => { throw new Error(`no importer for source ${source}`) })()
     await client.query(
@@ -307,7 +313,25 @@ async function runMdv(client: PoolClient): Promise<ImportReport> {
   } catch (err) {
     report.detailError = (err as Error).message
   }
+  try {
+    report.performance = await importPerformance(client, mdv)
+  } catch (err) {
+    report.performanceError = (err as Error).message
+  }
   return report
+}
+
+/** Rank and the account-level environment. */
+async function runPerformance(client: PoolClient): Promise<PerformanceReport> {
+  const creds = await clientCredentials(client)
+  if (!creds) {
+    throw new Error('no MDV client: none registered and MDV_CLIENT_ID is not set')
+  }
+  return importPerformance(client, new MdvClient({
+    clientId: creds.clientId, clientSecret: creds.clientSecret ?? '',
+    base: process.env.MDV_BASE_URL ?? undefined,
+    tokenUrl: process.env.MDV_TOKEN_URL ?? undefined,
+  }))
 }
 
 /** The unread fields on the two calls the object pass already makes. */
@@ -412,6 +436,14 @@ export function reportCounts(r: AnyReport | null): {
       created: r.snapshotRows ?? 0,
       known: (r.endpoints ?? []).filter(e => e.snapshotRows > 0).length,
       unresolved: (r.endpoints ?? []).reduce((n, e) => n + (e.unresolvedIds?.length ?? 0), 0),
+    }
+  }
+  if (isPerformanceReport(r)) {
+    const e = r.endpoints ?? []
+    return {
+      created: e.reduce((n, x) => n + (x.snapshotRows ?? 0) + (x.insightRows ?? 0), 0),
+      known: e.filter(x => (x.snapshotRows ?? 0) > 0).length,
+      unresolved: e.reduce((n, x) => n + (x.unresolvedIds?.length ?? 0), 0),
     }
   }
   if (isDetailReport(r)) {

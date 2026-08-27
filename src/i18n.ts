@@ -85,6 +85,9 @@ export interface Strings {
   detailStart: string
   detailRun: string
   detailNote: string
+  perfStart: string
+  perfRun: string
+  perfNote: string
   checksStart: string
   checksRun: string
   checksNote: string
@@ -387,6 +390,13 @@ export const en: Strings = {
   recommendLabel: 'recommended',
   occupancy30: 'occupancy, next 30 nights',
   nightsArchived: n => `${n} night${n === 1 ? '' : 's'}`,
+  perfStart: 'Read rank and the market environment',
+  perfRun: 'Read performance',
+  perfNote: 'Search rank per object with its change, how long guests stay, how many '
+    + 'travel together, where they come from ten countries deep, and the cancellation '
+    + 'rate \u2014 each with the comparison period beside it. Money is kept per '
+    + 'currency and never summed across. The run states whether the comparison is '
+    + 'last year or the prior period, because the endpoint defaults to the latter.',
   detailStart: 'Read what the calls already carry',
   detailRun: 'Read the unread fields',
   detailNote: 'Makes no new request. The two endpoints this uses are the same two '
@@ -848,6 +858,11 @@ export const id: Strings = {
   recommendLabel: 'disarankan',
   occupancy30: 'okupansi, 30 malam berikutnya',
   nightsArchived: n => `${n} malam`,
+  perfStart: 'Baca peringkat dan lingkungan pasar',
+  perfRun: 'Baca performa',
+  perfNote: 'Peringkat pencarian per objek dengan perubahannya, lama menginap, ukuran '
+    + 'grup, sepuluh negara asal, dan tingkat pembatalan \u2014 masing-masing dengan '
+    + 'periode pembanding. Uang disimpan per mata uang dan tidak pernah dijumlahkan.',
   detailStart: 'Baca yang sudah dibawa panggilan',
   detailRun: 'Baca field yang belum terbaca',
   detailNote: 'Tidak membuat permintaan baru. Dua endpoint yang dipakai sama dengan '

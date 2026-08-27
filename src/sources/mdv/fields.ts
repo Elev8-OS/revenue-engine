@@ -96,6 +96,26 @@ export function countOf(v: unknown): number | null {
   return n
 }
 
+/**
+ * A number where a NEGATIVE value is a measurement, not a sentinel.
+ *
+ * `countOf` refuses negatives, and that is right for a count: PriceLabs sends -1
+ * where it has no answer, and a sentinel that reaches a chart becomes a
+ * conclusion. But three fields in this codebase are legitimately signed, and each
+ * one cost a failing test to find:
+ *
+ *   · `rank_change_since_first: -7` — the rank improved by seven places, and for a
+ *     rank lower is better, so the good direction is the negative one;
+ *   · `guest_target_pct: -4.5` — we are subsidising the price the guest sees;
+ *   · any change or delta the provider expresses as an absolute.
+ *
+ * Refusing these would silently drop the good news and the real cost.
+ */
+export function signedOf(v: unknown): number | null {
+  const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN
+  return Number.isFinite(n) ? n : null
+}
+
 export type RateUnit = 'fraction' | 'percent' | 'undecidable'
 
 /**

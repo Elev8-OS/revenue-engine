@@ -23,6 +23,7 @@ import type { MdvClient } from './client.js'
 import type { FunnelReport } from './funnel.js'
 import type { ReputationReport } from './reputation.js'
 import type { DetailReport } from './detail.js'
+import type { PerformanceReport } from './performance.js'
 import { lookupAlias, link, recordUnresolved, clearUnresolved }
   from '../../entity/resolve.js'
 import { recordFreshness } from '../../snapshot/write.js'
@@ -154,6 +155,9 @@ export interface ImportReport {
   /** The fields the two calls above were carrying and nobody read. */
   detail?: DetailReport
   detailError?: string
+  /** Rank, and the account-level environment: stay length, group size, origin. */
+  performance?: PerformanceReport
+  performanceError?: string
 }
 
 const empty = (): ImportReport => ({
