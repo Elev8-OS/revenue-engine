@@ -12,7 +12,7 @@ import type * as q from './query.js'
 // page must state rather than repeat, so the window it names cannot drift apart
 // from the window the query actually used.
 import { realisedWindowDays, demandWindowDays } from './query.js'
-import { actionsFor, type Action } from './actions.js'
+import { actionsFor, type Action, type ActionStrings } from './actions.js'
 import type { Basis, Row } from './query.js'
 import { type Lang, type Strings, stringsFor, otherLang } from '../i18n.js'
 import { head } from '../ui/theme.js'
@@ -49,9 +49,19 @@ const pct = (v: number, locale: string) => {
   }).format(v) + '%'
 }
 
+export type RoomView = 'all' | 'act' | 'held' | 'quiet' | 'na'
+export type RoomSort = 'money' | 'risk' | 'name'
+
 export interface DashboardData {
   lang: Lang
   basis: Basis
+  /**
+   * Which rooms to show. A portfolio of forty-one with eighteen findings has no
+   * front door without this: the reader's first question is "what needs me", and
+   * before this the only answer was to open rooms one at a time.
+   */
+  view: RoomView
+  sort: RoomSort
   openId: string | null
   rows: Row[]
   counts: { entities: number, open: number, critical: number, high: number }
@@ -111,10 +121,21 @@ function age(min: number, s: Strings): string {
  * reasoning as the row links: every control here is a full navigation, and a
  * navigation with no fragment resets the scroll.
  */
-function selfUrl(d: DashboardData, over: { lang?: Lang } = {}): string {
-  const p = new URLSearchParams({ basis: d.basis })
+function selfUrl(
+  d: DashboardData,
+  over: { lang?: Lang, basis?: Basis } = {},
+): string {
+  // Every control keeps the whole state: switching language must not silently
+  // reset the filter, and switching basis must not close the open room. Before
+  // the filter existed this was two parameters; forgetting to carry a third is
+  // exactly how a control starts feeling broken.
+  const p = new URLSearchParams({
+    basis: over.basis ?? d.basis,
+    lang: over.lang ?? d.lang,
+    view: d.view,
+    sort: d.sort,
+  })
   if (d.openId) p.set('open', d.openId)
-  p.set('lang', over.lang ?? d.lang)
   return `/?${p.toString()}${d.openId ? `#row-${d.openId}` : ''}`
 }
 
@@ -239,6 +260,43 @@ interface Detail {
  * the row. Rendering the page and counting the panels was the only way that was
  * ever going to be noticed.
  */
+/** One set of action strings, so the worklist and the room can never disagree. */
+function actionStrings(s: Strings): ActionStrings {
+  return {
+    money: (v, cur) => money(v, cur, s.numberLocale),
+    nights: s.aNights, nightsPlain: s.aNightsPlain,
+    priceAbove: s.aPriceAbove, priceBelow: s.aPriceBelow,
+    minStayScope: s.aMinStayScope, minStayBecause: s.aMinStayBecause,
+    leverOn: s.leverOn, leverOff: s.leverOff, leverAbsent: s.aLeverAbsent,
+    leverName: k => k.replace(/_/g, ' ').toLowerCase(),
+    leverBecause: s.aLeverBecause,
+    contentScope: s.aContentScope, contentBecause: s.aContentBecause,
+  }
+}
+
+/** The actions for one row, from the same inputs the room detail uses. */
+function actionsOf(r: Row, d: DashboardData, s: Strings): Action[] {
+  return actionsFor({
+    row: r, sig: d.signals.get(r.entityId), gap: d.priceGap.get(r.entityId),
+    demand: d.demand.get(r.entityId), promos: d.promotions.get(r.entityId),
+    coverage: d.leverCoverage, cohort: d.cohorts.get(r.entityId),
+  }, actionStrings(s))
+}
+
+/**
+ * How a room reads at a glance: does it need something, is it waiting, or is it
+ * quiet. Derived from the actions rather than from the findings, because a
+ * finding is an observation and an action is a thing to do.
+ */
+export type RoomState = 'act' | 'held' | 'quiet'
+
+function roomState(list: Action[]): RoomState {
+  const real = list.filter(a => a.lever !== 'content')
+  if (real.some(a => !a.blockedBy)) return 'act'
+  if (real.some(a => a.blockedBy)) return 'held'
+  return 'quiet'
+}
+
 function actionsPanel(r: Row, d: Detail, s: Strings): string {
   const actions = actionsFor({
     row: r, sig: d.sig, gap: d.gap, demand: d.demand,
@@ -265,19 +323,15 @@ function detailBlocks(r: Row, d: Detail, s: Strings): string {
     + leversBlock(d.promos, d.accountPromos, d.knownLevers, s)
 }
 
-function potential(
-  r: Row, sig: q.Signals | undefined, s: Strings, funnel: q.FunnelState['kind'],
-  d?: Detail,
-): string {
+function potentialChart(r: Row, sig: q.Signals | undefined, s: Strings): string {
   const ours = sig?.occupancy ?? null
   const theirs = sig?.marketOccupancy ?? null
-  // Nothing to draw is not nothing to say: the micro and macro blocks report
-  // their own state, and an early return here used to swallow both.
-  if (ours === null && r.atStake === null) {
-    return (d ? actionsPanel(r, d, s) : '')
-      + pricePositionBlock(sig, r, s) + macroBlock(s, funnel, sig, d?.cohort)
-      + (d ? detailBlocks(r, d, s) : '')
-  }
+  // Nothing to draw is not nothing to say — but saying it is now the caller's
+  // job. This function used to also emit the action panel, the price position,
+  // the macro block and the whole evidence stack, which is why a layout change
+  // could silently drop four blocks at once: they were hidden behind an optional
+  // parameter. One function, one picture.
+  if (ours === null && r.atStake === null) return ''
 
   const W = 640, PAD = 96, TRACK = W - PAD - 16
   const x = (pct: number) => PAD + (Math.max(0, Math.min(100, pct)) / 100) * TRACK
@@ -356,11 +410,7 @@ function potential(
 
   const chart = `<svg class="pot" viewBox="0 0 ${W} ${y + 6}" role="img"
       aria-label="${e(s.potentialHeading)}">${parts.join('')}</svg>`
-  return (d ? actionsPanel(r, d, s) : '')
-    + `<section class="panel"><h3>${e(s.potentialHeading)}</h3>${chart}</section>`
-    + pricePositionBlock(sig, r, s)
-    + macroBlock(s, funnel, sig, d?.cohort)
-    + (d ? detailBlocks(r, d, s) : '')
+  return `<section class="panel"><h3>${e(s.potentialHeading)}</h3>${chart}</section>`
 }
 
 /**
@@ -507,106 +557,213 @@ function funnelChain(
  * is derived, and once real figures exist the sentence about their absence is not
  * merely wrong, it is contradicted by the numbers next to it.
  */
-/* ============================================================ the cockpit == */
+/* ============================================================ the three bands */
+/*
+ * Pulse, Today, Rooms — in that order, and each visually lighter than the one
+ * above it. The order is the reader's own sequence of questions:
+ *
+ *   "Is anything wrong?"        one glance, one figure
+ *   "What should I do?"         a ranked list, across the whole portfolio
+ *   "Why, on this room?"        the drilldown
+ *
+ * Before this the page answered the third question only, and answered it 41
+ * times in a table with no way in. The action list existed but lived INSIDE a
+ * room, so seeing the eight things worth doing today meant opening rooms one at
+ * a time and remembering.
+ */
 
 /**
- * Eight figures, each explaining itself.
+ * The pulse: one figure large enough to be the whole answer, and the eight
+ * measurements beside it as a strip rather than eight competing cards.
  *
- * THE DESIGN CONSTRAINT THAT SHAPED THIS. Most people reading this page are not
- * revenue managers. They have not met RevPAR, they do not know what MPI is, and —
- * the part that decides whether the page is any use — they do not know which of
- * these numbers moves their money and which is just a number. A grid of
- * abbreviations and percentages hands them a spreadsheet and hopes.
+ * The old page had TWO rows of tiles — four counters and then eight KPIs — which
+ * is a category error as much as a layout one: "Rooms 41" does not belong beside
+ * "Nights sold 26%". The counters are facts about the list; the KPIs are
+ * judgements about the business. So the counters moved into the filter row above
+ * the table, where they are what they actually are: how many rooms are in each
+ * state.
  *
- * So every tile carries four things, in this order: the plain-language name, the
- * figure, what it is being compared against, and one line on what it does to the
- * money. The technical term is present but secondary — it is there so the reader
- * recognises the word when a channel or a consultant uses it, not as the label.
+ * The teaching line moved into a `<details>` per tile. It has to stay reachable —
+ * most readers do not know what RevPAR is — but eight paragraphs at full weight
+ * turned the top of the page into an essay.
+ *
+ * THE DESIGN CONSTRAINT THAT SHAPED THE TILES, kept from the grid this replaced.
+ * Most people reading this page are not revenue managers. They have not met
+ * RevPAR, they do not know what MPI is, and — the part that decides whether the
+ * page is any use — they do not know which of these numbers moves their money and
+ * which is just a number. A grid of abbreviations and percentages hands them a
+ * spreadsheet and hopes. So an opened tile carries, in this order: the technical
+ * term (so the reader recognises the word when a channel or a consultant uses
+ * it), what the figure is measured against, how many nights or bookings it rests
+ * on, and one line on what it does to the money.
  *
  * The verdict word comes from one shared rule in `query.ts`, never from the
- * renderer, so two tiles can never disagree about the same size of gap. And
+ * renderer, so two figures can never disagree about the same size of gap. And
  * `unknown` is a real verdict: a portfolio with no market data does not have good
  * occupancy, it has occupancy nobody has compared — saying "on track" there would
  * be the most comfortable lie on the page.
  */
-function kpiTile(
-  key: 'revpar' | 'occupancy' | 'pace' | 'mpi' | 'take' | 'visibility' | 'reviews' | 'blocked',
-  k: q.Kpi, shown: string, againstShown: string | null, basisShown: string,
-  s: Strings, extra = '',
+function pulseBand(
+  d: DashboardData, s: Strings, actions: number, heldCount: number, rooms: number,
 ): string {
-  const meta = s.kpi[key]
-  return `<article class="kpi v-${k.verdict}">
-    <header>
-      <h3>${e(meta.name)}</h3>
-      <span class="kpi-term" title="${e(meta.term)}">${e(meta.term)}</span>
-    </header>
-    <div class="kpi-fig">
-      <span class="kpi-n">${k.value === null
-        ? `<i class="kpi-none">${e(s.cockpitNoData)}</i>` : e(shown)}</span>
-      ${againstShown ? `<span class="kpi-vs">${e(againstShown)}</span>` : ''}
-    </div>
-    <div class="kpi-meta">
-      <span class="chip-v">${e(s.verdict[k.verdict])}</span>
-      <span class="kpi-basis">${e(basisShown)}</span>
-    </div>
-    ${extra}
-    <p class="kpi-money">${e(meta.money)}</p>
-  </article>`
-}
-
-function cockpitBlock(c: q.Cockpit, s: Strings): string {
+  const c = d.cockpit
   const P = (v: number | null) => v === null ? '—' : pct(v, s.numberLocale)
   const M = (v: number | null) => v === null ? '—' : money(v, c.currency, s.numberLocale)
   const N = (v: number | null) => v === null ? '—' : count(v, s.numberLocale)
-  const vs = (label: string, v: string) => `${label}: ${v}`
-  const tiles = [
-    kpiTile('revpar', c.revpar, M(c.revpar.value),
-      c.revpar.against === null ? null : vs(s.kpi.revpar.against, M(c.revpar.against)),
-      s.cockpitBasisNights(c.revpar.basis), s),
-    kpiTile('occupancy', c.occupancy, P(c.occupancy.value),
-      c.occupancy.against === null ? null
-        : vs(s.kpi.occupancy.against, P(c.occupancy.against)),
-      s.cockpitBasisNights(c.occupancy.basis), s),
-    // Pace is a count of nights, not a rate, and it has nothing to compare
-    // against — the archive does not reach back a year. It says so.
-    kpiTile('pace', c.pace, N(c.pace.value), null,
-      s.cockpitBasisBookings(c.pace.basis), s),
-    kpiTile('mpi', c.mpi,
-      c.mpi.value === null ? '—'
-        : new Intl.NumberFormat(s.numberLocale,
-            { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(c.mpi.value),
-      // No `vs(...)` here: this figure's reference IS "1.00 is level", so
-      // appending the value produced "1.00 is level: 1.00".
-      s.kpi.mpi.against, s.cockpitBasisNights(c.mpi.basis), s),
-    kpiTile('take', c.takeRate,
-      c.takeRate.value === null ? '—' : pct(c.takeRate.value * 100, s.numberLocale),
-      null, s.cockpitBasisBookings(c.takeRate.basis), s),
-    kpiTile('visibility', c.visibility,
-      c.visibility.value === null ? '—' : pct(c.visibility.value * 100, s.numberLocale),
-      null, s.cockpitBasisRooms(c.visibility.basis), s),
-    kpiTile('reviews', c.reviewScore,
-      c.reviewScore.value === null ? '—'
-        : new Intl.NumberFormat(s.numberLocale,
-            { maximumFractionDigits: 1 }).format(c.reviewScore.value),
-      null, s.cockpitBasisRooms(c.reviewScore.basis), s,
-      // The count of thin-review rooms rides on this tile because the score alone
-      // hides them: an average of 8.6 says nothing about the room with one review.
-      c.thinReviews > 0
-        ? `<p class="kpi-flag">${e(s.reviewsThin(c.thinReviews))}</p>` : ''),
-    kpiTile('blocked', c.blocked,
-      c.blocked.value === null ? '—' : pct(c.blocked.value * 100, s.numberLocale),
-      null, s.cockpitBasisNights(c.blocked.basis), s),
-  ]
-  return `<section class="cockpit">
-    <div class="ck-head">
-      <h2 class="ph">${e(s.cockpitHeading)}</h2>
-      <p class="mut" style="margin:.1rem 0 0;font-size:.84rem">${e(s.cockpitLead)}</p>
+  const num2 = (v: number | null) => v === null ? '—'
+    : new Intl.NumberFormat(s.numberLocale,
+        { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v)
+  /**
+   * One figure, collapsed. The summary is what a reader scanning the band needs:
+   * the number, its plain-language name, and the verdict as a WORD beside the dot.
+   * Everything that teaches — the technical term, what the figure is measured
+   * against, how many nights or bookings it rests on, and the one line on what it
+   * does to the money — is one click away rather than absent.
+   *
+   * `basis` is not optional and never omitted. A 42% occupancy over 1230 archived
+   * nights and a 42% over three are the same figure and different claims, and the
+   * band that shows only the first number is the band that misleads. This line
+   * was dropped once when the tiles were rebuilt as a strip; the test that caught
+   * it is the reason it is a required parameter now.
+   */
+  const tile = (
+    key: 'revpar' | 'occupancy' | 'pace' | 'mpi' | 'take' | 'visibility'
+       | 'reviews' | 'blocked',
+    k: q.Kpi, shown: string, against: string | null, basis: string, flag = '',
+  ) => `<details class="pk v-${k.verdict}">
+    <summary>
+      <span class="pk-n">${k.value === null
+        ? `<i class="pk-none">${e(s.cockpitNoData)}</i>` : e(shown)}</span>
+      <span class="pk-name">${e(s.kpi[key].name)}</span>
+      <span class="pk-dot" aria-hidden="true"></span>
+      <span class="pk-v">${e(s.verdict[k.verdict])}</span>
+    </summary>
+    <div class="pk-body">
+      <p class="pk-term">${e(s.kpi[key].term)}</p>
+      ${against ? `<p class="pk-vs">${e(against)}</p>` : ''}
+      <p class="pk-basis">${e(basis)}</p>
+      <p class="pk-money">${e(s.kpi[key].money)}</p>
+      ${flag}
     </div>
-    <div class="ck-grid">${tiles.join('')}</div>
+  </details>`
+  return `<section class="pulse">
+    <div class="hero">
+      <p class="hero-k">${e(s.heroAtStake)}</p>
+      <p class="hero-n">${c.atStake === null
+        ? `<i>${e(s.heroNothing)}</i>` : e(M(c.atStake))}</p>
+      <p class="hero-lead">${e(s.heroLead(actions, rooms))}${
+        heldCount ? ` <span class="hero-held">${e(s.heroHeld(heldCount))}</span>` : ''}</p>
+    </div>
+    <div class="pstrip">
+      ${tile('revpar', c.revpar, M(c.revpar.value),
+        c.revpar.against === null ? null
+          : `${s.kpi.revpar.against}: ${M(c.revpar.against)}`,
+        s.cockpitBasisNights(c.revpar.basis))}
+      ${tile('occupancy', c.occupancy, P(c.occupancy.value),
+        c.occupancy.against === null ? null
+          : `${s.kpi.occupancy.against}: ${P(c.occupancy.against)}`,
+        s.cockpitBasisNights(c.occupancy.basis))}
+      ${tile('pace', c.pace, N(c.pace.value), s.kpi.pace.against,
+        s.cockpitBasisBookings(c.pace.basis))}
+      ${tile('mpi', c.mpi, num2(c.mpi.value), s.kpi.mpi.against,
+        s.cockpitBasisNights(c.mpi.basis))}
+      ${tile('visibility', c.visibility,
+        c.visibility.value === null ? '—' : pct(c.visibility.value * 100, s.numberLocale),
+        s.kpi.visibility.against, s.cockpitBasisRooms(c.visibility.basis))}
+      ${tile('take', c.takeRate,
+        c.takeRate.value === null ? '—' : pct(c.takeRate.value * 100, s.numberLocale),
+        s.kpi.take.against, s.cockpitBasisBookings(c.takeRate.basis))}
+      ${tile('reviews', c.reviewScore,
+        c.reviewScore.value === null ? '—'
+          : new Intl.NumberFormat(s.numberLocale,
+              { maximumFractionDigits: 1 }).format(c.reviewScore.value),
+        s.kpi.reviews.against, s.cockpitBasisRooms(c.reviewScore.basis),
+        c.thinReviews > 0 ? `<p class="pk-flag">${e(s.reviewsThin(c.thinReviews))}</p>` : '')}
+      ${tile('blocked', c.blocked,
+        c.blocked.value === null ? '—' : pct(c.blocked.value * 100, s.numberLocale),
+        s.kpi.blocked.against, s.cockpitBasisNights(c.blocked.basis))}
+    </div>
   </section>`
 }
 
-/* ------------------------------------------------------ what to change ===== */
+/**
+ * Today: every proposal in the portfolio, biggest first.
+ *
+ * This is the band that did not exist, and its absence was the page's largest
+ * usability failure. Actions are comparable across rooms and rankable by money —
+ * "the eight things to do today" is the question a revenue manager actually has —
+ * and the only way to see them was to open forty-one rooms one at a time.
+ *
+ * A held line stays in the list with its gate named, because a price case waiting
+ * on a visibility problem is still something to know about. It sorts below the
+ * ones that are ready, since it is not something to do today.
+ */
+function todayBand(
+  d: DashboardData, s: Strings, list: Array<{ rows: Row[], action: Action }>,
+): string {
+  if (!list.length) {
+    return `<section class="today">
+      <div class="band-head"><h2>${e(s.todayHeading)}</h2></div>
+      <p class="mut band-empty">${e(s.todayEmpty)}</p></section>`
+  }
+  /** Two named rooms, then a count. Beyond that the names stop informing. */
+  const NAMED = 2
+  const roomLink = (row: Row) => {
+    const p = new URLSearchParams({ basis: d.basis, lang: d.lang, view: d.view,
+                                    sort: d.sort, open: row.entityId })
+    return `<a href="/?${p.toString()}#row-${e(row.entityId)}">${e(row.label)}</a>`
+  }
+  const line = ({ rows, action: a }: { rows: Row[], action: Action }) => {
+    const shown = rows.slice(0, NAMED).map(roomLink).join(', ')
+    const rest = rows.length - NAMED
+    return `<li class="wl ${a.blockedBy ? 'held' : 'ready'}">
+      <span class="wl-lever">${e(s.leverLabel[a.lever])}</span>
+      <span class="wl-move">${a.from !== null && a.to !== null
+        ? `<s>${e(a.from)}</s> <b>${e(a.to)}</b>` : `<b>${e(a.scope)}</b>`}</span>
+      <span class="wl-room">${shown}${rest > 0
+        ? ` <span class="wl-more">${e(s.andMoreRooms(rest))}</span>` : ''}</span>
+      <span class="wl-scope">${a.from !== null ? e(a.scope) : ''}</span>
+      <span class="wl-worth">${a.worth !== null && rows[0]
+        ? e(money(a.worth, rows[0].currency, s.numberLocale)) : ''}</span>
+      ${a.blockedBy ? `<span class="wl-gate">${
+        e(s.actionHeld(s.stage[a.blockedBy] ?? a.blockedBy))}</span>` : ''}
+    </li>`
+  }
+  return `<section class="today">
+    <div class="band-head">
+      <h2>${e(s.todayHeading)}</h2>
+      <p class="mut">${e(s.todayLead)}</p>
+    </div>
+    <ol class="wlist">${list.map(line).join('')}</ol>
+  </section>`
+}
+
+/** The filter row: what the four old counters actually were. */
+function filterBar(
+  d: DashboardData, s: Strings, counts: Record<RoomView, number>, shown: number,
+): string {
+  const link = (v: RoomView) => {
+    const p = new URLSearchParams({ basis: d.basis, lang: d.lang, view: v, sort: d.sort })
+    return `<a class="${d.view === v ? 'on' : ''}" href="/?${p.toString()}#rooms"
+      >${e(s.view[v])} <span class="fc">${counts[v]}</span></a>`
+  }
+  const sortLink = (k: RoomSort) => {
+    const p = new URLSearchParams({ basis: d.basis, lang: d.lang, view: d.view, sort: k })
+    return `<a class="${d.sort === k ? 'on' : ''}" href="/?${p.toString()}#rooms"
+      >${e(s.sorting[k])}</a>`
+  }
+  return `<div class="band-head" id="rooms">
+    <h2>${e(s.roomsHeading)} <span class="mut count">${
+      e(s.shownOf(shown, counts.all))}</span></h2>
+  </div>
+  <div class="bar">
+    <nav class="seg">${(['all', 'act', 'held', 'quiet', 'na'] as const)
+      .map(link).join('')}</nav>
+    <nav class="seg quiet"><span class="seg-k">${e(s.sortBy)}</span>${
+      (['money', 'risk', 'name'] as const).map(sortLink).join('')}</nav>
+  </div>`
+}
+
 
 /**
  * The action list. This block is the reason the rest of the page exists.
@@ -1193,39 +1350,143 @@ function archived(sig: q.Signals | undefined, s: Strings): string {
 
 export function renderDashboard(d: DashboardData): string {
   const s = stringsFor(d.lang)
+
+  /**
+   * Actions are computed ONCE, for every room, and then used three times: to fill
+   * the worklist, to classify a room for the filter, and to render the open room's
+   * own panel. Computing them per band would let the three disagree — the
+   * worklist could propose something the room did not show — which is the kind of
+   * inconsistency a reader never reports and never trusts again.
+   */
+  const perRoom = new Map(d.rows.map(r => [r.entityId, actionsOf(r, d, s)]))
+  const stateOf = (r: Row): RoomView => {
+    if (naSet.has(r.label)) return 'na'
+    return roomState(perRoom.get(r.entityId) ?? [])
+  }
+  const naSet = new Set(d.notAssessable.map(n => n.label))
+
+  const counts: Record<RoomView, number> = {
+    all: d.rows.length,
+    act: d.rows.filter(r => stateOf(r) === 'act').length,
+    held: d.rows.filter(r => stateOf(r) === 'held').length,
+    quiet: d.rows.filter(r => stateOf(r) === 'quiet').length,
+    na: d.notAssessable.length,
+  }
+
+  const SEVERITY: Record<string, number> = {
+    critical: 5, high: 4, medium: 3, low: 2, info: 1,
+  }
+  const visible = d.rows
+    .filter(r => d.view === 'all' || stateOf(r) === d.view)
+    .sort((a, b) => d.sort === 'name' ? a.label.localeCompare(b.label, s.numberLocale)
+      : d.sort === 'risk'
+        ? (SEVERITY[b.worstSeverity ?? ''] ?? 0) - (SEVERITY[a.worstSeverity ?? ''] ?? 0)
+          || (b.atStake ?? 0) - (a.atStake ?? 0)
+        : (b.atStake ?? 0) - (a.atStake ?? 0))
+
+  /**
+   * The worklist: every real proposal in the portfolio, ready ones first.
+   *
+   * `content` is excluded. It is a named absence rather than a proposal, and it is
+   * identical on every room — forty-one copies of "no source connected" would bury
+   * everything else and teach the reader to skip the list.
+   */
+  const flat = d.rows
+    .flatMap(r => (perRoom.get(r.entityId) ?? [])
+      .filter(a => a.lever !== 'content')
+      .map(action => ({ row: r, action })))
+
+  /**
+   * IDENTICAL PROPOSALS COLLAPSE INTO ONE LINE.
+   *
+   * Rendered and looked at, the list read badly in exactly one way: four separate
+   * lines all saying "turn the mobile rate on", one per room, each worth nothing,
+   * sitting above a held rate action worth CHF 1'890. Four copies of the same
+   * sentence is not four things to decide — it is one decision that happens to
+   * touch four rooms, and printing it four times pushed the money off the top.
+   *
+   * Only WORTHLESS proposals merge. An action that carries an amount is specific
+   * to the room whose money it is, and merging two of those would hide where the
+   * money actually is — the same mistake as a snapshot key that cannot tell two
+   * sources apart.
+   */
+  const groups = new Map<string, { rows: Row[], action: Action }>()
+  const lines: Array<{ rows: Row[], action: Action }> = []
+  for (const { row, action } of flat) {
+    if (action.worth !== null) { lines.push({ rows: [row], action }); continue }
+    const key = [action.lever, action.from, action.to, action.scope,
+                 action.because, action.blockedBy].join('\u0000')
+    const seen = groups.get(key)
+    if (seen) { seen.rows.push(row); continue }
+    const line = { rows: [row], action }
+    groups.set(key, line)
+    lines.push(line)
+  }
+  const work = lines.sort((a, b) =>
+    Number(Boolean(a.action.blockedBy)) - Number(Boolean(b.action.blockedBy))
+    || (b.action.worth ?? 0) - (a.action.worth ?? 0)
+    || a.action.rank - b.action.rank)
+  // Counted from the unmerged list: a line covering four rooms is still four
+  // changes, and the hero must not shrink because the display got tidier.
+  const heldCount = flat.filter(w => w.action.blockedBy).length
+  const roomsWithWork = new Set(flat.filter(w => !w.action.blockedBy)
+    .map(w => w.row.entityId)).size
+
   const cash = (v: number | null, cur: string | null) => money(v, cur, s.numberLocale)
-  const largest = d.rows.find(r => r.atStake !== null)
-  const rows = d.rows.map(r => {
+  const rows = visible.map(r => {
     const isOpen = d.openId === r.entityId
-    const p = new URLSearchParams({ basis: d.basis, lang: d.lang })
+    const p = new URLSearchParams({ basis: d.basis, lang: d.lang,
+                                    view: d.view, sort: d.sort })
     if (!isOpen) p.set('open', r.entityId)
     const href = `/?${p.toString()}#row-${r.entityId}`
     const domain = r.firstFailing ? s.domain[r.firstFailing] : null
+    const bundle = {
+      sig: d.signals.get(r.entityId),
+      real: d.realised.get(r.entityId),
+      rev: d.reviews.get(r.entityId),
+      promos: d.promotions.get(r.entityId),
+      accountPromos: d.accountPromotions,
+      knownLevers: d.leverCoverage.map(l => l.kind),
+      cohort: d.cohorts.get(r.entityId),
+      gap: d.priceGap.get(r.entityId),
+      demand: d.demand.get(r.entityId),
+      coverage: d.leverCoverage,
+    }
+    /**
+     * THREE GROUPS, not ten panels.
+     *
+     * The open row used to be a two-thousand-pixel stack of equally weighted
+     * cards, and the reader lost the table. Now: what to change, why, and
+     * everything else — the third collapsed, because it is reference and not
+     * reading. The order is the order of the questions, and each group has a
+     * heading so a reader can stop after the first one.
+     */
     const detail = isOpen ? `<tr class="detail"><td colspan="6">
-        ${r.headline ? `<p class="head">${e(r.headline)}</p>`
-                     : `<p class="mut">${e(s.noOpenFinding)}</p>`}
-        ${potential(r, d.signals.get(r.entityId), s, d.funnel, {
-          sig: d.signals.get(r.entityId),
-          real: d.realised.get(r.entityId),
-          rev: d.reviews.get(r.entityId),
-          promos: d.promotions.get(r.entityId),
-          accountPromos: d.accountPromotions,
-          knownLevers: d.leverCoverage.map(l => l.kind),
-          cohort: d.cohorts.get(r.entityId),
-          gap: d.priceGap.get(r.entityId),
-          demand: d.demand.get(r.entityId),
-          coverage: d.leverCoverage,
-        })}
-        ${gateBlock(d, s)}
-        ${evidenceBlock(d, s)}
-      </td></tr>` : ''
-    // The row carries an id and the link ends in that fragment, so opening a row
-    // lands ON the row instead of at the top of the page. Without it every click
-    // was a full navigation that reset the scroll, and the reader had to find
-    // their property again — which is a real cost on a portfolio this long, and
-    // the fix needs no JavaScript at all.
-    return `<tr id="row-${e(r.entityId)}" class="${isOpen ? 'open' : ''}">
-      <td><a class="rowlink" href="${e(href)}">${isOpen ? '▾' : '▸'} ${e(r.label)}</a>
+      <div class="room">
+        <div class="rgroup">
+          <h4 class="rg-h">${e(s.groupWhat)}</h4>
+          ${actionsPanel(r, bundle, s)}
+        </div>
+        <div class="rgroup">
+          <h4 class="rg-h">${e(s.groupWhy)}</h4>
+          ${r.headline ? `<p class="head">${e(r.headline)}</p>`
+                       : `<p class="mut">${e(s.noOpenFinding)}</p>`}
+          ${potentialChart(r, bundle.sig, s)}
+          ${pricePositionBlock(bundle.sig, r, s)}
+          ${macroBlock(s, d.funnel, bundle.sig, bundle.cohort)}
+          ${gateBlock(d, s)}
+        </div>
+        <details class="rgroup rmore">
+          <summary class="rg-h">${e(s.groupDetails)}</summary>
+          ${detailBlocks(r, bundle, s)}
+          ${evidenceBlock(d, s)}
+        </details>
+      </div></td></tr>` : ''
+    const state = stateOf(r)
+    return `<tr id="row-${e(r.entityId)}" class="${isOpen ? 'open' : ''} st-${state}">
+      <td><a class="rowlink" href="${e(href)}"><span class="rail"
+        aria-hidden="true"></span>${e(r.label)}<span class="chev">${
+        isOpen ? e(s.closeRoom) : e(s.openRoom)}</span></a>
         <div class="sub">${e(r.market)}${r.band ? ` · ${e(r.band)}` : ''}
           ${r.contract ? `<span class="tag">${e(s.contract[r.contract] ?? r.contract)}</span>` : ''}
           ${r.inHoldout ? '<span class="tag hold">Holdout</span>' : ''}</div></td>
@@ -1256,31 +1517,33 @@ export function renderDashboard(d: DashboardData): string {
       <span class="lang"><a href="${e(selfUrl(d, { lang: otherLang(d.lang) }))}"
         hreflang="${otherLang(d.lang)}">${e(s.otherLangName)}</a></span>
       <span class="lens">
-        <a class="${d.basis === 'revenue' ? 'on' : ''}" href="/?basis=revenue&lang=${d.lang}">${e(s.basisRevenue)}</a>
-        <a class="${d.basis === 'margin' ? 'on' : ''}" href="/?basis=margin&lang=${d.lang}">${e(s.basisMargin)}</a>
+        <a class="${d.basis === 'revenue' ? 'on' : ''}" href="${
+          e(selfUrl(d, { basis: 'revenue' }))}">${e(s.basisRevenue)}</a>
+        <a class="${d.basis === 'margin' ? 'on' : ''}" href="${
+          e(selfUrl(d, { basis: 'margin' }))}">${e(s.basisMargin)}</a>
       </span>
     </div>
   </div>
   ${banners}
-  <div class="stats">
-    <div class="stat"><div class="k">${e(s.largestSingle)}</div>
-      <div class="v">${largest ? cash(largest.atStake, largest.currency) : '—'}</div>
-      <div class="sub">${largest ? e(largest.label) : e(s.nothingOpen)}</div></div>
-    <div class="stat"><div class="k">${e(s.openFindings)}</div><div class="v">${d.counts.open}</div>
-      <div class="sub">${e(s.severityBreakdown(d.counts.critical, d.counts.high))}</div></div>
-    <div class="stat"><div class="k">${e(s.rooms)}</div><div class="v">${d.counts.entities}</div>
-      <div class="sub">${e(s.activeInPortfolio)}</div></div>
-    <div class="stat"><div class="k">${e(s.notAssessable)}</div><div class="v">${d.notAssessable.length}</div>
-      <div class="sub">${e(s.signalMissing)}</div></div>
-  </div>
-  ${cockpitBlock(d.cockpit, s)}
-  ${d.notAssessable.length ? `<div class="banner"><b>${e(s.roomsNotAssessable(d.notAssessable.length))}</b> — ${
+  ${/* Counted from `flat`, not from the collapsed `work`: the hero states how many
+       CHANGES there are, and a line covering four rooms is four changes. Passing
+       the display list here made the hero say three when the page proposed six. */
+    ''}${pulseBand(d, s, flat.filter(w => !w.action.blockedBy).length,
+                   heldCount, roomsWithWork)}
+  ${todayBand(d, s, work)}
+  ${filterBar(d, s, counts, visible.length)}
+  ${d.view === 'na' && d.notAssessable.length ? `<div class="banner">${
       d.notAssessable.map(n => `${e(n.label)} <span class="mut">(${e(n.reason)})</span>`).join(' · ')
     }</div>` : ''}
-  ${d.rows.length ? `<table>
+  ${/* Six columns do not fit a phone. Measured at 430px the table was 551px wide
+       and the WHOLE PAGE scrolled sideways — the hero, the worklist and the
+       filter bar all dragged along by one element. It scrolls inside its own
+       box now, so the rest of the page stays where the reader put it. */ ''}
+  ${visible.length ? `<div class="tscroll"><table>
     <thead><tr><th>${e(s.colProperty)}</th><th>${e(s.colAtStake)}</th><th>${e(s.colFindings)}</th>
       <th>${e(s.colWorstDomain)}</th><th>${e(s.colVsMarket)}</th><th>${e(s.colArchived)}</th></tr></thead>
-    <tbody>${rows}</tbody></table>`
+    <tbody>${rows}</tbody></table></div>`
+    : d.rows.length ? `<p class="mut band-empty">${e(s.todayEmpty)}</p>`
     : `<div class="empty"><p><b>${e(s.noPropertiesYet)}</b></p>
        <p>${e(s.noPropertiesWhy)} <a href="/status?lang=${d.lang}">${e(s.readiness)}</a>.</p></div>`}
   ${d.leverCoverage.length ? `<section class="card">

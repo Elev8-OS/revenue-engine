@@ -13,6 +13,7 @@
  *      one office reads a glossary and the other reads English.
  */
 import { renderDashboard, pricePosition, type DashboardData } from './dashboard/render.js'
+import type * as q from './dashboard/query.js'
 import type { Row, Signals } from './dashboard/query.js'
 import { renderShapesText } from './sources/elev8/shape.js'
 import { en, id, LANGS, stringsFor } from './i18n.js'
@@ -23,6 +24,8 @@ const check = (n: string, ok: boolean, extra = '') => {
 }
 
 const ID = '11111111-2222-3333-4444-555555555555'
+const uid = (n: number) =>
+  `${String(n).repeat(8)}-2222-3333-4444-555555555555`.slice(0, 36)
 const blankKpi = () => ({ value: null, against: null, basis: 0, verdict: 'unknown' as const })
 const row = (over: Partial<Row> = {}): Row => ({
   entityId: ID, label: 'ID - APT 2', market: 'bali', band: '2BR', bandBasis: 'bedrooms',
@@ -43,7 +46,7 @@ const sig = (over: Partial<Signals> = {}): Signals => ({
   funnelBooking: null, funnelAirbnb: null, ...over,
 })
 const data = (over: Partial<DashboardData> = {}): DashboardData => ({
-  lang: 'en', basis: 'revenue', openId: null, rows: [row()],
+  lang: 'en', basis: 'revenue', view: 'all', sort: 'money', openId: null, rows: [row()],
   counts: { entities: 1, open: 1, critical: 0, high: 0 },
   // Empty by default: the page has to be right for a portfolio where none of
   // this has been read yet, which is where every listing starts.
@@ -81,8 +84,18 @@ check('the link that CLOSES it keeps the fragment, so collapsing stays put',
       rowHref(open))
 // The language switch is a full navigation too, and it deliberately preserves
 // the open row — so it has to preserve the anchor with it.
+const langHref = (html: string) =>
+  /<span class="lang"><a href="([^"]*)"/.exec(html)?.[1] ?? ''
 check('the language switch keeps the reader on the open row',
-      open.includes(`lang=id#row-${ID}`), '')
+      langHref(open).includes('lang=id')
+        && langHref(open).endsWith(`#row-${ID}`), langHref(open))
+// Every control is a full navigation, so every control has to carry the whole
+// state. Switching language used to reset the room filter to "all" silently,
+// which reads as the page losing your place rather than as a bug.
+check('and it carries the filter and the sort with it, so no control resets another',
+      langHref(open).includes('view=all') && langHref(open).includes('sort=money')
+        && langHref(open).includes(`open=${ID}`)
+        && langHref(open).includes('basis='), langHref(open))
 
 /* ------------------------------------------------------ 2 · the potential graphic */
 
@@ -190,6 +203,156 @@ check('a stale token says it is behind, and names the variable that fixes it',
 for (const k of ['not_configured', 'grant_revoked', 'grant_stale', 'unread', 'read'] as const) {
   check(`${k}: the macro sentence exists in both languages`,
         en.macro[k].length > 40 && id.macro[k].length > 40 && en.macro[k] !== id.macro[k])
+}
+
+/* ------------------------------------------- a language table in a third language */
+
+// A German sentence sat in the Indonesian table for a full session. The
+// existence checks above all passed — the string was there, it was long, and it
+// differed from the English — so nothing failed. Only a reader of Indonesian
+// would have noticed. This is a coarse guard and it earns its keep: it is the
+// check that would have caught it.
+const GERMAN = /(^|\s)(im|der|die|das|und|nicht|über|für|mit|beim|noch)(\s|$)/i
+const flatten = (v: unknown, out: string[] = []): string[] => {
+  if (typeof v === 'string') out.push(v)
+  else if (typeof v === 'function') { /* takes arguments; sampled below instead */ }
+  else if (v && typeof v === 'object') Object.values(v).forEach(x => flatten(x, out))
+  return out
+}
+const idLeaks = flatten(id).filter(t => GERMAN.test(t))
+check('no German phrasing survives in the Indonesian table',
+      idLeaks.length === 0, idLeaks.slice(0, 3).join(' | '))
+
+/* ------------------------------------------------------- the three bands */
+
+// The bands exist because the page had no front door: forty-one rooms, the
+// actions one click inside each, and two competing rows of counters at the top.
+// Each check below is one of the four things that redesign has to keep true.
+
+const bands = renderDashboard(data({
+  cockpit: { ...data().cockpit, atStake: 4870, currency: 'CHF',
+             revpar: { value: 84, against: 96, basis: 1230, verdict: 'act' },
+             occupancy: { value: 26, against: 48, basis: 1230, verdict: 'act' },
+             pace: { value: 3, against: null, basis: 22, verdict: 'unknown' } },
+}))
+check('the hero leads with the money, not with a metric name',
+      bands.indexOf('hero-n') < bands.indexOf('pstrip')
+        && bands.includes('4') && bands.includes(en.heroAtStake), '')
+check('and it says in a plain sentence how much there is to do',
+      bands.includes('to change across') || bands.includes(en.heroLead(0, 0)), '')
+check('the KPI strip comes after the hero and is collapsed by default',
+      /<details class="pk [^"]*">\s*<summary>/.test(bands)
+        && !/<details class="pk [^"]*" open/.test(bands), '')
+check('the reading order is pulse, then today, then the rooms table',
+      bands.indexOf('class="pulse"') < bands.indexOf('class="today"')
+        && bands.indexOf('class="today"') < bands.indexOf('id="rooms"'), '')
+check('the filter row replaced the second counter row, so there is only one',
+      (bands.match(/class="bar"/g) ?? []).length === 1
+        && !bands.includes('class="stats"'), '')
+check('every view segment carries its own count',
+      (['all', 'act', 'held', 'quiet', 'na'] as const)
+        .every(v => bands.includes(en.view[v])) && bands.includes('class="fc"'), '')
+check('and the three orderings are offered by name',
+      (['money', 'risk', 'name'] as const).every(k => bands.includes(en.sorting[k])), '')
+
+// The worklist: a held line stays in it, and sorts below the ones that are ready.
+// This is the whole reason the band exists — an action waiting on a visibility
+// gate is something to know, not something to do today.
+const ID2 = 'aaaa1111-2222-3333-4444-555555555555'
+const gap = (over: Partial<q.PriceGap> = {}): q.PriceGap => ({
+  nights: 22, above: 18, below: 4, ours: 180, recommended: 165, currency: 'CHF',
+  minStayOver: 0, minStayMax: null, ...over,
+})
+// Room two is the held case: its own view rate is a fifth of the cohort median,
+// so the price action is real and waiting on a visibility problem.
+const twoRooms = renderDashboard(data({
+  rows: [row({ entityId: ID, label: 'ID - APT 2' }),
+         row({ entityId: ID2, label: 'ID - APT 9', atStake: 200,
+               firstFailing: 'visibility' })],
+  signals: new Map([
+    [ID, sig()],
+    [ID2, sig({ funnelBooking: { axis: 'trailing', impressions: 1000, views: 10,
+                                 conversions: 1, nights: 0 } })],
+  ]),
+  priceGap: new Map([[ID, gap()], [ID2, gap({ ours: 200, recommended: 150 })]]),
+  cohorts: new Map([[ID2, { booking: { better: 9, of: 12, viewRateMedian: 0.1,
+                                       bookRateMedian: 0.03 }, airbnb: null }]]),
+}))
+const wlist = twoRooms.slice(twoRooms.indexOf('class="wlist"'),
+                             twoRooms.indexOf('</ol>', twoRooms.indexOf('class="wlist"')))
+const firstHeld = wlist.indexOf('class="wl held"')
+const lastReady = wlist.lastIndexOf('class="wl ready"')
+check('the worklist is the portfolio, not one room — several rooms appear in it',
+      wlist.includes('ID - APT 2') && wlist.includes('ID - APT 9'), '')
+check('a ready line never sorts below a held one',
+      firstHeld === -1 || lastReady === -1 || lastReady < firstHeld,
+      `held@${firstHeld} ready@${lastReady}`)
+// Asserted positively, not "or nothing held": a vacuous pass here would have let
+// the ordering check above mean nothing.
+check('the fixture really does produce one held line and one ready line',
+      firstHeld !== -1 && lastReady !== -1, `held@${firstHeld} ready@${lastReady}`)
+check('a held line names the gate it is waiting on rather than disappearing',
+      wlist.includes('class="wl-gate"'), '')
+check('and each line links back into its own room, anchored',
+      /class="wl-room"><a href="\/\?[^"]*#row-/.test(wlist), '')
+
+// Collapsing. Rendered and looked at, the list read as four separate lines all
+// saying "turn the mobile rate on" — one per room, each worth nothing — stacked
+// above a held rate action worth CHF 1'890. One decision touching four rooms is
+// one line. But the HERO still counts changes, not lines: the first attempt at
+// this made the page say "3 things to change" while proposing six.
+const many = renderDashboard(data({
+  rows: [1, 2, 3, 4].map(n => row({ entityId: uid(n), label: `R${n}`, atStake: null,
+                                    findings: 0, worstSeverity: null, firstFailing: null })),
+  signals: new Map([1, 2, 3, 4].map(n => [uid(n), sig()])),
+  leverCoverage: [{ kind: 'MOBILE_RATE', on: 31, of: 41 }],
+}))
+const mlist = many.slice(many.indexOf('class="wlist"'),
+                         many.indexOf('</ol>', many.indexOf('class="wlist"')))
+check('four rooms proposing the same worthless change are one line, not four',
+      (mlist.match(/class="wl /g) ?? []).length === 1, '')
+check('and that line names two rooms and counts the rest',
+      mlist.includes('R1') && mlist.includes('R2')
+        && mlist.includes(en.andMoreRooms(2)), '')
+check('while the hero still counts the changes, not the lines',
+      many.includes(en.heroLead(4, 4)), en.heroLead(4, 4))
+
+// An action carrying money is never merged: two rooms owed CHF 900 each is not
+// one line about CHF 900, and losing which room the money is in is the same
+// mistake as a key that cannot tell two sources apart.
+const worth = renderDashboard(data({
+  rows: [row({ entityId: uid(1), label: 'R1' }), row({ entityId: uid(2), label: 'R2' })],
+  signals: new Map([[uid(1), sig()], [uid(2), sig()]]),
+  priceGap: new Map([[uid(1), gap()], [uid(2), gap()]]),
+}))
+const wl2 = worth.slice(worth.indexOf('class="wlist"'),
+                        worth.indexOf('</ol>', worth.indexOf('class="wlist"')))
+check('two rooms with the same amount stay two lines, each naming its own room',
+      wl2.includes('R1') && wl2.includes('R2')
+        && (wl2.match(/class="wl-worth">CHF/g) ?? []).length === 2, '')
+
+// The opened room: three groups in the order of the reader's questions, and the
+// reference material collapsed. The old row was ten equal panels in a stack.
+const room = renderDashboard(data({ openId: ID }))
+const roomDetail = room.slice(room.indexOf('<tr class="detail"'))
+check('an opened room asks what to change before it explains why',
+      roomDetail.indexOf(en.groupWhat) < roomDetail.indexOf(en.groupWhy), '')
+check('and puts the reference material last, collapsed',
+      roomDetail.indexOf(en.groupWhy) < roomDetail.indexOf(en.groupDetails)
+        && /<details class="rgroup rmore">/.test(roomDetail), '')
+check('the evidence is inside the collapsed group, not stacked in the open',
+      roomDetail.indexOf(en.groupDetails) < roomDetail.indexOf('class="ev"')
+        || !roomDetail.includes('class="ev"'), '')
+check('the row itself carries its state, so the table is scannable without reading it',
+      /<tr id="row-[^"]*" class="open st-(act|held|quiet)"/.test(room), '')
+
+// The filter is not allowed to disagree with the worklist: both are derived from
+// one computation of the actions, and a room counted as "needs a change" that
+// contributes no line to the list would be the page contradicting itself.
+for (const v of ['act', 'held', 'quiet', 'na'] as const) {
+  const filtered = renderDashboard(data({ view: v }))
+  check(`view=${v} renders without the other views' rows leaking in`,
+        (filtered.match(/<tr id="row-/g) ?? []).length <= 1, '')
 }
 
 /* ------------------------------------------------ the shapes text export */

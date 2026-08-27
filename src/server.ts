@@ -42,7 +42,8 @@ import { knownShapes, latestShape, allShapes, renderShapesText }
 import { registerClient, clientCredentials, clientState } from './sources/mdv/register.js'
 import { head, THEME_CSS } from './ui/theme.js'
 import * as q from './dashboard/query.js'
-import { renderDashboard, renderLogin } from './dashboard/render.js'
+import { renderDashboard, renderLogin, type RoomView, type RoomSort }
+  from './dashboard/render.js'
 
 const PORT = Number(process.env.PORT ?? 3000)
 const MIGRATIONS = new URL('../migrations/', import.meta.url).pathname
@@ -1108,11 +1109,20 @@ ${funnelDetail(run?.report ?? null)}
     if (!pool) { html(res, renderLogin(loginView()), 503); return }
     const basis: q.Basis = url.searchParams.get('basis') === 'margin' ? 'margin' : 'revenue'
     const openId = url.searchParams.get('open')
+    // Whitelisted, not passed through: an unknown value in a filter is either a
+    // typo or a probe, and defaulting is friendlier than a 400 on a page whose
+    // only state is in the URL.
+    const viewParam = url.searchParams.get('view')
+    const view: RoomView = viewParam === 'act' || viewParam === 'held'
+      || viewParam === 'quiet' || viewParam === 'na' ? viewParam : 'all'
+    const sortParam = url.searchParams.get('sort')
+    const sort: RoomSort = sortParam === 'risk' || sortParam === 'name'
+      ? sortParam : 'money'
     const data = await withClient(async c => {
       const rows = await q.portfolio(c, basis, lang)
       const open = rows.find(r => r.entityId === openId)
       return {
-        lang, basis, openId: open ? openId : null, rows,
+        lang, basis, view, sort, openId: open ? openId : null, rows,
         counts: await q.counts(c),
         cockpit: await q.cockpit(c, basis),
         signals: await q.signals(c),

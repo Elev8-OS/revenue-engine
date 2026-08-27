@@ -128,6 +128,27 @@ export interface Strings {
   cohortNoScale: string
   /* --- the action list: the point of the whole thing */
   /* --- the cockpit: eight figures, each explaining itself */
+  /* --- the three bands: pulse, today, rooms */
+  heroAtStake: string
+  heroLead: (actions: number, rooms: number) => string
+  heroNothing: string
+  heroHeld: (n: number) => string
+  todayHeading: string
+  todayLead: string
+  todayEmpty: string
+  todayInRoom: string
+  roomsHeading: string
+  shownOf: (shown: number, total: number) => string
+  /** A collapsed worklist line names two rooms and counts the rest. */
+  andMoreRooms: (n: number) => string
+  view: Record<'all' | 'act' | 'held' | 'quiet' | 'na', string>
+  sortBy: string
+  sorting: Record<'money' | 'risk' | 'name', string>
+  groupWhat: string
+  groupWhy: string
+  groupDetails: string
+  openRoom: string
+  closeRoom: string
   cockpitHeading: string
   cockpitLead: string
   cockpitBasisNights: (n: number) => string
@@ -495,6 +516,32 @@ export const en: Strings = {
   funnelChainNote: 'Each share is computed from the two counts beside it, not taken '
     + 'from the provider — a rate whose scale is unstated can be wrong by a hundredfold.',
   funnelChartAria: 'Funnel stages, each drawn as a share of the stage above it',
+  heroAtStake: 'On the table',
+  heroLead: (a, r) => a === 0
+    ? 'Nothing to change from what is measured.'
+    : `${a} thing${a === 1 ? '' : 's'} to change across ${r} room${r === 1 ? '' : 's'}.`,
+  heroNothing: 'No open finding carries an amount yet.',
+  heroHeld: n => `${n} held behind a visibility gate`,
+  todayHeading: 'Today',
+  todayLead: 'Every proposal across the portfolio, biggest first. A held line is '
+    + 'waiting on a visibility problem, not on you.',
+  todayEmpty: 'Nothing proposed. Either the portfolio is in good shape or the '
+    + 'measurements are not in yet — the tiles above say which.',
+  todayInRoom: 'open the room',
+  roomsHeading: 'Rooms',
+  shownOf: (a, b) => a === b ? `${b}` : `${a} of ${b}`,
+  andMoreRooms: n => `and ${n} more room${n === 1 ? '' : 's'}`,
+  view: {
+    all: 'All', act: 'Needs a change', held: 'Only held', quiet: 'Nothing to do',
+    na: 'Not assessable',
+  },
+  sortBy: 'Order',
+  sorting: { money: 'By amount', risk: 'By severity', name: 'By name' },
+  groupWhat: 'What to change',
+  groupWhy: 'Why',
+  groupDetails: 'Everything else about this room',
+  openRoom: 'open',
+  closeRoom: 'close',
   cockpitHeading: 'The portfolio right now',
   cockpitLead: 'Eight figures. Everything else on this page is the detail behind '
     + 'one of them — open a room to see it.',
@@ -958,6 +1005,32 @@ export const id: Strings = {
   funnelChainNote: 'Setiap persentase dihitung dari dua angka di sebelahnya, bukan '
     + 'diambil dari penyedia — rasio yang skalanya tidak dinyatakan bisa salah seratus kali.',
   funnelChartAria: 'Tahapan funnel, masing-masing sebagai bagian dari tahap di atasnya',
+  heroAtStake: 'Dipertaruhkan',
+  heroLead: (a, r) => a === 0
+    ? 'Tidak ada yang perlu diubah dari yang terukur.'
+    : `${a} hal untuk diubah pada ${r} unit.`,
+  heroNothing: 'Belum ada temuan terbuka yang membawa jumlah.',
+  heroHeld: n => `${n} ditahan di belakang gerbang keterlihatan`,
+  todayHeading: 'Hari ini',
+  todayLead: 'Setiap usulan di seluruh portofolio, terbesar dahulu. Baris yang '
+    + 'ditahan menunggu masalah keterlihatan, bukan menunggu Anda.',
+  todayEmpty: 'Tidak ada usulan. Entah portofolio dalam kondisi baik atau '
+    + 'pengukurannya belum masuk — kartu di atas mengatakan mana.',
+  todayInRoom: 'buka unit',
+  roomsHeading: 'Unit',
+  shownOf: (a, b) => a === b ? `${b}` : `${a} dari ${b}`,
+  andMoreRooms: n => `dan ${n} unit lainnya`,
+  view: {
+    all: 'Semua', act: 'Perlu diubah', held: 'Hanya ditahan', quiet: 'Tidak ada tindakan',
+    na: 'Tidak dapat dinilai',
+  },
+  sortBy: 'Urutan',
+  sorting: { money: 'Menurut jumlah', risk: 'Menurut keparahan', name: 'Menurut nama' },
+  groupWhat: 'Apa yang harus diubah',
+  groupWhy: 'Mengapa',
+  groupDetails: 'Semua hal lain tentang unit ini',
+  openRoom: 'buka',
+  closeRoom: 'tutup',
   cockpitHeading: 'Portofolio saat ini',
   cockpitLead: 'Delapan angka. Semua lainnya di halaman ini adalah detail di balik '
     + 'salah satunya — buka sebuah unit untuk melihatnya.',

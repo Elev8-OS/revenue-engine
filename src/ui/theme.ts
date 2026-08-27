@@ -229,6 +229,139 @@ code{
 /* ---------------------------------------------------------------- charts */
 /* SVG text carries TEXT tokens, never a series colour: the mark beside a label
    carries identity, the label stays ink. */
+/* =========================================================== the three bands */
+/*
+ * ONE ACCENT, ON ONE PATH. Amber marks the action path and nothing else — the
+ * hero figure, the ready lines in the worklist, the active filter. Everywhere the
+ * old page used a card, this one uses whitespace and a single hairline: forty
+ * bordered boxes make everything equally important, which is the same as making
+ * nothing important.
+ *
+ * A RHYTHM, NOT A GRID OF EQUALS. The three bands step down in weight — a hero at
+ * 3.4rem, band headings at 1.15rem, table text at .9rem — so scrolling feels like
+ * moving from the summary into the detail rather than through a stack of cards.
+ */
+.pulse{display:grid;gap:1.1rem;grid-template-columns:minmax(15rem,22rem) 1fr;
+  align-items:start;margin:1.6rem 0 2.2rem}
+@media (max-width:56rem){ .pulse{grid-template-columns:1fr} }
+
+/* The hero. One figure large enough to be the whole answer. */
+.hero{border-left:3px solid var(--brand);padding:.1rem 0 .1rem 1.1rem}
+.hero-k{margin:0;font-size:.72rem;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--mut)}
+.hero-n{margin:.15rem 0 0;font-size:clamp(2.1rem,5.5vw,3.4rem);font-weight:700;
+  letter-spacing:-.035em;line-height:1;font-variant-numeric:tabular-nums}
+.hero-n i{font-size:1rem;font-weight:400;font-style:italic;color:var(--mut);
+  letter-spacing:0}
+.hero-lead{margin:.5rem 0 0;font-size:.9rem;color:var(--ink);max-width:26em}
+.hero-held{color:var(--rust);white-space:nowrap}
+
+/* The eight measurements as a strip. Each opens for the line that explains it —
+   reachable, because most readers have not met RevPAR, but not eight paragraphs
+   of body text at the top of the page. */
+.pstrip{display:grid;gap:.4rem;grid-template-columns:repeat(auto-fill,minmax(11rem,1fr))}
+.pk{border:1px solid var(--line);border-radius:10px;background:var(--surface);
+  padding:.5rem .6rem}
+.pk>summary{list-style:none;cursor:pointer;display:grid;
+  grid-template-columns:1fr auto;grid-template-areas:"n d" "l v";gap:.05rem .4rem;
+  align-items:baseline}
+.pk>summary::-webkit-details-marker{display:none}
+.pk-n{grid-area:n;font-size:1.15rem;font-weight:700;letter-spacing:-.02em;
+  font-variant-numeric:tabular-nums;line-height:1.15}
+.pk-none{font-size:.78rem;font-weight:400;font-style:italic;color:var(--mut)}
+.pk-name{grid-area:l;font-size:.7rem;color:var(--mut);line-height:1.3}
+.pk-dot{grid-area:d;width:.5rem;height:.5rem;border-radius:50%;background:var(--line);
+  align-self:center}
+/* NOT uppercased. "act" and "watch" survive it; "no comparison" became a shout
+   twice the width of the figure it qualified. The word is small, spaced and
+   coloured — that is enough to read as a label. */
+.pk-v{grid-area:v;font-size:.64rem;letter-spacing:.04em;
+  color:var(--mut);text-align:right}
+.pk[open]{border-color:var(--mut)}
+.pk-body{margin-top:.45rem;padding-top:.45rem;border-top:1px solid var(--line)}
+.pk-body p{margin:0 0 .25rem;font-size:.74rem;line-height:1.45;color:var(--mut)}
+/* The technical term, in the reader's colour: this is the word a channel or a
+   consultant will use at them, so it has to be legible, not a footnote. */
+.pk-term{color:var(--ink) !important;font-weight:600}
+.pk-basis{font-variant:small-caps;letter-spacing:.06em}
+.pk-money{color:var(--ink) !important}
+.pk-flag{color:var(--rust) !important}
+.pk.v-good .pk-dot{background:#0E8A63}
+.pk.v-watch .pk-dot{background:var(--brand)}
+.pk.v-act .pk-dot{background:var(--rust)}
+.pk.v-act .pk-v{color:var(--rust)}
+.pk.v-unknown .pk-dot{background:transparent;border:1px dashed var(--mut)}
+
+/* Band headings. The step down in weight is the navigation. */
+.band-head{margin:2.2rem 0 .6rem}
+.band-head h2{font-size:1.15rem;font-weight:700;letter-spacing:-.02em;margin:0}
+.band-head p{margin:.2rem 0 0;font-size:.84rem;max-width:46em}
+.band-head .count{font-weight:400;font-size:.9rem}
+.band-empty{font-size:.88rem;padding:.9rem 0 1.4rem;max-width:44em}
+
+/* Today: the band that did not exist. A list, not cards — this is a to-do list
+   and it should read like one. */
+.wlist{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
+.wl{display:grid;gap:.2rem .8rem;align-items:baseline;padding:.6rem .2rem .6rem .8rem;
+  border-bottom:1px solid var(--line);border-left:3px solid var(--brand);
+  grid-template-columns:7rem minmax(8rem,auto) 1fr auto auto;
+  grid-template-areas:"lever move room scope worth" ". gate gate gate gate"}
+.wl.held{border-left-color:var(--line);background:var(--sunk)}
+.wl:hover{background:color-mix(in oklab,var(--brand) 7%,transparent)}
+.wl-lever{grid-area:lever;font-size:.66rem;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--mut)}
+.wl-move{grid-area:move;font-variant-numeric:tabular-nums;font-size:.95rem}
+.wl-move s{color:var(--mut);text-decoration-thickness:1px}
+.wl-move b{font-weight:700}
+.wl-room{grid-area:room;font-size:.88rem}
+.wl-room a{color:var(--ink);text-decoration:none;border-bottom:1px solid var(--line)}
+.wl-room a:hover{border-bottom-color:var(--brass)}
+.wl-scope{grid-area:scope;font-size:.76rem;color:var(--mut);text-align:right}
+.wl-worth{grid-area:worth;font-size:.9rem;font-weight:650;
+  font-variant-numeric:tabular-nums;text-align:right;min-width:5rem}
+.wl-gate{grid-area:gate;font-size:.76rem;color:var(--rust);font-weight:600}
+@media (max-width:52rem){
+  .wl{grid-template-columns:1fr auto;
+    grid-template-areas:"lever worth" "move move" "room room" "scope scope" "gate gate"}
+  .wl-scope,.wl-worth{text-align:left}
+}
+
+/* The filter row: what the four old counters actually were — how many rooms are
+   in each state, and a way to see only those. */
+.bar{display:flex;flex-wrap:wrap;gap:.5rem 1.4rem;align-items:center;
+  margin:0 0 .8rem;padding-bottom:.7rem;border-bottom:1px solid var(--line)}
+.seg{display:flex;flex-wrap:wrap;gap:.15rem}
+.seg a{font-size:.8rem;padding:.3rem .55rem;border-radius:7px;text-decoration:none;
+  color:var(--mut);border:1px solid transparent}
+.seg a:hover{background:var(--sunk)}
+.seg a.on{background:var(--brand);color:var(--on-brand);font-weight:650}
+.seg .fc{font-variant-numeric:tabular-nums;opacity:.75;margin-left:.15rem}
+.seg.quiet a.on{background:transparent;color:var(--ink);border-color:var(--line)}
+.seg-k{font-size:.7rem;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);
+  align-self:center;margin-right:.2rem}
+
+/* The room rail: state as a mark on the row, so the table scans without reading. */
+.rail{display:inline-block;width:3px;height:1.05em;border-radius:2px;
+  background:var(--line);margin-right:.55rem;vertical-align:-.15em}
+tr.st-act .rail{background:var(--brand)}
+tr.st-held .rail{background:var(--rust)}
+tr.st-quiet .rail{background:transparent;box-shadow:inset 0 0 0 1px var(--line)}
+.chev{font-size:.68rem;letter-spacing:.05em;text-transform:uppercase;color:var(--mut);
+  margin-left:.5rem;opacity:0}
+tr:hover .chev,tr.open .chev{opacity:1}
+
+/* The open room: three groups, the last collapsed. Ten equal panels made the
+   reader lose the table; a heading per group lets them stop after the first. */
+.room{display:flex;flex-direction:column;gap:1.3rem;padding:.3rem 0 .6rem}
+.rg-h{margin:0 0 .5rem;font-size:.72rem;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--mut);font-weight:650}
+.rgroup>.panel:first-of-type{margin-top:0}
+.rmore{border-top:1px solid var(--line);padding-top:.9rem}
+.rmore>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:.4rem}
+.rmore>summary::-webkit-details-marker{display:none}
+.rmore>summary::after{content:'+';font-size:.9rem;color:var(--mut)}
+.rmore[open]>summary::after{content:'\\2212'}
+
 /* ------------------------------------------------------------- the cockpit */
 /* Eight tiles, each explaining itself. The verdict is a chip AND a word, never a
    colour alone: a reader who cannot distinguish the hues must still be able to
@@ -332,7 +465,12 @@ code{
   opacity:.55}
 .fm-none{font-size:.72rem;color:var(--mut);font-style:italic}
 
-.cx{width:100%;height:auto;display:block;overflow:visible;margin:.2rem 0 .1rem}
+/* A viewBox with 11px type scales its type too. At full container width the
+   coverage bars rendered their counts larger than the hero, which inverted the
+   whole page's hierarchy — caught by rendering it and looking. Capping the width
+   at the size the type was drawn for keeps 11px meaning 11px. */
+.cx{width:100%;max-width:620px;height:auto;display:block;overflow:visible;
+  margin:.2rem 0 .1rem}
 .cx-strip{width:auto;height:20px;vertical-align:middle;margin-left:.3rem}
 .cx text{font-family:var(--font)}
 .cx-lab{font-size:11px;fill:var(--mut)}
@@ -436,6 +574,12 @@ input{font:inherit;font-size:.9rem;padding:.55rem .7rem;border-radius:var(--r-ct
 .stat .v{font-size:1.75rem;font-weight:700;letter-spacing:-.025em;
   font-variant-numeric:tabular-nums;margin-top:.15rem;line-height:1.2}
 
+/* The table's own scroll box. The webkit momentum property keeps the flick on
+   iOS; without it a narrow reader has to drag. (No backticks in here — this
+   whole stylesheet lives inside a template literal, and a backtick in a comment
+   ends the string. Fourth time.) */
+.tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.tscroll>table{min-width:34rem}
 table{width:100%;border-collapse:collapse;font-size:.875rem;
   background:var(--surface);border:1px solid var(--line);
   border-radius:var(--r-card);overflow:hidden}
