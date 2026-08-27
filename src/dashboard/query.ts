@@ -902,3 +902,175 @@ export async function funnelCohorts(
   }
   return out
 }
+
+/* ------------------------------------------------- the shape of demand, ours */
+
+export interface DemandShape {
+  /** Days between booking and arrival, from our own realised bookings. */
+  leadMedian: number | null
+  leadP25: number | null
+  leadP75: number | null
+  /** Nights per booking, realised. This is what a minimum stay is measured against. */
+  nightsMedian: number | null
+  nightsP75: number | null
+  bookings: number
+  /** Where the guests who actually booked came from, biggest first. */
+  origins: Array<{ country: string, bookings: number, share: number }>
+}
+
+const DEMAND_DAYS = 365
+
+/**
+ * What our own demand looks like: how far ahead people book, how long they stay,
+ * and where they come from.
+ *
+ * Every figure here comes out of `booking_economics`, which has held
+ * `booked_at`, `arrival`, `nights` and `guest_country` since the first PriceLabs
+ * pass. Lead time and stay length were never derived, and guest origin — the
+ * thing the macro block has been describing as absent for weeks — was sitting in
+ * a column nobody selected.
+ *
+ * This is the REALISED side. MyDataValue's demand report holds the same shapes
+ * for the SEARCH side (`book_window_*`, `length_of_stay_*`, `traveller_country_*`),
+ * and the two answer different questions: who booked us, against who looked. The
+ * gap between them is the interesting part, and it needs the demand adapter
+ * first.
+ *
+ * A year, because a quarter of Balinese bookings and a quarter of Swiss ones fall
+ * in different seasons and a 90-day window would report the season, not the
+ * pattern.
+ */
+export async function demandShape(client: PoolClient): Promise<Map<string, DemandShape>> {
+  const { rows } = await client.query<{
+    entity_id: string, lead_median: string | null, lead_p25: string | null,
+    lead_p75: string | null, nights_median: string | null, nights_p75: string | null,
+    bookings: number
+  }>(`
+    select entity_id::text as entity_id,
+           percentile_cont(0.5) within group (
+             order by (arrival - booked_at::date))::text as lead_median,
+           percentile_cont(0.25) within group (
+             order by (arrival - booked_at::date))::text as lead_p25,
+           percentile_cont(0.75) within group (
+             order by (arrival - booked_at::date))::text as lead_p75,
+           percentile_cont(0.5) within group (order by nights)::text as nights_median,
+           percentile_cont(0.75) within group (order by nights)::text as nights_p75,
+           count(*)::int as bookings
+      from booking_economics
+     where arrival >= current_date - $1::int
+       and booked_at is not null
+       and coalesce(status, '') <> 'cancelled'
+     group by entity_id`, [DEMAND_DAYS])
+
+  const { rows: orig } = await client.query<{
+    entity_id: string, country: string, bookings: number
+  }>(`
+    select entity_id::text as entity_id,
+           -- Upper-cased so 'ch' and 'CH' are one country rather than two.
+           upper(guest_country) as country, count(*)::int as bookings
+      from booking_economics
+     where arrival >= current_date - $1::int
+       and guest_country is not null and guest_country <> ''
+       and coalesce(status, '') <> 'cancelled'
+     group by entity_id, upper(guest_country)`, [DEMAND_DAYS])
+
+  const byEntity = new Map<string, Array<{ country: string, bookings: number }>>()
+  for (const r of orig) {
+    const list = byEntity.get(r.entity_id) ?? []
+    list.push({ country: r.country, bookings: r.bookings })
+    byEntity.set(r.entity_id, list)
+  }
+
+  const num = (v: string | null) => v === null ? null : Number(v)
+  const out = new Map<string, DemandShape>()
+  for (const r of rows) {
+    const list = (byEntity.get(r.entity_id) ?? []).sort((a, b) => b.bookings - a.bookings)
+    const total = list.reduce((n, c) => n + c.bookings, 0)
+    out.set(r.entity_id, {
+      leadMedian: num(r.lead_median), leadP25: num(r.lead_p25), leadP75: num(r.lead_p75),
+      nightsMedian: num(r.nights_median), nightsP75: num(r.nights_p75),
+      bookings: r.bookings,
+      origins: list.map(c => ({ ...c, share: total > 0 ? c.bookings / total : 0 })),
+    })
+  }
+  return out
+}
+
+export const demandWindowDays = DEMAND_DAYS
+
+/* ------------------------------------------------------------- the price gap */
+
+export interface PriceGap {
+  /** Nights in the next 30 where our price and the recommendation differ. */
+  nights: number
+  /** Nights we ask MORE than recommended, and fewer. */
+  above: number
+  below: number
+  /** Median of our price and of the recommendation over those nights. */
+  ours: number | null
+  recommended: number | null
+  currency: string | null
+  /** Nights whose minimum stay exceeds what guests actually book. */
+  minStayOver: number
+  minStayMax: number | null
+}
+
+/**
+ * Where our calendar and the recommendation disagree, night by night.
+ *
+ * `signals()` already reports the MEDIAN of each, which answers "are we high"
+ * but not "on how many nights, and by how much". A recommendation needs the
+ * count: moving one night is a rounding error and moving twenty-two is a
+ * decision.
+ *
+ * `min_stay` and `unbookable` have been archived per night since the first
+ * PriceLabs pass and read by nothing. A minimum stay is only assessable against
+ * what guests actually book, which is why the realised nights come from
+ * `demandShape` and the comparison happens where both are in hand.
+ */
+export async function priceGap(
+  client: PoolClient, tolerance = 0.05,
+): Promise<Map<string, PriceGap>> {
+  const { rows } = await client.query<{
+    entity_id: string, nights: number, above: number, below: number,
+    ours: string | null, recommended: string | null, currency: string | null,
+    min_stay_max: string | null
+  }>(`
+    with asof as (
+      select entity_id, max(as_of_date) as d
+        from snapshot where metric = 'price_recommended' group by entity_id
+    ),
+    nightly as (
+      select s.entity_id, s.stay_date,
+             max(s.value) filter (where s.metric = 'price_current')     as ours,
+             max(s.value) filter (where s.metric = 'price_recommended') as rec,
+             max(s.value) filter (where s.metric = 'min_stay')          as min_stay,
+             max(s.currency) as currency
+        from snapshot s
+        join asof a on a.entity_id = s.entity_id and s.as_of_date = a.d
+       where s.metric in ('price_current', 'price_recommended', 'min_stay')
+         and s.stay_date >= a.d and s.stay_date < a.d + 30
+       group by s.entity_id, s.stay_date
+    )
+    select entity_id::text as entity_id,
+           count(*) filter (where ours is not null and rec is not null and rec > 0
+             and abs(ours - rec) / rec > $1)::int as nights,
+           count(*) filter (where ours is not null and rec is not null and rec > 0
+             and (ours - rec) / rec > $1)::int as above,
+           count(*) filter (where ours is not null and rec is not null and rec > 0
+             and (rec - ours) / rec > $1)::int as below,
+           percentile_cont(0.5) within group (order by ours)::text as ours,
+           percentile_cont(0.5) within group (order by rec)::text as recommended,
+           max(currency) as currency,
+           max(min_stay)::text as min_stay_max
+      from nightly
+     group by entity_id`, [tolerance])
+  const num = (v: string | null) => v === null ? null : Number(v)
+  return new Map(rows.map(r => [r.entity_id, {
+    nights: r.nights, above: r.above, below: r.below,
+    ours: num(r.ours), recommended: num(r.recommended), currency: r.currency,
+    // Filled in by the caller, which is the only place the realised stay length
+    // is also in hand. A minimum stay compared against nothing is not a finding.
+    minStayOver: 0, minStayMax: num(r.min_stay_max),
+  }]))
+}

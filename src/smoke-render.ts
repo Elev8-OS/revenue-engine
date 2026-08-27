@@ -48,6 +48,7 @@ const data = (over: Partial<DashboardData> = {}): DashboardData => ({
   // this has been read yet, which is where every listing starts.
   realised: new Map(), reviews: new Map(), promotions: new Map(),
   accountPromotions: [], cohorts: new Map(), leverCoverage: [],
+  priceGap: new Map(), demand: new Map(),
   notAssessable: [], freshness: [], gate: [], evidence: [],
   signals: new Map([[ID, sig()]]), funnel: 'unread', demo: false, unprotected: false, ...over,
 })
@@ -332,6 +333,48 @@ check('every series carries a direct label, not just a swatch',
       full.includes('cx-dl') && full.includes('cx-key'), '')
 check('the review score is drawn on its own scale rather than as a bare number',
       full.includes('cx-strip'), '')
+
+/* ------------------------------------- the action panel leads the opened row */
+
+// Asserted by POSITION, not by presence. The first version of this panel was
+// built inside the evidence bundle and rendered fourth, under three panels of
+// measurement, while its own comment claimed it led the row. A reader who has to
+// scroll past the evidence to reach the proposal reads the evidence and does
+// nothing — so where it sits is part of the contract.
+const acted = renderDashboard(data({
+  openId: ID, funnel: 'read',
+  signals: new Map([[ID, sig({ occupancy: 26, marketOccupancy: 48 })]]),
+  priceGap: new Map([[ID, { nights: 22, above: 22, below: 0, ours: 180,
+    recommended: 165, currency: 'CHF', minStayOver: 1, minStayMax: 7 }]]),
+  demand: new Map([[ID, { leadMedian: 34, leadP25: 8, leadP75: 96, nightsMedian: 3,
+    nightsP75: 5, bookings: 22,
+    origins: [{ country: 'AU', bookings: 7, share: 0.32 }] }]]),
+  leverCoverage: [{ kind: 'MOBILE_RATE', on: 31, of: 41 }],
+  promotions: new Map([[ID, []]]),
+}))
+const panelOrder = [...acted.matchAll(/<h3>([^<]*)<\/h3>/g)].map(m => m[1])
+check('the action panel is the FIRST panel in an opened row',
+      panelOrder[0] === en.actionsHeading, panelOrder.slice(0, 4).join(' | '))
+// Matched on the digits, not on "CHF 180": Intl puts a NON-BREAKING space after
+// the currency, so a literal with an ordinary space never matches — and the
+// assertion would have failed for a reason that has nothing to do with the page.
+check('and it names a lever with a from and a to, not advice',
+      /180/.test(acted) && /165/.test(acted)
+      && acted.includes(en.leverLabel.price), '')
+check('the minimum stay is measured against what guests actually book',
+      acted.includes(en.leverLabel.min_stay) && acted.includes('7') && acted.includes('3'), '')
+check('a lever the majority runs is proposed with the count behind it',
+      acted.includes('31 of 41'), '')
+// The named absence: generic copy advice would look like a finding.
+check('text and photos say no source is connected rather than offering advice',
+      acted.includes(en.aContentScope) && acted.includes('content surface is not connected'), '')
+// Guest origin was in booking_economics all along.
+check('guest origin appears from our own realised bookings',
+      acted.includes(en.demandOrigin) && acted.includes('AU'), '')
+check('and the page says this is who booked, not who searched',
+      acted.includes('who BOOKED') || acted.includes(en.demandOriginSearchNote), '')
+check('lead time is a spread, not a lone median',
+      acted.includes('34') && acted.includes('8') && acted.includes('96'), '')
 
 console.log(fails ? `\n${fails} FAILED` : '\nall green')
 process.exit(fails ? 1 : 0)

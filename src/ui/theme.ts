@@ -229,6 +229,46 @@ code{
 /* ---------------------------------------------------------------- charts */
 /* SVG text carries TEXT tokens, never a series colour: the mark beside a label
    carries identity, the label stays ink. */
+/* The action list. It leads the opened row, so it carries the only accent border
+   on the page — a reader scanning for "what do I do" should land here first. */
+.act-panel{border-left:3px solid var(--brand)}
+.acts{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.55rem}
+.act{border:1px solid var(--line);border-radius:10px;padding:.6rem .75rem;
+  background:var(--paper)}
+/* Held, not hidden: a price case waiting on a visibility problem is information,
+   and removing it would read as "no price case here". */
+.act.held{border-style:dashed;opacity:.9}
+.act-h{display:flex;flex-wrap:wrap;align-items:baseline;gap:.4rem .75rem}
+.act-lever{font-size:.7rem;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--mut);flex:none}
+.act-move{font-variant-numeric:tabular-nums;font-size:1rem}
+.act-from{color:var(--mut);text-decoration:line-through;text-decoration-thickness:1px}
+.act-arr{color:var(--mut);margin:0 .15rem}
+.act-to{font-weight:700}
+.act-scope{font-size:.8rem;color:var(--mut)}
+.act-worth{margin-left:auto;font-size:.85rem;font-weight:650;
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+.act-worth i{font-style:normal;font-weight:400;font-size:.72rem;color:var(--mut)}
+.act-gate{margin-top:.3rem;font-size:.78rem;color:var(--rust);font-weight:600}
+.act-why{margin-top:.28rem;font-size:.82rem;color:var(--mut);max-width:56em}
+.act.lv-content{border-style:dotted}
+.act.lv-content .act-lever{color:var(--mut)}
+
+/* How our guests book. A quartile spread, not a lone median: 34 days with a
+   spread of 8 to 96 is a different business from 30 to 38. */
+.dgrid{display:flex;flex-wrap:wrap;gap:1.6rem}
+.dlab{font-size:.72rem;letter-spacing:.04em;text-transform:uppercase;color:var(--mut)}
+.dval{display:flex;align-items:baseline;gap:.4rem;font-variant-numeric:tabular-nums}
+.dval b{font-size:1.25rem;font-weight:650}
+.dq{font-size:.8rem;color:var(--mut)}
+.orig{display:flex;flex-direction:column;gap:.22rem;margin-top:.3rem}
+.orow{display:grid;grid-template-columns:2.6rem 1fr 3rem;gap:.5rem;align-items:center;
+  font-size:.8rem}
+.oname{font-weight:600}
+.otrack{height:.45rem;background:var(--sunk);border-radius:999px;overflow:hidden}
+.otrack span{display:block;height:100%}
+.oval{text-align:right;font-variant-numeric:tabular-nums;color:var(--mut)}
+
 /* The funnel. Counts are the figure; the step between them carries the rate and
    a meter whose scale is our own median — a 0.75% rate has no readable place on
    a 0-100% track, and this project measured exactly that. */

@@ -120,6 +120,32 @@ export interface Strings {
   /* --- chart descriptions, for a screen reader and for the aria-label */
   funnelChartAria: string
   cohortNoScale: string
+  /* --- the action list: the point of the whole thing */
+  actionsHeading: string
+  actionsLead: string
+  actionsNone: string
+  actionHeld: (gate: string) => string
+  actionArrow: string
+  actionWorth: string
+  leverLabel: Record<'price' | 'min_stay' | 'discount' | 'content', string>
+  aNights: (n: number) => string
+  aNightsPlain: (n: number) => string
+  aPriceAbove: (above: number, of: number) => string
+  aPriceBelow: (below: number, of: number) => string
+  aMinStayScope: string
+  aMinStayBecause: (bookings: number, median: number, p75: number) => string
+  aLeverAbsent: string
+  aLeverBecause: (on: number, of: number) => string
+  aContentScope: string
+  aContentBecause: string
+  /* --- our own demand */
+  demandHeading: string
+  demandWindow: (days: number, bookings: number) => string
+  demandLead: string
+  demandStay: string
+  demandOrigin: string
+  demandOriginSearchNote: string
+  demandNone: string
   cohortMedianIs: (median: string) => string
   horizonAria: string
   channelAria: string
@@ -432,6 +458,49 @@ export const en: Strings = {
   funnelChainNote: 'Each share is computed from the two counts beside it, not taken '
     + 'from the provider — a rate whose scale is unstated can be wrong by a hundredfold.',
   funnelChartAria: 'Funnel stages, each drawn as a share of the stage above it',
+  actionsHeading: 'What to change',
+  actionsLead: 'Each line names a lever, what it is now, and what it would become. '
+    + 'Anything that cannot be stated that way is an observation, not an action, '
+    + 'and stays in the findings.',
+  actionsNone: 'Nothing to change on this room from what is measured.',
+  actionHeld: gate => `held: ${gate} is the gate that breaks first`,
+  actionArrow: '\u2192',
+  actionWorth: 'at stake',
+  leverLabel: {
+    price: 'Rate',
+    min_stay: 'Minimum stay',
+    discount: 'Promotion',
+    content: 'Text and photos',
+  },
+  aNights: n => `${n} night${n === 1 ? '' : 's'} of the next 30`,
+  aNightsPlain: n => `${n} night${n === 1 ? '' : 's'}`,
+  aPriceAbove: (above, of) => `We ask more than the recommendation on ${above} of `
+    + `${of} nights that differ by more than 5%.`,
+  aPriceBelow: (below, of) => `We ask less than the recommendation on ${below} of `
+    + `${of} nights that differ by more than 5%.`,
+  aMinStayScope: 'on the nights that carry it',
+  aMinStayBecause: (b, median, p75) => `Across ${b} realised bookings the median stay `
+    + `is ${median} night${median === 1 ? '' : 's'} and three quarters are ${p75} or `
+    + `fewer. The minimum on this calendar is above that, so it turns away stays `
+    + `we are otherwise winning.`,
+  aLeverAbsent: 'not offered',
+  aLeverBecause: (on, of) => `${on} of ${of} rooms in the portfolio run it; this one `
+    + 'does not. Whether that is deliberate is a decision, not a measurement — but '
+    + 'it should be a decision.',
+  aContentScope: 'no source connected',
+  aContentBecause: 'Photo and text quality are levers this tool cannot assess on '
+    + 'this account: MyDataValue carries neither, and the channel manager\u2019s '
+    + 'content surface is not connected. Generic copy advice here would look like a '
+    + 'finding without being one.',
+  demandHeading: 'How our guests book',
+  demandWindow: (d, b) => `${b} realised booking${b === 1 ? '' : 's'} over ${d} days`,
+  demandLead: 'booked ahead',
+  demandStay: 'nights per booking',
+  demandOrigin: 'where they came from',
+  demandOriginSearchNote: 'This is who BOOKED. Who searched is a separate figure and '
+    + 'lives in MyDataValue\u2019s demand report, which is measured but not yet stored — '
+    + 'the gap between the two is the interesting part.',
+  demandNone: 'No realised bookings with a booking date on this room yet.',
   cohortNoScale: 'no comparable set yet',
   cohortMedianIs: m => `median of our own set: ${m}`,
   horizonAria: 'Occupancy at 7, 30 and 90 nights, ours against the market',
@@ -774,6 +843,44 @@ export const id: Strings = {
   funnelChainNote: 'Setiap persentase dihitung dari dua angka di sebelahnya, bukan '
     + 'diambil dari penyedia — rasio yang skalanya tidak dinyatakan bisa salah seratus kali.',
   funnelChartAria: 'Tahapan funnel, masing-masing sebagai bagian dari tahap di atasnya',
+  actionsHeading: 'Apa yang harus diubah',
+  actionsLead: 'Setiap baris menyebut tuas, keadaan sekarang, dan menjadi apa. Yang '
+    + 'tidak bisa dinyatakan begitu adalah observasi, bukan tindakan.',
+  actionsNone: 'Tidak ada yang perlu diubah pada unit ini dari yang terukur.',
+  actionHeld: gate => `ditahan: ${gate} adalah gerbang yang gagal lebih dulu`,
+  actionArrow: '\u2192',
+  actionWorth: 'dipertaruhkan',
+  leverLabel: {
+    price: 'Tarif',
+    min_stay: 'Menginap minimum',
+    discount: 'Promosi',
+    content: 'Teks dan foto',
+  },
+  aNights: n => `${n} malam dari 30 berikutnya`,
+  aNightsPlain: n => `${n} malam`,
+  aPriceAbove: (above, of) => `Kita meminta lebih dari rekomendasi pada ${above} dari `
+    + `${of} malam yang berbeda lebih dari 5%.`,
+  aPriceBelow: (below, of) => `Kita meminta kurang dari rekomendasi pada ${below} dari `
+    + `${of} malam yang berbeda lebih dari 5%.`,
+  aMinStayScope: 'pada malam yang memuatnya',
+  aMinStayBecause: (b, median, p75) => `Dari ${b} pemesanan terealisasi, median `
+    + `menginap ${median} malam dan tiga perempatnya ${p75} malam atau kurang. `
+    + `Minimum pada kalender ini di atas itu.`,
+  aLeverAbsent: 'tidak ditawarkan',
+  aLeverBecause: (on, of) => `${on} dari ${of} unit di portofolio menjalankannya; `
+    + 'unit ini tidak. Apakah itu sengaja adalah keputusan, bukan pengukuran.',
+  aContentScope: 'tidak ada sumber terhubung',
+  aContentBecause: 'Kualitas foto dan teks tidak bisa dinilai alat ini pada akun ini: '
+    + 'MyDataValue tidak membawanya, dan permukaan konten channel manager belum '
+    + 'terhubung. Saran copy umum di sini akan terlihat seperti temuan tanpa menjadi satu.',
+  demandHeading: 'Bagaimana tamu kita memesan',
+  demandWindow: (d, b) => `${b} pemesanan terealisasi selama ${d} hari`,
+  demandLead: 'dipesan di muka',
+  demandStay: 'malam per pemesanan',
+  demandOrigin: 'dari mana mereka datang',
+  demandOriginSearchNote: 'Ini yang MEMESAN. Siapa yang mencari adalah angka lain dan '
+    + 'ada di laporan demand MyDataValue, yang sudah terukur tetapi belum tersimpan.',
+  demandNone: 'Belum ada pemesanan terealisasi dengan tanggal pemesanan pada unit ini.',
   cohortNoScale: 'belum ada kelompok pembanding',
   cohortMedianIs: m => `median kelompok kita sendiri: ${m}`,
   horizonAria: 'Okupansi pada 7, 30 dan 90 malam, kita berbanding pasar',

@@ -1114,6 +1114,18 @@ ${funnelDetail(run?.report ?? null)}
         })(),
         cohorts: await q.funnelCohorts(c),
         leverCoverage: await q.leverCoverage(c),
+        // The minimum-stay comparison needs BOTH the calendar and the realised
+        // stay length, so the two are joined here rather than in either query —
+        // a minimum stay compared against nothing is not a finding.
+        ...await (async () => {
+          const [gap, demand] = [await q.priceGap(c), await q.demandShape(c)]
+          for (const [id, g] of gap) {
+            const d = demand.get(id)
+            g.minStayOver = g.minStayMax !== null && d?.nightsP75 != null
+              && g.minStayMax > d.nightsP75 ? 1 : 0
+          }
+          return { priceGap: gap, demand }
+        })(),
         // The same measured state the checks use, so the macro block on a page
         // and the gate note inside a finding can never disagree.
         funnel: (await q.funnelState(c)).kind,

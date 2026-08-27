@@ -11,7 +11,8 @@ import type * as q from './query.js'
 // A value import alongside the type one: `realisedWindowDays` is a constant the
 // page must state rather than repeat, so the window it names cannot drift apart
 // from the window the query actually used.
-import { realisedWindowDays } from './query.js'
+import { realisedWindowDays, demandWindowDays } from './query.js'
+import { actionsFor, type Action } from './actions.js'
 import type { Basis, Row } from './query.js'
 import { type Lang, type Strings, stringsFor, otherLang } from '../i18n.js'
 import { head } from '../ui/theme.js'
@@ -74,6 +75,10 @@ export interface DashboardData {
    * which lever is barely used — rather than a list of what exists.
    */
   leverCoverage: Array<{ kind: string, on: number, of: number }>
+  /** Night-by-night disagreement with the recommendation, and the minimum stay. */
+  priceGap: Map<string, q.PriceGap>
+  /** Lead time, stay length and guest origin, from our own realised bookings. */
+  demand: Map<string, q.DemandShape>
   /** Where each listing's funnel sits inside our OWN market × band × channel set. */
   cohorts: Map<string, { booking: q.CohortStanding | null, airbnb: q.CohortStanding | null }>
   /**
@@ -217,11 +222,42 @@ interface Detail {
   /** Every lever the account offers, so an empty cell means "not taken". */
   knownLevers: string[]
   cohort: { booking: q.CohortStanding | null, airbnb: q.CohortStanding | null } | undefined
+  gap: q.PriceGap | undefined
+  demand: q.DemandShape | undefined
+  coverage: Array<{ kind: string, on: number, of: number }>
 }
 
 /** Everything the archive holds about one room, in the order a reader needs it. */
+/**
+ * The action panel, returned SEPARATELY from the evidence.
+ *
+ * It has to be, because it has to come first. The version before this one built
+ * the actions inside the evidence bundle and the panel landed fourth — under
+ * Potential, Price position and Macro — while the comment above it claimed it led
+ * the row. Rendering the page and counting the panels was the only way that was
+ * ever going to be noticed.
+ */
+function actionsPanel(r: Row, d: Detail, s: Strings): string {
+  const actions = actionsFor({
+    row: r, sig: d.sig, gap: d.gap, demand: d.demand,
+    promos: d.promos, coverage: d.coverage, cohort: d.cohort,
+  }, {
+    money: (v, cur) => money(v, cur, s.numberLocale),
+    nights: s.aNights, nightsPlain: s.aNightsPlain,
+    priceAbove: s.aPriceAbove, priceBelow: s.aPriceBelow,
+    minStayScope: s.aMinStayScope, minStayBecause: s.aMinStayBecause,
+    leverOn: s.leverOn, leverOff: s.leverOff, leverAbsent: s.aLeverAbsent,
+    leverName: k => k.replace(/_/g, ' ').toLowerCase(),
+    leverBecause: s.aLeverBecause,
+    contentScope: s.aContentScope, contentBecause: s.aContentBecause,
+  })
+  return actionsBlock(actions, s)
+}
+
+/** The evidence for the panel above: everything the actions were derived from. */
 function detailBlocks(r: Row, d: Detail, s: Strings): string {
-  return trendBlock(d.sig, s)
+  return demandBlock(d.demand, s)
+    + trendBlock(d.sig, s)
     + realisedBlock(r, d.real, s)
     + reviewsBlock(d.rev, s)
     + leversBlock(d.promos, d.accountPromos, d.knownLevers, s)
@@ -236,7 +272,8 @@ function potential(
   // Nothing to draw is not nothing to say: the micro and macro blocks report
   // their own state, and an early return here used to swallow both.
   if (ours === null && r.atStake === null) {
-    return pricePositionBlock(sig, r, s) + macroBlock(s, funnel, sig, d?.cohort)
+    return (d ? actionsPanel(r, d, s) : '')
+      + pricePositionBlock(sig, r, s) + macroBlock(s, funnel, sig, d?.cohort)
       + (d ? detailBlocks(r, d, s) : '')
   }
 
@@ -317,7 +354,8 @@ function potential(
 
   const chart = `<svg class="pot" viewBox="0 0 ${W} ${y + 6}" role="img"
       aria-label="${e(s.potentialHeading)}">${parts.join('')}</svg>`
-  return `<section class="panel"><h3>${e(s.potentialHeading)}</h3>${chart}</section>`
+  return (d ? actionsPanel(r, d, s) : '')
+    + `<section class="panel"><h3>${e(s.potentialHeading)}</h3>${chart}</section>`
     + pricePositionBlock(sig, r, s)
     + macroBlock(s, funnel, sig, d?.cohort)
     + (d ? detailBlocks(r, d, s) : '')
@@ -467,6 +505,98 @@ function funnelChain(
  * is derived, and once real figures exist the sentence about their absence is not
  * merely wrong, it is contradicted by the numbers next to it.
  */
+/* ------------------------------------------------------ what to change ===== */
+
+/**
+ * The action list. This block is the reason the rest of the page exists.
+ *
+ * It sits FIRST inside an opened row, above the measurements, because a reader
+ * who has to scroll past six panels to find out what to do will read six panels
+ * and do nothing. The measurements are the evidence for this list, not a preamble
+ * to it.
+ *
+ * A HELD action stays visible with its gate named. Hiding it would leave the
+ * reader believing the room has no price case, when what it has is a price case
+ * waiting on a visibility problem — and that distinction is the single most
+ * valuable thing this engine knows.
+ */
+function actionsBlock(list: Action[], s: Strings): string {
+  if (!list.length) {
+    return `<section class="panel"><h3>${e(s.actionsHeading)}</h3>
+      <p class="mut" style="margin:0;font-size:.86rem">${e(s.actionsNone)}</p></section>`
+  }
+  const line = (a: Action) => `<li class="act ${a.blockedBy ? 'held' : ''} lv-${a.lever}">
+    <div class="act-h">
+      <span class="act-lever">${e(s.leverLabel[a.lever])}</span>
+      ${a.from !== null && a.to !== null ? `<span class="act-move">
+        <span class="act-from">${e(a.from)}</span>
+        <span class="act-arr">${e(s.actionArrow)}</span>
+        <span class="act-to">${e(a.to)}</span></span>` : ''}
+      <span class="act-scope">${e(a.scope)}</span>
+      ${a.worth !== null ? `<span class="act-worth">${
+        e(money(a.worth, null, s.numberLocale))} <i>${e(s.actionWorth)}</i></span>` : ''}
+    </div>
+    ${a.blockedBy ? `<div class="act-gate">${
+      e(s.actionHeld(s.stage[a.blockedBy] ?? a.blockedBy))}</div>` : ''}
+    <div class="act-why">${e(a.because)}</div></li>`
+  return `<section class="panel act-panel"><h3>${e(s.actionsHeading)}</h3>
+    <p class="mut" style="margin:0 0 .6rem;font-size:.78rem">${e(s.actionsLead)}</p>
+    <ol class="acts">${list.map(line).join('')}</ol></section>`
+}
+
+/**
+ * How our own guests book: lead time, stay length, and where they come from.
+ *
+ * Every figure is out of `booking_economics`, which has carried `booked_at`,
+ * `arrival`, `nights` and `guest_country` since the first PriceLabs pass and was
+ * selected by nothing. Guest origin in particular is the thing the macro block
+ * has spent weeks describing as absent — for realised bookings it was in a
+ * column all along.
+ *
+ * The note underneath is not decoration. This is who BOOKED; who SEARCHED is a
+ * different population and lives in a report that is measured but not yet
+ * stored. Presenting one as the other would be the most plausible-looking
+ * mistake available here.
+ */
+function demandBlock(dm: q.DemandShape | undefined, s: Strings): string {
+  if (!dm || !dm.bookings) {
+    return `<section class="panel"><h3>${e(s.demandHeading)}</h3>
+      <p class="mut" style="margin:0;font-size:.86rem">${e(s.demandNone)}</p></section>`
+  }
+  const days = (v: number | null) => v === null ? '—'
+    : new Intl.NumberFormat(s.numberLocale, { maximumFractionDigits: 0 }).format(v)
+  // A range, not a single number: a median lead time of 34 days with a quartile
+  // spread of 8 to 96 is a different business from one that spreads 30 to 38.
+  const spread = (lo: number | null, mid: number | null, hi: number | null) =>
+    `<span class="dq">${days(lo)}</span><b>${days(mid)}</b><span class="dq">${days(hi)}</span>`
+  const top = dm.origins.slice(0, 6)
+  const rest = dm.origins.slice(6).reduce((n, c) => n + c.bookings, 0)
+  const total = dm.origins.reduce((n, c) => n + c.bookings, 0)
+  const bars = top.map((c, i) => `<div class="orow">
+      <div class="oname">${e(c.country)}</div>
+      <div class="otrack"><span style="width:${(c.share * 100).toFixed(1)}%;
+        background:var(--c${(i % 4) + 1})"></span></div>
+      <div class="oval">${e(pct(c.share * 100, s.numberLocale))}</div>
+    </div>`).join('') + (rest > 0 && total > 0 ? `<div class="orow">
+      <div class="oname mut">+${dm.origins.length - top.length}</div>
+      <div class="otrack"><span style="width:${(rest / total * 100).toFixed(1)}%;
+        background:var(--mut)"></span></div>
+      <div class="oval">${e(pct(rest / total * 100, s.numberLocale))}</div></div>` : '')
+  return `<section class="panel"><h3>${e(s.demandHeading)}</h3>
+    <p class="mut" style="margin:0 0 .55rem;font-size:.78rem">${
+      e(s.demandWindow(demandWindowDays, dm.bookings))}</p>
+    <div class="dgrid">
+      <div><div class="dlab">${e(s.demandLead)}</div>
+        <div class="dval">${spread(dm.leadP25, dm.leadMedian, dm.leadP75)}</div></div>
+      <div><div class="dlab">${e(s.demandStay)}</div>
+        <div class="dval">${spread(null, dm.nightsMedian, dm.nightsP75)}</div></div>
+    </div>
+    ${bars ? `<div class="dlab" style="margin-top:.7rem">${e(s.demandOrigin)}</div>
+      <div class="orig">${bars}</div>` : ''}
+    <p class="mut" style="margin:.55rem 0 0;font-size:.76rem">${
+      e(s.demandOriginSearchNote)}</p></section>`
+}
+
 /* =========================================================== charts ======= */
 /*
  * Every chart here is inline SVG on the page's own tokens, and every one of them
@@ -981,6 +1111,9 @@ export function renderDashboard(d: DashboardData): string {
           accountPromos: d.accountPromotions,
           knownLevers: d.leverCoverage.map(l => l.kind),
           cohort: d.cohorts.get(r.entityId),
+          gap: d.priceGap.get(r.entityId),
+          demand: d.demand.get(r.entityId),
+          coverage: d.leverCoverage,
         })}
         ${gateBlock(d, s)}
         ${evidenceBlock(d, s)}
