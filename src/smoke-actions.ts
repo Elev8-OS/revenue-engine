@@ -33,7 +33,7 @@ const t: ActionStrings = {
 }
 
 const row = (over: Partial<Row> = {}): Row => ({
-  entityId: 'e1', label: 'Room', market: 'bali', band: '2BR', bandBasis: 'bedrooms', units: null,
+  entityId: 'e1', label: 'Room', market: 'bali', band: '2BR', bandBasis: 'bedrooms', units: null, group: null,
   contract: null, inHoldout: false, atStake: 1089, bandLow: null, bandHigh: null,
   currency: 'CHF', findings: 1, worstSeverity: 'high', firstFailing: null,
   headline: null, worstFindingId: null, ...over,

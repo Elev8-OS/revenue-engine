@@ -62,6 +62,13 @@ export interface DashboardData {
    */
   view: RoomView
   sort: RoomSort
+  /**
+   * The tenant's group, or null for the whole account. Narrows EVERYTHING the
+   * page derives — hero, worklist, filter counts and table. The cockpit is
+   * narrowed in SQL by the same value, because a dropdown that filters the table
+   * while the hero keeps the account total teaches the reader something false.
+   */
+  group: string | null
   openId: string | null
   rows: Row[]
   counts: { entities: number, open: number, critical: number, high: number }
@@ -135,6 +142,7 @@ function selfUrl(
     view: d.view,
     sort: d.sort,
   })
+  if (d.group) p.set('group', d.group)
   if (d.openId) p.set('open', d.openId)
   return `/?${p.toString()}${d.openId ? `#row-${d.openId}` : ''}`
 }
@@ -711,6 +719,7 @@ function todayBand(
   const roomLink = (row: Row) => {
     const p = new URLSearchParams({ basis: d.basis, lang: d.lang, view: d.view,
                                     sort: d.sort, open: row.entityId })
+    if (d.group) p.set('group', d.group)
     return `<a href="/?${p.toString()}#row-${e(row.entityId)}">${e(row.label)}</a>`
   }
   const line = ({ rows, action: a }: { rows: Row[], action: Action }) => {
@@ -741,20 +750,51 @@ function todayBand(
 /** The filter row: what the four old counters actually were. */
 function filterBar(
   d: DashboardData, s: Strings, counts: Record<RoomView, number>, shown: number,
+  groups: Array<{ name: string, n: number }>,
 ): string {
   const link = (v: RoomView) => {
     const p = new URLSearchParams({ basis: d.basis, lang: d.lang, view: v, sort: d.sort })
+    if (d.group) p.set('group', d.group)
     return `<a class="${d.view === v ? 'on' : ''}" href="/?${p.toString()}#rooms"
       >${e(s.view[v])} <span class="fc">${counts[v]}</span></a>`
   }
   const sortLink = (k: RoomSort) => {
     const p = new URLSearchParams({ basis: d.basis, lang: d.lang, view: d.view, sort: k })
+    if (d.group) p.set('group', d.group)
     return `<a class="${d.sort === k ? 'on' : ''}" href="/?${p.toString()}#rooms"
       >${e(s.sorting[k])}</a>`
   }
+  /**
+   * The group picker, as a plain GET form with a submit button.
+   *
+   * No JavaScript: this page has none and adding a listener for one dropdown
+   * would make the control's behaviour depend on a script loading. A `<select>`
+   * inside a form that GETs back to `/` is the same navigation every other
+   * control here already is, and it works with the keyboard, with a screen
+   * reader, and with the back button for free.
+   *
+   * Hidden fields carry the rest of the state, for the reason the filter row
+   * already carries it: a control that resets another reads as the page losing
+   * your place.
+   */
+  const groupPicker = groups.length === 0 ? '' : `<form class="gpick" method="get" action="/">
+    <input type="hidden" name="basis" value="${e(d.basis)}">
+    <input type="hidden" name="lang" value="${e(d.lang)}">
+    <input type="hidden" name="view" value="${e(d.view)}">
+    <input type="hidden" name="sort" value="${e(d.sort)}">
+    <label for="gsel">${e(s.groupLabel)}</label>
+    <select id="gsel" name="group">
+      <option value=""${d.group ? '' : ' selected'}>${e(s.groupAll(counts.all))}</option>
+      ${groups.map(g => `<option value="${e(g.name)}"${
+        d.group === g.name ? ' selected' : ''}>${e(g.name)} (${g.n})</option>`).join('')}
+    </select>
+    <button type="submit">${e(s.groupApply)}</button>
+  </form>`
+
   return `<div class="band-head" id="rooms">
     <h2>${e(s.roomsHeading)} <span class="mut count">${
       e(s.shownOf(shown, counts.all))}</span></h2>
+    ${groupPicker}
   </div>
   <div class="bar">
     <nav class="seg">${(['all', 'act', 'held', 'quiet', 'na'] as const)
@@ -1358,7 +1398,24 @@ export function renderDashboard(d: DashboardData): string {
    * worklist could propose something the room did not show — which is the kind of
    * inconsistency a reader never reports and never trusts again.
    */
-  const perRoom = new Map(d.rows.map(r => [r.entityId, actionsOf(r, d, s)]))
+  /**
+   * THE GROUP IS APPLIED ONCE, HERE, and everything below reads `inGroup`.
+   *
+   * `d.rows` stays the full account so the dropdown can count each group — and
+   * so the option a reader is standing in never vanishes from its own list.
+   * Everything else derives from the narrowed set: the actions, the counts, the
+   * worklist, the hero's sentence. One filter, one place, no chance of the hero
+   * and the table disagreeing about which rooms they are describing.
+   */
+  const inGroup = d.group ? d.rows.filter(r => r.group === d.group) : d.rows
+  const groups = [...d.rows.reduce((m, r) => {
+    if (r.group) m.set(r.group, (m.get(r.group) ?? 0) + 1)
+    return m
+  }, new Map<string, number>())]
+    .map(([name, n]) => ({ name, n }))
+    .sort((a, b) => a.name.localeCompare(b.name, s.numberLocale))
+
+  const perRoom = new Map(inGroup.map(r => [r.entityId, actionsOf(r, d, s)]))
   const stateOf = (r: Row): RoomView => {
     if (naSet.has(r.label)) return 'na'
     return roomState(perRoom.get(r.entityId) ?? [])
@@ -1366,17 +1423,20 @@ export function renderDashboard(d: DashboardData): string {
   const naSet = new Set(d.notAssessable.map(n => n.label))
 
   const counts: Record<RoomView, number> = {
-    all: d.rows.length,
-    act: d.rows.filter(r => stateOf(r) === 'act').length,
-    held: d.rows.filter(r => stateOf(r) === 'held').length,
-    quiet: d.rows.filter(r => stateOf(r) === 'quiet').length,
-    na: d.notAssessable.length,
+    all: inGroup.length,
+    act: inGroup.filter(r => stateOf(r) === 'act').length,
+    held: inGroup.filter(r => stateOf(r) === 'held').length,
+    quiet: inGroup.filter(r => stateOf(r) === 'quiet').length,
+    // Counted from the rooms actually in scope, not from the account-wide list:
+    // "Not assessable 1" beside four visible rooms was a number about somewhere
+    // else.
+    na: inGroup.filter(r => naSet.has(r.label)).length,
   }
 
   const SEVERITY: Record<string, number> = {
     critical: 5, high: 4, medium: 3, low: 2, info: 1,
   }
-  const visible = d.rows
+  const visible = inGroup
     .filter(r => d.view === 'all' || stateOf(r) === d.view)
     .sort((a, b) => d.sort === 'name' ? a.label.localeCompare(b.label, s.numberLocale)
       : d.sort === 'risk'
@@ -1391,7 +1451,7 @@ export function renderDashboard(d: DashboardData): string {
    * identical on every room — forty-one copies of "no source connected" would bury
    * everything else and teach the reader to skip the list.
    */
-  const flat = d.rows
+  const flat = inGroup
     .flatMap(r => (perRoom.get(r.entityId) ?? [])
       .filter(a => a.lever !== 'content')
       .map(action => ({ row: r, action })))
@@ -1410,16 +1470,16 @@ export function renderDashboard(d: DashboardData): string {
    * money actually is — the same mistake as a snapshot key that cannot tell two
    * sources apart.
    */
-  const groups = new Map<string, { rows: Row[], action: Action }>()
+  const merged = new Map<string, { rows: Row[], action: Action }>()
   const lines: Array<{ rows: Row[], action: Action }> = []
   for (const { row, action } of flat) {
     if (action.worth !== null) { lines.push({ rows: [row], action }); continue }
     const key = [action.lever, action.from, action.to, action.scope,
                  action.because, action.blockedBy].join('\u0000')
-    const seen = groups.get(key)
+    const seen = merged.get(key)
     if (seen) { seen.rows.push(row); continue }
     const line = { rows: [row], action }
-    groups.set(key, line)
+    merged.set(key, line)
     lines.push(line)
   }
   const work = lines.sort((a, b) =>
@@ -1437,6 +1497,7 @@ export function renderDashboard(d: DashboardData): string {
     const isOpen = d.openId === r.entityId
     const p = new URLSearchParams({ basis: d.basis, lang: d.lang,
                                     view: d.view, sort: d.sort })
+    if (d.group) p.set('group', d.group)
     if (!isOpen) p.set('open', r.entityId)
     const href = `/?${p.toString()}#row-${r.entityId}`
     const domain = r.firstFailing ? s.domain[r.firstFailing] : null
@@ -1532,7 +1593,7 @@ export function renderDashboard(d: DashboardData): string {
     ''}${pulseBand(d, s, flat.filter(w => !w.action.blockedBy).length,
                    heldCount, roomsWithWork)}
   ${todayBand(d, s, work)}
-  ${filterBar(d, s, counts, visible.length)}
+  ${filterBar(d, s, counts, visible.length, groups)}
   ${d.view === 'na' && d.notAssessable.length ? `<div class="banner">${
       d.notAssessable.map(n => `${e(n.label)} <span class="mut">(${e(n.reason)})</span>`).join(' · ')
     }</div>` : ''}
@@ -1547,10 +1608,14 @@ export function renderDashboard(d: DashboardData): string {
     : d.rows.length ? `<p class="mut band-empty">${e(s.todayEmpty)}</p>`
     : `<div class="empty"><p><b>${e(s.noPropertiesYet)}</b></p>
        <p>${e(s.noPropertiesWhy)} <a href="/status?lang=${d.lang}">${e(s.readiness)}</a>.</p></div>`}
+  ${/* The one figure on the page that does NOT narrow with the group: lever
+       coverage counts every active room on the account. Rendering it under a
+       group-filtered table without saying so would let "31 of 41" read as a
+       fact about Zermattstays. It says whose number it is instead. */ ''}
   ${d.leverCoverage.length ? `<section class="card">
     <h2 class="ph">${e(s.leversPortfolio)}</h2>
     <p class="mut" style="margin:.1rem 0 .8rem;font-size:.84rem">${
-      e(s.leversPortfolioNote)}</p>
+      e(s.leversPortfolioNote)}${d.group ? ` ${e(s.leversWholeAccount(d.group))}` : ''}</p>
     ${leverCoverage(d.leverCoverage, s)}
   </section>` : ''}
   <details class="legend">

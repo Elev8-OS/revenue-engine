@@ -1118,13 +1118,23 @@ ${funnelDetail(run?.report ?? null)}
     const sortParam = url.searchParams.get('sort')
     const sort: RoomSort = sortParam === 'risk' || sortParam === 'name'
       ? sortParam : 'money'
+    /**
+     * The group is tenant-entered text, so it is NOT whitelisted like view and
+     * sort — there is no fixed set to check against. It is validated by
+     * existence instead: a name that matches no group on the account is dropped
+     * and the page shows the whole portfolio, rather than showing an empty table
+     * for a typo. And it reaches SQL only as a bound parameter.
+     */
+    const groupParam = url.searchParams.get('group')?.trim() || null
     const data = await withClient(async c => {
       const rows = await q.portfolio(c, basis, lang)
+      const group = groupParam !== null && rows.some(r => r.group === groupParam)
+        ? groupParam : null
       const open = rows.find(r => r.entityId === openId)
       return {
-        lang, basis, view, sort, openId: open ? openId : null, rows,
+        lang, basis, view, sort, group, openId: open ? openId : null, rows,
         counts: await q.counts(c),
-        cockpit: await q.cockpit(c, basis),
+        cockpit: await q.cockpit(c, basis, group),
         signals: await q.signals(c),
         realised: await q.realised(c),
         reviews: await q.reviews(c),

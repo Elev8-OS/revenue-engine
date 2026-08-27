@@ -138,6 +138,12 @@ export interface Strings {
   todayEmpty: string
   todayInRoom: string
   /** Separately bookable units under one listing. Never a bedroom count. */
+  /** The tenant's own grouping, from PriceLabs. Not our market boxes. */
+  /** Said only when a group is selected: this count is still account-wide. */
+  leversWholeAccount: (group: string) => string
+  groupLabel: string
+  groupAll: (n: number) => string
+  groupApply: string
   unitsLet: (n: number) => string
   roomsHeading: string
   shownOf: (shown: number, total: number) => string
@@ -530,6 +536,11 @@ export const en: Strings = {
   todayEmpty: 'Nothing proposed. Either the portfolio is in good shape or the '
     + 'measurements are not in yet — the tiles above say which.',
   todayInRoom: 'open the room',
+  leversWholeAccount: g =>
+    `Counted across the whole account, not just ${g}.`,
+  groupLabel: 'Group',
+  groupAll: n => `All groups (${n})`,
+  groupApply: 'Show',
   unitsLet: n => `${n} units let separately`,
   roomsHeading: 'Rooms',
   shownOf: (a, b) => a === b ? `${b}` : `${a} of ${b}`,
@@ -1020,6 +1031,11 @@ export const id: Strings = {
   todayEmpty: 'Tidak ada usulan. Entah portofolio dalam kondisi baik atau '
     + 'pengukurannya belum masuk — kartu di atas mengatakan mana.',
   todayInRoom: 'buka unit',
+  leversWholeAccount: g =>
+    `Dihitung di seluruh akun, bukan hanya ${g}.`,
+  groupLabel: 'Grup',
+  groupAll: n => `Semua grup (${n})`,
+  groupApply: 'Tampilkan',
   unitsLet: n => `${n} unit disewakan terpisah`,
   roomsHeading: 'Unit',
   shownOf: (a, b) => a === b ? `${b}` : `${a} dari ${b}`,

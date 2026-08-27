@@ -43,8 +43,11 @@ export interface PriceLabsListingRow {
   min?: number
   base?: number
   max?: number
+  /** The tenant's own grouping. Curated by hand in PriceLabs — see 025. */
   group?: string
   group_id?: number
+  subgroup?: string | null
+  subgroup_id?: number | null
   isHidden?: boolean
   push_enabled?: boolean
   last_refreshed_at?: string
@@ -86,6 +89,9 @@ export interface PriceLabsListingsReport {
   /** Present-but-empty is the failure reading documentation cannot catch. */
   channelDetailsWithId: number
   cleaningFeesSeen: number
+  /** Group names seen, so a rename in PriceLabs is visible in the report. */
+  groups: string[]
+  groupsWritten: number
 }
 
 /** The resolved id set, so the later stages do not re-resolve the same 62 ids. */
@@ -165,9 +171,11 @@ export async function importPriceLabsListings(
     bandsWritten: 0, bandsUpgraded: 0, bandDisagreements: [], bedroomsUnusable: 0,
     nameDisagreements: [],
     currencies: [], guardrailsSeen: 0, channelDetailsWithId: 0, cleaningFeesSeen: 0,
+    groups: [], groupsWritten: 0,
   }
   const resolvedRows: ResolvedListing[] = []
   const currencies = new Set<string>()
+  const groups = new Set<string>()
   const foreign = new Set<string>()
 
   for (const row of rows) {
@@ -221,6 +229,32 @@ export async function importPriceLabsListings(
     const band = bandFromBedrooms(bedrooms)
     if (!bedrooms) report.bedroomsUnusable++
 
+    /**
+     * The tenant's grouping, written whenever it changes.
+     *
+     * Name AND id: the name is what the dropdown shows, the id is what survives
+     * someone renaming "CH - Urban" in PriceLabs. Writing only where it differs
+     * keeps `updated_at` meaningful — an unchanged pass must not make sixty rows
+     * look freshly touched.
+     */
+    const groupName = row.group?.trim() || null
+    const groupId = plain(row.group_id)
+    const subgroup = typeof row.subgroup === 'string' && row.subgroup.trim()
+      ? row.subgroup.trim() : null
+    if (groupName) groups.add(groupName)
+    if (groupName || groupId !== null) {
+      const { rowCount } = await db.query(
+        `update entity
+            set pms_group = $2, pms_group_id = $3, pms_subgroup = $4,
+                updated_at = now()
+          where id = $1
+            and (pms_group    is distinct from $2::text
+              or pms_group_id is distinct from $3::integer
+              or pms_subgroup is distinct from $4::text)`,
+        [hit.entityId, groupName, groupId, subgroup])
+      if (rowCount) report.groupsWritten++
+    }
+
     const stated = bedroomsInName(row.name)
     if (stated !== null && bedrooms !== null && stated !== bedrooms) {
       report.nameDisagreements.push(
@@ -273,6 +307,7 @@ export async function importPriceLabsListings(
   }
 
   report.currencies = [...currencies].sort()
+  report.groups = [...groups].sort()
   report.foreignPms = [...foreign].sort()
   return { report, resolved: resolvedRows }
 }

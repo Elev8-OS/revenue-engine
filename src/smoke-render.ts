@@ -28,7 +28,7 @@ const uid = (n: number) =>
   `${String(n).repeat(8)}-2222-3333-4444-555555555555`.slice(0, 36)
 const blankKpi = () => ({ value: null, against: null, basis: 0, verdict: 'unknown' as const })
 const row = (over: Partial<Row> = {}): Row => ({
-  entityId: ID, label: 'ID - APT 2', market: 'bali', band: '2BR', bandBasis: 'bedrooms', units: null,
+  entityId: ID, label: 'ID - APT 2', market: 'bali', band: '2BR', bandBasis: 'bedrooms', units: null, group: null,
   contract: null, inHoldout: false, atStake: 1089, bandLow: 1089, bandHigh: 1188,
   currency: 'CHF', findings: 1, worstSeverity: 'medium', firstFailing: 'price',
   headline: '22 points below the market.', worstFindingId: 'f-1', ...over,
@@ -46,7 +46,7 @@ const sig = (over: Partial<Signals> = {}): Signals => ({
   funnelBooking: null, funnelAirbnb: null, ...over,
 })
 const data = (over: Partial<DashboardData> = {}): DashboardData => ({
-  lang: 'en', basis: 'revenue', view: 'all', sort: 'money', openId: null, rows: [row()],
+  lang: 'en', basis: 'revenue', view: 'all', sort: 'money', group: null, openId: null, rows: [row()],
   counts: { entities: 1, open: 1, critical: 0, high: 0 },
   // Empty by default: the page has to be right for a portfolio where none of
   // this has been read yet, which is where every listing starts.
@@ -204,6 +204,81 @@ for (const k of ['not_configured', 'grant_revoked', 'grant_stale', 'unread', 're
   check(`${k}: the macro sentence exists in both languages`,
         en.macro[k].length > 40 && id.macro[k].length > 40 && en.macro[k] !== id.macro[k])
 }
+
+/* ---------------------------------------------- the tenant's own grouping */
+
+/**
+ * The group dropdown, and the thing it must not do.
+ *
+ * PriceLabs holds a grouping the tenant curates: "ID", "CH - Urban",
+ * "Zermattstays", "MiHome". A dropdown that narrows the TABLE while the hero
+ * keeps showing the whole account's money would be worse than no dropdown — the
+ * reader picks one operator's set and reads someone else's total. So the filter
+ * is applied once and everything derived narrows with it.
+ */
+const grouped = (over: Partial<DashboardData> = {}) => data({
+  rows: [
+    row({ entityId: uid(1), label: 'Z1', group: 'Zermattstays', atStake: 500 }),
+    row({ entityId: uid(2), label: 'Z2', group: 'Zermattstays', atStake: 300 }),
+    row({ entityId: uid(3), label: 'M1', group: 'MiHome', atStake: 900 }),
+  ],
+  signals: new Map([1, 2, 3].map(n => [uid(n), sig()])),
+  priceGap: new Map([1, 2, 3].map(n => [uid(n), {
+    nights: 22, above: 18, below: 4, ours: 180, recommended: 165, currency: 'CHF',
+    minStayOver: 0, minStayMax: null,
+  } as q.PriceGap])),
+  ...over,
+})
+
+const allGroups = renderDashboard(grouped())
+check('every group is offered with its own count',
+      allGroups.includes('MiHome (1)') && allGroups.includes('Zermattstays (2)'), '')
+check('and "all groups" is the default, counting the whole account',
+      allGroups.includes(en.groupAll(3))
+        && /<option value=""[^>]*selected/.test(allGroups), '')
+check('the picker is a plain form, so it needs no script to work',
+      /<form class="gpick" method="get" action="\/">/.test(allGroups), '')
+check('and it carries the rest of the state in hidden fields',
+      allGroups.includes('name="basis"') && allGroups.includes('name="view"')
+        && allGroups.includes('name="sort"'), '')
+
+const onlyZ = renderDashboard(grouped({ group: 'Zermattstays' }))
+check('choosing a group shows only its rooms',
+      onlyZ.includes('Z1') && onlyZ.includes('Z2') && !/>M1</.test(onlyZ), '')
+check('the selected group is the one marked selected',
+      onlyZ.includes('value="Zermattstays" selected'), '')
+// The whole point. Two rooms in scope, so the worklist and the sentence must be
+// about two rooms — not about three.
+check('the worklist narrows with it',
+      !onlyZ.slice(onlyZ.indexOf('class="wlist"'),
+                   onlyZ.indexOf('</ol>', onlyZ.indexOf('class="wlist"'))).includes('M1'), '')
+check('and the hero sentence counts only the rooms in scope',
+      onlyZ.includes(en.heroLead(2, 2)), en.heroLead(2, 2))
+check('the filter counts narrow too, so All is the group and not the account',
+      onlyZ.includes('>All <span class="fc">2</span>'), '')
+// Every other control has to keep the group, or picking one and then sorting
+// silently throws the reader back to the whole account.
+check('sorting keeps the group', onlyZ.includes('group=Zermattstays'), '')
+check('and so does the language switch',
+      /<span class="lang"><a href="[^"]*group=Zermattstays/.test(onlyZ), '')
+
+// The one number that does not narrow. Lever coverage counts every active room
+// on the account, so under a filtered table it has to say whose number it is —
+// otherwise "31 of 41" reads as a fact about the group in view.
+const zLevers = renderDashboard(grouped({
+  group: 'Zermattstays',
+  leverCoverage: [{ kind: 'MOBILE_RATE', on: 31, of: 41 }],
+}))
+check('a count that stays account-wide says so when a group is selected',
+      zLevers.includes(en.leversWholeAccount('Zermattstays')), '')
+check('and says nothing extra when no group is selected',
+      !renderDashboard(grouped({ leverCoverage: [{ kind: 'MOBILE_RATE', on: 31, of: 41 }] }))
+        .includes('whole account'), '')
+
+// An account with no group read yet must not grow an empty control.
+const ungrouped = renderDashboard(data())
+check('no groups means no dropdown, rather than an empty one',
+      !ungrouped.includes('class="gpick"'), '')
 
 /* --------------------------------------- units are not bedrooms, on the page */
 

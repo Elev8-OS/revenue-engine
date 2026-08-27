@@ -578,6 +578,27 @@ input{font:inherit;font-size:.9rem;padding:.55rem .7rem;border-radius:var(--r-ct
    iOS; without it a narrow reader has to drag. (No backticks in here — this
    whole stylesheet lives inside a template literal, and a backtick in a comment
    ends the string. Fourth time.) */
+/* The group picker. A real form, so it sits in the band head as one control
+   rather than as three floating pieces. */
+.gpick{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;font-size:.82rem}
+.gpick label{color:var(--mut);font-size:.72rem;letter-spacing:.08em;
+  text-transform:uppercase;font-weight:650}
+.gpick select{font:inherit;font-size:.85rem;color:var(--ink);background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--r-ctl);padding:.3rem .5rem;
+  max-width:16rem}
+.gpick button{font:inherit;font-size:.82rem;font-weight:600;cursor:pointer;
+  color:var(--ink);background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-ctl);padding:.32rem .7rem}
+.gpick button:hover{border-color:var(--mut)}
+/* Only the rooms band head, by its id. A bare .band-head rule here would have
+   made every band head a flex row, which puts Today's lead paragraph beside its
+   heading instead of under it — the kind of change that looks like a one-line
+   win and quietly reflows two other bands.
+   (No backticks anywhere in this file: the whole stylesheet is inside a template
+   literal and a backtick in a comment ends the string. Fifth time.) */
+#rooms{display:flex;align-items:baseline;justify-content:space-between;
+  gap:1rem 1.4rem;flex-wrap:wrap}
+
 .tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
 .tscroll>table{min-width:34rem}
 table{width:100%;border-collapse:collapse;font-size:.875rem;

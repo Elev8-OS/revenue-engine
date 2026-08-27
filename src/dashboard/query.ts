@@ -44,6 +44,13 @@ export interface Row {
    * villa at CHF 400 are different businesses.
    */
   units: number | null
+  /**
+   * The tenant's own grouping, as PriceLabs holds it — "ID", "CH - Urban",
+   * "Zermattstays". Not a market: "CH - Urban" and "CH - Semi Urban" are one
+   * market and two commercial situations, and two operators share this account.
+   * Null until a PriceLabs listings pass has run.
+   */
+  group: string | null
   contract: string | null
   inHoldout: boolean
   atStake: number | null
@@ -91,6 +98,7 @@ export async function portfolio(
            e.band                     as band,
            e.band_basis               as "bandBasis",
            e.units                    as units,
+           e.pms_group                as "group",
            e.contract::text           as contract,
            e.in_holdout               as "inHoldout",
            -- largest single opportunity, never a sum
@@ -1173,14 +1181,44 @@ function verdictOf(
  * reason. Visibility is total views over total impressions: a mean of view rates
  * would let a listing with eleven impressions outvote one with ninety thousand.
  */
-export async function cockpit(client: PoolClient, basis: Basis): Promise<Cockpit> {
+/**
+ * The eight figures, optionally narrowed to one of the tenant's own groups.
+ *
+ * THE GROUP NARROWS EVERYTHING OR IT IS A LIE. A dropdown that filters the table
+ * while the hero keeps showing the whole account's money is worse than no
+ * dropdown: the reader picks "Zermattstays", sees CHF 7'600 at the top, and now
+ * believes something false about Zermattstays. So the scope goes into every one
+ * of these queries as a CTE, not into some of them.
+ *
+ * `scope` is one CTE joined into each aggregate. Doing it that way rather than
+ * adding a predicate to seven different WHERE clauses is what makes it checkable:
+ * there is one definition of what is in scope, and a query that forgot to join it
+ * is visible as a missing join rather than as a subtly larger number.
+ */
+export async function cockpit(
+  client: PoolClient, basis: Basis, group: string | null = null,
+): Promise<Cockpit> {
   const amount = AMOUNT[basis]
+  /**
+   * Null means the whole portfolio. Always a bound parameter — a group name is
+   * tenant-entered text and interpolating it into SQL would be the one injection
+   * hole on the page.
+   *
+   * The index differs per query because some of these already take a parameter,
+   * so the CTE is built with the number rather than hardcoding $1 and hoping.
+   */
+  const g = group
+  const scope = (n: number) => `scope as (
+      select id from entity
+       where active and ($${n}::text is null or pms_group = $${n}::text)
+    )`
   const { rows: agg } = await client.query<{
     rooms: number, revpar: string | null, stly_revpar: string | null,
     occ: string | null, market_occ: string | null, stly_occ: string | null,
     adjusted: string | null, mpi: string | null, nights: number
   }>(`
-    with asof as (
+    with ${scope(1)},
+    asof as (
       select entity_id, max(as_of_date) as d
         from snapshot where metric = 'occupancy_next_30d' group by entity_id
     ),
@@ -1196,6 +1234,7 @@ export async function cockpit(client: PoolClient, basis: Basis): Promise<Cockpit
         from snapshot s join asof a
           on a.entity_id = s.entity_id and s.as_of_date = a.d
         join entity e on e.id = s.entity_id and e.active
+        join scope on scope.id = s.entity_id
        group by s.entity_id
     ),
     -- Nights actually archived per room, which is the weight. A room with three
@@ -1203,6 +1242,7 @@ export async function cockpit(client: PoolClient, basis: Basis): Promise<Cockpit
     w as (
       select s.entity_id, count(*)::int as nights
         from snapshot s join asof a on a.entity_id = s.entity_id and s.as_of_date = a.d
+        join scope on scope.id = s.entity_id
        where s.metric = 'price_recommended'
          and s.stay_date >= a.d and s.stay_date < a.d + 30
        group by s.entity_id
@@ -1232,7 +1272,7 @@ export async function cockpit(client: PoolClient, basis: Basis): Promise<Cockpit
               / nullif(sum(coalesce(w.nights, 1)) filter (where per.mpi is not null), 0))
              ::text as mpi,
            coalesce(sum(w.nights), 0)::int as nights
-      from per left join w on w.entity_id = per.entity_id`)
+      from per left join w on w.entity_id = per.entity_id`, [g])
 
   /**
    * Pace: nights booked in the LAST SEVEN DAYS for arrivals in the next thirty.
@@ -1247,20 +1287,22 @@ export async function cockpit(client: PoolClient, basis: Basis): Promise<Cockpit
    * would be the most useful-looking wrong number on the page.
    */
   const { rows: pace } = await client.query<{ nights: string | null, bookings: number }>(`
+    with ${scope(1)}
     select sum(nights)::text as nights, count(*)::int as bookings
-      from booking_economics
-     where booked_at >= now() - interval '7 days'
-       and arrival >= current_date and arrival < current_date + 30
-       and coalesce(status, '') <> 'cancelled'`)
+      from booking_economics b join scope on scope.id = b.entity_id
+     where b.booked_at >= now() - interval '7 days'
+       and b.arrival >= current_date and b.arrival < current_date + 30
+       and coalesce(b.status, '') <> 'cancelled'`, [g])
 
   const { rows: take } = await client.query<{
     gross: string | null, commission: string | null, bookings: number, currency: string | null
   }>(`
-    select sum(gross_amount)::text as gross, sum(ota_commission)::text as commission,
-           count(*)::int as bookings, max(currency) as currency
-      from booking_economics
-     where arrival >= current_date - $1::int and arrival < current_date
-       and coalesce(status, '') <> 'cancelled'`, [REALISED_DAYS])
+    with ${scope(2)}
+    select sum(b.gross_amount)::text as gross, sum(b.ota_commission)::text as commission,
+           count(*)::int as bookings, max(b.currency) as currency
+      from booking_economics b join scope on scope.id = b.entity_id
+     where b.arrival >= current_date - $1::int and b.arrival < current_date
+       and coalesce(b.status, '') <> 'cancelled'`, [REALISED_DAYS, g])
 
   /**
    * Visibility for the whole portfolio: total views over total impressions.
@@ -1272,27 +1314,29 @@ export async function cockpit(client: PoolClient, basis: Basis): Promise<Cockpit
   const { rows: vis } = await client.query<{
     impressions: string | null, views: string | null, rooms: number
   }>(`
-    with latest as (
-      select distinct on (entity_id, metric) entity_id, metric, value
-        from snapshot
-       where metric in ('funnel_booking_impressions_trailing', 'funnel_booking_views_trailing',
-                        'funnel_airbnb_impressions_trailing', 'funnel_airbnb_views_trailing')
-       order by entity_id, metric, as_of_date desc
+    with ${scope(1)},
+    latest as (
+      select distinct on (s.entity_id, s.metric) s.entity_id, s.metric, s.value
+        from snapshot s join scope on scope.id = s.entity_id
+       where s.metric in ('funnel_booking_impressions_trailing', 'funnel_booking_views_trailing',
+                          'funnel_airbnb_impressions_trailing', 'funnel_airbnb_views_trailing')
+       order by s.entity_id, s.metric, s.as_of_date desc
     )
     select sum(value) filter (where metric like '%impressions%')::text as impressions,
            sum(value) filter (where metric like '%views%')::text as views,
            count(distinct entity_id)::int as rooms
-      from latest`)
+      from latest`, [g])
 
   const { rows: rev } = await client.query<{
     score: string | null, rooms: number, thin: number
   }>(`
-    with latest as (
-      select distinct on (entity_id, metric) entity_id, metric, value
-        from snapshot
-       where metric in ('reviews_booking_score', 'reviews_booking_count',
-                        'reviews_airbnb_score', 'reviews_airbnb_count')
-       order by entity_id, metric, as_of_date desc
+    with ${scope(2)},
+    latest as (
+      select distinct on (s.entity_id, s.metric) s.entity_id, s.metric, s.value
+        from snapshot s join scope on scope.id = s.entity_id
+       where s.metric in ('reviews_booking_score', 'reviews_booking_count',
+                          'reviews_airbnb_score', 'reviews_airbnb_count')
+       order by s.entity_id, s.metric, s.as_of_date desc
     ),
     per as (
       select entity_id,
@@ -1302,7 +1346,7 @@ export async function cockpit(client: PoolClient, basis: Basis): Promise<Cockpit
     )
     select (avg(score))::text as score, count(*)::int as rooms,
            count(*) filter (where count is not null and count <= $1)::int as thin
-      from per`, [THIN_REVIEW_COUNT])
+      from per`, [THIN_REVIEW_COUNT, g])
 
   /**
    * Nights that cannot be sold at all.
@@ -1313,24 +1357,30 @@ export async function cockpit(client: PoolClient, basis: Basis): Promise<Cockpit
    * blamed on the price every time.
    */
   const { rows: blk } = await client.query<{ blocked: string | null, nights: number }>(`
-    with asof as (
+    with ${scope(1)},
+    asof as (
       select entity_id, max(as_of_date) as d
         from snapshot where metric = 'price_recommended' group by entity_id
     )
     select sum(s.value)::text as blocked, count(*)::int as nights
       from snapshot s join asof a on a.entity_id = s.entity_id and s.as_of_date = a.d
+      join scope on scope.id = s.entity_id
      where s.metric = 'unbookable'
-       and s.stay_date >= a.d and s.stay_date < a.d + 30`)
+       and s.stay_date >= a.d and s.stay_date < a.d + 30`, [g])
 
   const { rows: stake } = await client.query<{ total: string | null, currency: string | null }>(`
-    with per as (
+    with ${scope(1)},
+    per as (
       select f.entity_id, max(f.${amount}) as amount, max(f.currency) as currency
-        from finding f where f.state = 'open' group by f.entity_id
+        from finding f join scope on scope.id = f.entity_id
+       where f.state = 'open' group by f.entity_id
     )
-    select sum(amount)::text as total, max(currency) as currency from per`)
+    select sum(amount)::text as total, max(currency) as currency from per`, [g])
 
   const { rows: na } = await client.query<{ n: number }>(
-    `select count(*)::int n from not_assessable`)
+    `with ${scope(1)}
+     select count(*)::int n from not_assessable n
+       join scope on scope.id = n.entity_id`, [g])
 
   const num = (v: string | null | undefined) =>
     v === null || v === undefined ? null : Number(v)
